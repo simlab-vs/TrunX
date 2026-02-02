@@ -1,0 +1,6 @@
+Good practice is to create a package for re-usable functions 
+created during the project. Assuming that the name of the project 
+package is `python-base`, the  src/`python-base`/ should contain 
+the package's code. 
+
+Function can then be accessed by import `python-base` ... 

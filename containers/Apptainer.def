@@ -1,0 +1,42 @@
+# Minimal apptainer definition file for a Python project based on uv.
+Bootstrap: docker
+From: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+%labels
+    Maintainer "Cedric Travelletti"
+    Version "0.1"
+
+%files 
+  PROJECT_FOLDER="python-base"
+  ../ opt/$PROJECT_FOLDER
+
+%post
+    PROJECT_FOLDER="python-base"
+    PACKAGE_NAME="python-base"
+
+    echo "**** Installing system dependencies ****"
+    apt-get update && apt-get install -y git curl && apt-get clean
+
+    echo "**** Cloning project repository ****"
+    cd /opt/$PROJECT_FOLDER
+
+    echo "**** Installing Python dependencies ****"
+
+    uv venv --python 3.12
+    uv sync
+    . .venv/bin/activate
+    uv pip install -e $PACKAGE_NAME
+
+   mkdir /mnt/$PROJECT_FOLDER
+
+%environment
+    echo ". /opt/AOSForecast/.venv/bin/activate" >> ~/.bashrc
+    export JUPYTER_PORT="8888"  # default Jupyter port
+
+%runscript
+    PROJECT_FOLDER="python-base"
+    cd /mnt/$PROJECT_FOLDER
+    . /opt/$PROJECT_FOLDER/.venv/bin/activate
+    echo "Starting Jupyter Notebook on port $JUPYTER_PORT ..."
+    . /opt/$PROJECT_FOLDER/.venv/bin/activate
+    uv run jupyter-notebook --ip=0.0.0.0 --port=$JUPYTER_PORT --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''

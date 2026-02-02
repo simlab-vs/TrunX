@@ -1,0 +1,12 @@
+In this folder, put all interactive scripts. 
+
+Ideally, scripts should use reproducible code in the form 
+of functions, implemented in the package in src/python-base/, 
+and use configuration from the config.yaml.
+
+This folder can be further breaked down into (n.b. this is just a suggestion).
+scripts/data_collection/
+scripts/data_cleaning/
+scripts/feature_preparation/
+scripts/training/
+scripts/evaluation/

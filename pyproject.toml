@@ -1,0 +1,67 @@
+[project]
+name = "python-base"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pre-commit>=4.2.0",
+    "ruff>=0.11.10",
+]
+
+# Set curent project as a package, with src/ folder.
+[tool.uv]
+package = true
+
+# Set ruff and ty as only a local deps for development.
+[dependency-groups]
+dev = [
+    "ruff>=0.11.10",
+    "pre-commit>=4.2.0",
+    "ty>=0.0.13",
+]
+
+# Build backend
+# -------------
+[build-system]
+requires = ["uv_build>=0.9.0,<0.9.26"]
+build-backend = "uv_build"
+
+
+# Linting rules
+# -------------
+# Longer than standard 79 char max line length.
+[tool.ruff]
+line-length = 99
+
+[tool.ruff.lint]
+extend-select = [
+  "E501", # enforce the line-too-long rule
+  "UP",  # pyupgrade
+  "D",   # pydocstyle
+]
+
+# Defines which linter errors to ignore.
+[tool.ruff.lint.per-file-ignores]
+"*/*" = ["E712"] # Allow comparing to == True, since needed by polars.
+"src/*" = ["D104", "D102", "D105", "F722", "F401"] 
+# D10*: Allow empty docstrings in __init__.py. and in methods (including magic ones).
+# F722: Allow forward type references (needed for jaxtyping)
+# F401: allow unused import (needed for rioxarray)
+"tests/*" = ["D"] # allow undocumented tests
+"scripts/*" = ["D103"] # allow undocumented scripts
+
+# Docstring style numpy (instead of Google).
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+
+# Type Checker Configuration
+# --------------------------
+[tool.ty.rules]
+# Disable specific rules that are problematic for some packages.
+unresolved-import = "ignore"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

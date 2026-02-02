@@ -1,0 +1,6 @@
+Put all the data for your project in here. 
+A folder structure that works well is: 
+- data/raw/: raw data files (for reproducibility)
+- data/clean/: cleaned data files
+- data/features/: model features (versioned)
+- data/reporting/: data used for reports (results of model runs, ...)
