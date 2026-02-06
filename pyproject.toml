@@ -43,13 +43,16 @@ extend-select = [
 
 # Defines which linter errors to ignore.
 [tool.ruff.lint.per-file-ignores]
-"*/*" = ["E712"] # Allow comparing to == True, since needed by polars.
+"*/*" = [
+  "E712", # Allow comparing to == True, since needed by polars.
+  "UP015", # Allow explicit read-only mode in file open.
+] 
 "src/*" = ["D104", "D102", "D105", "F722", "F401"] 
 # D10*: Allow empty docstrings in __init__.py. and in methods (including magic ones).
 # F722: Allow forward type references (needed for jaxtyping)
 # F401: allow unused import (needed for rioxarray)
 "tests/*" = ["D"] # allow undocumented tests
-"scripts/*" = ["D103"] # allow undocumented scripts
+"scripts/*" = ["D100", "D103"] # allow undocumented scripts
 
 # Docstring style numpy (instead of Google).
 [tool.ruff.lint.pydocstyle]
