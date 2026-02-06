@@ -9,10 +9,28 @@ pio.renderers.default = "notebook"
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
+    Calculate the Haversine distance between two points on the Earth's surface.
+
     Ref: https://en.wikipedia.org/wiki/Haversine_formula
     Calculate the distance between two points on Earth using the Haversine formula.
     Given latitudes and longitudes in degrees.
     Returns distance in kilometers.
+
+    Parameters
+    ----------
+    lat1 : float
+        Latitude of the first point in degrees.
+    lon1 : float
+        Longitude of the first point in degrees.
+    lat2 : float
+        Latitude of the second point in degrees.
+    lon2 : float
+        Longitude of the second point in degrees.
+
+    Returns
+    -------
+    float
+        Distance between the two points in kilometers.
     """
     R = 6371  # Earth radius in kilometers
 
@@ -28,33 +46,30 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     distance = R * c
+
     return distance
-
-
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.io as pio
-
 
 def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, map_links=False):
     """
-    Plots ICP and ICOS stations on a map and saves the interactive map as HTML.
+    Plot ICP and ICOS stations on a map and saves the interactive map as HTML.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     csv_file : str
         Path to the CSV file containing ICOS and ICP station data.
-        Must include columns: ['ICP_Lat', 'ICP_Lon', 'ICP_gid', 'ICOS_Lat', 'ICOS_Lon', 'ICOS_Name']
+        Must include columns: 
+        ['ICP_Lat', 'ICP_Lon', 'ICP_gid', 'ICOS_Lat', 'ICOS_Lon', 'ICOS_Name']
     save_map : bool
         If True, saves the map as an HTML file.
     html_file : str
         Path to save the output HTML file (e.g., 'output_map.html').
     show_map : bool
         If True, displays the map inline (requires Jupyter notebook).
-    """
-    # Optional: enable notebook renderer
-    pio.renderers.default = "notebook"
 
+    Returns
+    -------
+    None
+    """
     # Load data
     df = pd.read_csv(csv_file)
 
@@ -128,20 +143,21 @@ def find_nearby_stations(
     target_station: dict, icos_stations: pl.DataFrame, radius_km: float = 20.0
 ) -> pl.DataFrame:
     """
-    Finds ICOS stations within a specified radius of a target ICP station.
+    Find ICOS stations within a specified radius of a target ICP station.
 
-    Args:
-        target_station (pl.Series): A Polars Series representing the target ICP station row,
-                                    expected to have 'Lat' and 'Lon' columns.
-        icos_stations (pl.DataFrame): A Polars DataFrame containing all ICOS stations,
-                                     expected to have 'Id', 'Lat', and 'Lon' columns.
-        radius_km (float): The radius in kilometers to search within.
+    Parameters
+    ----------
+    target_station (pl.Series): A Polars Series representing the target ICP station row,
+                                expected to have 'Lat' and 'Lon' columns.
+    icos_stations (pl.DataFrame): A Polars DataFrame containing all ICOS stations,
+                                expected to have 'Id', 'Lat', and 'Lon' columns.
+    radius_km (float): The radius in kilometers to search within.
 
-    Returns:
-        pl.DataFrame: A DataFrame of ICOS stations within the specified radius,
-                      including 'Id', 'Lat', 'Lon', and 'Distance_km'.
+    Returns
+    -------
+    pl.DataFrame: A DataFrame of ICOS stations within the specified radius,
+                including 'Id', 'Lat', 'Lon', and 'Distance_km'.
     """
-
     nearby_icos_stations_data = []
 
     target_lat = target_station["Lat"]
@@ -188,6 +204,8 @@ def collect_nearby_stations(
     map_links: bool = False,
 ) -> pl.DataFrame:
     """
+    Collect nearby stations.
+
     Find nearby candidate stations for each target station within a radius
     and save the merged result to CSV.
 
@@ -207,7 +225,6 @@ def collect_nearby_stations(
     pl.DataFrame
         Concatenated DataFrame of nearby stations
     """
-
     if target_stations.is_empty():
         raise ValueError("Target stations DataFrame is empty.")
 
@@ -266,6 +283,11 @@ if __name__ == "__main__":
         candidate_stations=ICOS_stations,
         radius_km=10.0,
         output_path="./data/intermediate/ICOS_near_ICP_stations.csv",
-        map_plot=True,  # St true to generate the map, False to skip it. Note that generating the map can be time-consuming if there are many stations.
-        map_links=True,  # In case you want to see which ICP station is linked to which ICOS station on the map, set this to True. It will draw lines between them.
+        map_plot=True,  # Set to true to generate the map, False to skip it. 
+                        # Note that generating the map can be time-consuming if there are
+                        # many stations.
+        map_links=True,  # In case you want to see which ICP station is linked to 
+                         # which ICOS station on the map, set this to True.
+                         #  It will draw lines between them.
+    
     )
