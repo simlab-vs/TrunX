@@ -5,7 +5,17 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "diffrax>=0.7.1",
+    "icoscp-core>=0.3.11",
+    "ipykernel>=7.1.0",
+    "ipython>=9.10.0",
+    "matplotlib>=3.10.8",
+    "nbformat>=5.10.4",
+    "pandas>=3.0.0",
+    "plotly>=6.5.2",
+    "polars>=1.37.1",
     "pre-commit>=4.2.0",
+    "requests>=2.32.5",
     "ruff>=0.11.10",
 ]
 
@@ -43,13 +53,16 @@ extend-select = [
 
 # Defines which linter errors to ignore.
 [tool.ruff.lint.per-file-ignores]
-"*/*" = ["E712"] # Allow comparing to == True, since needed by polars.
+"*/*" = [
+  "E712", # Allow comparing to == True, since needed by polars.
+  "UP015", # Allow explicit read-only mode in file open.
+] 
 "src/*" = ["D104", "D102", "D105", "F722", "F401"] 
 # D10*: Allow empty docstrings in __init__.py. and in methods (including magic ones).
 # F722: Allow forward type references (needed for jaxtyping)
 # F401: allow unused import (needed for rioxarray)
 "tests/*" = ["D"] # allow undocumented tests
-"scripts/*" = ["D103"] # allow undocumented scripts
+"scripts/*" = ["D100", "D103"] # allow undocumented scripts
 
 # Docstring style numpy (instead of Google).
 [tool.ruff.lint.pydocstyle]
