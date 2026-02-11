@@ -1,3 +1,10 @@
+"""
+Module provides functions to read ICOS NRT atmospheric trace gas files.
+
+The `read_icos_nrt_file` function reads a specified ICOS NRT file, extracts the relevant data,
+and convert them into Polars DataFrames for further analysis.
+"""
+
 from pathlib import Path
 import polars as pl
 import os
@@ -28,7 +35,7 @@ def read_icos_nrt_file(
     file_path = Path(file_path)
 
     # --- Read file as text ---
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         lines = f.readlines()
 
     # --- Extract column names ---

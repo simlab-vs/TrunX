@@ -1,6 +1,22 @@
+"""
+Script is designed to download and extract data from the ICOS Carbon Portal (ICOS).
+
+Executed using the icoscp_core library.
+
+It performs the following steps:
+1. Loads authentication credentials from a specified JSON file.
+2. Bootstraps the connection to the ICOS CP using the loaded credentials.
+3. Downloads a specified dataset using its object URI.
+4. Saves the downloaded dataset in a specified folder.
+6. Logs the process and any errors that occur during the download and extraction.
+
+Note: Ensure that the token file contains the correct credentials and
+      that the specified folder paths exist before running the script.
+
+"""
+
 import json
 import os
-import zipfile
 import logging
 from icoscp_core.icos import bootstrap
 
@@ -25,7 +41,7 @@ def get_icoscp_credentials(token_file_path: str) -> dict:
     dict: A dictionary containing the credentials (username, password).
     """
     try:
-        with open(token_file_path, "r") as f:
+        with open(token_file_path) as f:
             credentials = json.load(f)
         return credentials
     except FileNotFoundError:
@@ -60,19 +76,6 @@ def download_and_extract_data(dobj_uri: str, folder_path: str, data) -> None:
 
         logging.info(f"Downloaded ZIP file: {filename}")
         logging.info(f"ZIP file path: {zip_file_path}")
-
-        # Extract the ZIP file
-        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-            zip_ref.extractall(folder_path)
-            logging.info(f"Extracted files to {folder_path}")
-
-            # List extracted files excluding .zip and .DS_Store
-            extracted_files = [
-                f for f in os.listdir(folder_path) if not f.endswith(".zip") and f != ".DS_Store"
-            ]
-            logging.info("Extracted files:")
-            for ext_file in extracted_files:
-                logging.info(f"- {ext_file}")
 
     except Exception as e:
         logging.error(f"Error downloading or extracting file: {e}")

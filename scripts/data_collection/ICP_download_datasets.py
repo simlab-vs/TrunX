@@ -1,3 +1,11 @@
+"""
+Script to download ICP Forests Level II datasets.
+
+1. Station information
+2. Tree species distribution.
+
+"""
+
 import requests
 
 
