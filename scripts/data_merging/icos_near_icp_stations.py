@@ -1,10 +1,125 @@
+"""
+Script identifies ICOS stations that are geographically close to ICP Forests Level II stations.
+
+It performs the following steps:
+1. Downloads ICP station data from a specified URL.
+2. Prepares the ICP station data for merging.
+3. Fetches ICOS station data using the icoscp_core library.
+4. Calculates the Haversine distance between ICP and ICOS stations to find nearby
+    stations within a specified radius.
+5. Plots the ICP and ICOS stations on an interactive map using Plotly, with options
+    to show links between nearby stations and save the map as an HTML file.
+6. Saves the merged data of nearby stations to a CSV file for further analysis.
+"""
+
 import polars as pl
 import math
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
+import requests
+from icoscp_core.icos import meta
 
-pio.renderers.default = "notebook"
+
+pio.renderers.default = "browser"
+
+
+def download_from_url(url: str, output_file: str):
+    """
+    Download data from the given URL and save it to the specified output file.
+
+    Parameters
+    ----------
+    url : str
+        The URL to download the file from.
+    output_file : str
+        The local path where the downloaded file will be saved.
+
+    Returns
+    -------
+    None
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    response = requests.get(url, headers=headers, stream=True)
+    if response.status_code == 200:
+        with open(output_file, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"Downloaded {output_file}")
+    else:
+        print(f"Failed to download: HTTP {response.status_code}")
+
+
+def prepare_icp_stations(csv_file: str) -> pl.DataFrame:
+    """
+    Load ICP station data from a CSV file and prepare it for merging.
+
+    Parameters
+    ----------
+    csv_file : str
+        Path to the CSV file containing ICP station data.
+        The CSV is expected to have columns:
+        ["gid",  "code_country_iso", "lib_country",
+            "lat_epsg4326", "lon_epsg4326", "tree_species"]
+
+    Returns
+    -------
+    pl.DataFrame
+        A Polars DataFrame containing ICP station information with columns:
+        ['gid', 'Lat', 'Lon', 'Country code', 'Country', 'Tree species']
+    """
+    df = pl.read_csv(csv_file, separator=";")
+
+    df = df.select(
+        ["gid", "code_country_iso", "lib_country", "lat_epsg4326", "lon_epsg4326", "tree_species"]
+    )
+    df = df.rename(
+        {
+            "code_country_iso": "Country code",
+            "lib_country": "Country",
+            "lat_epsg4326": "Lat",
+            "lon_epsg4326": "Lon",
+        }
+    )
+
+    df.write_csv("./data/intermediate/ICP_stations_locations.csv")
+
+    return df
+
+
+def get_icos_stations():
+    """
+    Get ICOS station data using the icoscp_core library.
+
+    Returns
+    -------
+    pl.DataFrame
+        A Polars DataFrame containing ICOS station information with columns:
+        ['Label', 'Name', 'Country code', 'Lat', 'Lon']
+    """
+    # Fetch station data using the icoscp_core library
+    icos_stations = meta.list_stations()
+    print(icos_stations)
+    # Convert to Polars DataFrame
+    schema = ["Id", "Label", "Name", "Country code", "Lat", "Lon"]
+    station_data = []
+    for station in icos_stations:
+        station_data.append(
+            {
+                "Id": station.type_uri,
+                "Label": station.label,
+                "Name": station.name,
+                "Country code": station.country_code,
+                "Lat": station.lat,
+                "Lon": station.lon,
+            }
+        )
+    station_data = pl.DataFrame(station_data, schema=schema)
+
+    station_data.write_csv("./data/intermediate/ICOS_stations_locations.csv")
+
+    return station_data
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -49,7 +164,8 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 
     return distance
 
-def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, map_links=False):
+
+def plot_icp_icos_map(csv_file, save_map=True, html_file=None, map_plot=False, map_links=False):
     """
     Plot ICP and ICOS stations on a map and saves the interactive map as HTML.
 
@@ -57,7 +173,7 @@ def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, m
     ----------
     csv_file : str
         Path to the CSV file containing ICOS and ICP station data.
-        Must include columns: 
+        Must include columns:
         ['ICP_Lat', 'ICP_Lon', 'ICP_gid', 'ICOS_Lat', 'ICOS_Lon', 'ICOS_Name']
     save_map : bool
         If True, saves the map as an HTML file.
@@ -75,6 +191,19 @@ def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, m
 
     fig = go.Figure()
 
+    # Lines connecting ICP -> ICOS
+    if map_links:
+        for _, row in df.iterrows():
+            fig.add_trace(
+                go.Scattermapbox(
+                    lat=[row["ICP_Lat"], row["ICOS_Lat"]],
+                    lon=[row["ICP_Lon"], row["ICOS_Lon"]],
+                    mode="lines",
+                    line=dict(color="gray", width=1),
+                    showlegend=False,
+                )
+            )
+
     # Plot ICP stations (blue)
     fig.add_trace(
         go.Scattermapbox(
@@ -88,32 +217,22 @@ def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, m
         )
     )
 
-    # Plot ICOS stations (red)
+    # Plot ICOS stations (red) - drawn on top of ICP stations for better visibility
     fig.add_trace(
         go.Scattermapbox(
             lat=df["ICOS_Lat"],
             lon=df["ICOS_Lon"],
             mode="markers",
             marker=dict(size=8, color="red"),
-            text=df["ICOS_Name"],
+            text="ICOS: "
+            + df["ICOS_Name"]
+            + "<br>Dist: "
+            + df["Distance_km"].round(2).astype(str)
+            + " km",
             name="ICOS Stations",
-            hovertemplate="ICOS: %{text}<br>Lat: %{lat}, Lon: %{lon}<extra></extra>",
+            hovertemplate="%{text}<br>Lat: %{lat}, Lon: %{lon}<extra></extra>",
         )
     )
-
-    # Lines connecting ICP -> ICOS
-    if map_links:
-        for _, row in df.iterrows():
-            fig.add_trace(
-                go.Scattermapbox(
-                    lat=[row["ICP_Lat"], row["ICOS_Lat"]],
-                    lon=[row["ICP_Lon"], row["ICOS_Lon"]],
-                    mode="lines",
-                    line=dict(color="gray", width=1),
-                    hoverinfo="none",
-                    showlegend=False,
-                )
-            )
 
     # Set map layout
     fig.update_layout(
@@ -135,7 +254,7 @@ def plot_icp_icos_map(csv_file, save_map=True, html_file=None, show_map=False, m
         print(f"Interactive map saved as {html_file}")
 
     # Show map inline if requested
-    if show_map:
+    if map_plot:
         fig.show()
 
 
@@ -268,26 +387,33 @@ def collect_nearby_stations(
             csv_file=output_path,
             save_map=True,
             html_file=f"./data/intermediate/ICP_ICOS_map_{int(radius_km)}.html",
-            show_map=False,  # set True to display inline in Jupyter
+            map_plot=map_plot,
+            map_links=map_links,
         )
     return result
 
 
 if __name__ == "__main__":
-    # Load ICOS and ICP station data
-    ICOS_stations = pl.read_csv("./data/intermediate/ICOS_stations_locations.csv")
-    ICP_stations = pl.read_csv("./data/intermediate/ICP_stations_locations.csv")
+    # ICP Forests Level II plots
+    url = "https://icp-forests.org/open_data/level_ii/gpd/gpd_level_ii.csv"
+    output_file = "./data/raw/ICP/gpd_level_ii.csv"
+    download_from_url(url, output_file)
+
+    # Prepare ICP station data for merging
+    ICP_stations = prepare_icp_stations(output_file)
+
+    # Fetch ICOS station data
+    ICOS_stations = get_icos_stations()
 
     collect_nearby_stations(
         target_stations=ICP_stations,
         candidate_stations=ICOS_stations,
-        radius_km=10.0,
+        radius_km=50.0,
         output_path="./data/intermediate/ICOS_near_ICP_stations.csv",
-        map_plot=True,  # Set to true to generate the map, False to skip it. 
-                        # Note that generating the map can be time-consuming if there are
-                        # many stations.
-        map_links=True,  # In case you want to see which ICP station is linked to 
-                         # which ICOS station on the map, set this to True.
-                         #  It will draw lines between them.
-    
+        map_plot=True,  # Set to true to generate the map, False to skip it.
+        # Note that generating the map can be time-consuming if there are
+        # many stations.
+        map_links=True,  # In case you want to see which ICP station is linked to
+        # which ICOS station on the map, set this to True.
+        #  It will draw lines between them.
     )
