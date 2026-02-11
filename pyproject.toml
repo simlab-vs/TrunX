@@ -1,10 +1,13 @@
 [project]
-name = "trunkx"
+name = "trunx"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dotenv>=0.9.9",
+    "icoscp-core>=0.3.11",
+    "ipython>=9.10.0",
     "pre-commit>=4.2.0",
     "ruff>=0.11.10",
 ]
@@ -35,10 +38,25 @@ build-backend = "uv_build"
 line-length = 99
 
 [tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # pydocstyle
+    "D",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
 extend-select = [
   "E501", # enforce the line-too-long rule
   "UP",  # pyupgrade
-  "D",   # pydocstyle
 ]
 
 # Defines which linter errors to ignore.

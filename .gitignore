@@ -9,6 +9,9 @@ data/
 containers/
 models/
 
+# secrets
+.env
+
 # Data files.
 *.csv
 *.xlsx
