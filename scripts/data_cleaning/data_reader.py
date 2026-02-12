@@ -5,9 +5,10 @@ The `read_icos_nrt_file` function reads a specified ICOS NRT file, extracts the 
 and convert them into Polars DataFrames for further analysis.
 """
 
-from pathlib import Path
-import polars as pl
 import os
+from pathlib import Path
+
+import polars as pl
 
 
 def read_icos_nrt_file(

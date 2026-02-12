@@ -12,14 +12,14 @@ It performs the following steps:
 6. Saves the merged data of nearby stations to a CSV file for further analysis.
 """
 
-import polars as pl
 import math
+
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
+import polars as pl
 import requests
 from icoscp_core.icos import meta
-
 
 pio.renderers.default = "browser"
 
