@@ -18,39 +18,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 import polars as pl
-import requests
 from icoscp_core.icos import meta
+from tunx.web_utils import download_from_url
 
-from trunx.config import intermediate_data_folder, icp_raw_data_folder
+from trunx.config import icp_raw_data_folder, intermediate_data_folder
 
 pio.renderers.default = "browser"
-
-
-def download_from_url(url: str, output_file: str):
-    """
-    Download data from the given URL and save it to the specified output file.
-
-    Parameters
-    ----------
-    url : str
-        The URL to download the file from.
-    output_file : str
-        The local path where the downloaded file will be saved.
-
-    Returns
-    -------
-    None
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-    response = requests.get(url, headers=headers, stream=True)
-    if response.status_code == 200:
-        with open(output_file, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"Downloaded {output_file}")
-    else:
-        print(f"Failed to download: HTTP {response.status_code}")
 
 
 def prepare_icp_stations(csv_file: str) -> pl.DataFrame:
