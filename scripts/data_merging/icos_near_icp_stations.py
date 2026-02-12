@@ -107,8 +107,8 @@ def plot_icp_icos_map(
             style="open-street-map",
             zoom=4,
             center=dict(
-                lat=(float(df["ICP_Lat"].mean()) + float(df["ICOS_Lat"].mean())) / 2,  # type: ignore[arg-type]
-                lon=(float(df["ICP_Lon"].mean()) + float(df["ICOS_Lon"].mean())) / 2,  # type: ignore[arg-type]
+                lat=df.select(pl.mean("ICP_Lat")),
+                lon=df.select(pl.mean("ICP_Lon")),
             ),
         ),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
