@@ -48,8 +48,7 @@ def prepare_icp_stations(csv_file: str) -> pl.DataFrame:
 
     df = df.select(
         ["gid", "code_country_iso", "lib_country", "lat_epsg4326", "lon_epsg4326", "tree_species"]
-    )
-    df = df.rename(
+    ).rename(
         {
             "code_country_iso": "Country code",
             "lib_country": "Country",
