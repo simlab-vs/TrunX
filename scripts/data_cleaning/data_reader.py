@@ -35,20 +35,15 @@ def read_icos_nrt_file(
     """
     file_path = Path(file_path)
 
-    # --- Read file as text ---
     with open(file_path, encoding="utf-8") as f:
         lines = f.readlines()
 
-    # --- Extract column names ---
     column_names = lines[header_line].strip().split(";")
 
-    # --- Extract data rows ---
     data = [line.strip().split(";") for line in lines[data_start_line:]]
 
-    # --- Create Polars DataFrame ---
     df = pl.DataFrame(data, schema=column_names)
 
-    # --- Cast numeric columns ---
     int_cols = ["Year", "Month", "Day", "Hour", "Minute", "NbPoints", "InstrumentId", "QualityId"]
     float_cols = ["DecimalDate", "n2o", "Stdev"]
 
@@ -57,7 +52,6 @@ def read_icos_nrt_file(
         + [pl.col(c).cast(pl.Float64, strict=False) for c in float_cols if c in df.columns]
     )
 
-    # --- Create datetime column ---
     df = df.with_columns(
         pl.datetime(
             pl.col("Year"),
@@ -68,7 +62,6 @@ def read_icos_nrt_file(
         ).alias("datetime")
     )
 
-    # --- Reorder columns (datetime first) ---
     df = df.select(["datetime"] + [c for c in df.columns if c != "datetime"])
 
     return df
