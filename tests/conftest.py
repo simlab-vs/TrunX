@@ -1,7 +1,13 @@
 """Pytest fixtures for web utilities testing."""
 
+import sys
+from pathlib import Path
+
 import pytest
 import responses
+
+# Add project root to path to allow importing scripts
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @pytest.fixture(scope="function")
