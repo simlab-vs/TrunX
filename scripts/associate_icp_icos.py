@@ -37,6 +37,7 @@ def get_icos_stations() -> pl.DataFrame:
         }
         for station in icos_stations
     ]
+
     return pl.DataFrame(station_data)
 
 
@@ -107,8 +108,8 @@ def plot_icp_icos_map(
             style="open-street-map",
             zoom=4,
             center=dict(
-                lat=df.select(pl.mean("ICP_Lat")),
-                lon=df.select(pl.mean("ICP_Lon")),
+                lat=df.select(pl.mean("ICP_Lat")).item(),
+                lon=df.select(pl.mean("ICP_Lon")).item(),
             ),
         ),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
@@ -170,6 +171,8 @@ if __name__ == "__main__":
     # Download ICP stations data.
     url = "https://icp-forests.org/open_data/level_ii/gpd/gpd_level_ii.csv"
     output_file = icp_raw_data_folder / "gpd_level_ii.csv"
+
+    # Download ICOS stations data
     download_from_url(url, str(output_file))
     icp_stations = pl.read_csv(output_file, separator=";")
 
