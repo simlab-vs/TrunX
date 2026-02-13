@@ -36,3 +36,4 @@ clean_data_folder = Path(os.path.join(base_dir, "data/clean/"))
 intermediate_data_folder = Path(os.path.join(base_dir, "data/intermediate/"))
 
 icos_raw_data_folder = raw_data_folder / "ICOS"
+icp_raw_data_folder = raw_data_folder / "ICP"

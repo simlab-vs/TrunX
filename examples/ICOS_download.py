@@ -1,4 +1,9 @@
-"""Example of how to download data objects from the ICOS portal."""
+"""Example of how to download data objects from the ICOS portal.
+
+The environment variable ICOS_API_TOKEN should be initialized with an ICOS
+token from https://cpauth.icos-cp.eu
+"""
+
 import logging
 import os
 

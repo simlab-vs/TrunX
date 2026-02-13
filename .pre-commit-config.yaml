@@ -9,18 +9,11 @@ repos:
       - id: trailing-whitespace
         files: \.(js|rb|md|py|sh|txt|yaml|yml|kidm)$
 
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.47.0
-    hooks:
-      - id: markdownlint
-        files: \.md$
-        language_version: "13.14.0"
-        args:
-          - --fix
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.13
     hooks:
-      - id: ruff
+      - id: ruff-check
+        types_or: [ python, pyi ]
         args: [ --fix ]
       - id: ruff-format
+        types_or: [ python, pyi ]

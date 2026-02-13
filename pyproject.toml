@@ -5,11 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "plotly>=6.5.2",
+    "polars>=1.38.1",
     "dotenv>=0.9.9",
     "icoscp-core>=0.3.11",
     "ipython>=9.10.0",
     "pre-commit>=4.2.0",
+    "requests>=2.32.5",
     "ruff>=0.11.10",
+    "jax>=0.9.0.1",
+    "haversine>=2.9.0",
 ]
 
 # Set curent project as a package, with src/ folder.
@@ -22,6 +27,8 @@ dev = [
     "ruff>=0.11.10",
     "pre-commit>=4.2.0",
     "ty>=0.0.13",
+    "pytest>=8.0.0",
+    "responses>=0.25.0",
 ]
 
 # Build backend
