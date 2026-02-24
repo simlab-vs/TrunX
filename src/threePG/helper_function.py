@@ -533,13 +533,13 @@ def plot_outputs(outputs):
     axes[0, 2].set_ylabel("GPP")
 
     axes[1, 0].plot(months, outputs["WS"])
-    axes[1, 0].set_ylabel("Stem biomass")
+    axes[1, 0].set_ylabel("Stem biomass (kg)")
 
     axes[1, 1].plot(months, outputs["WF"])
-    axes[1, 1].set_ylabel("Foliage biomass")
+    axes[1, 1].set_ylabel("Foliage biomass (kg)")
 
     axes[1, 2].plot(months, outputs["WR"])
-    axes[1, 2].set_ylabel("Root biomass")
+    axes[1, 2].set_ylabel("Root biomass (kg)")
 
     for ax in axes.flat:
         ax.grid(True, alpha=0.3)
