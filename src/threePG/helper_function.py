@@ -1,5 +1,7 @@
 """Helper functions to implement 3PG model."""
 
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -7,7 +9,7 @@ from jax import Array
 from model_inputs import State
 
 
-def f_temperature(T_avg, T_min, T_opt, T_max):
+def f_temperature(T_avg: Array, T_min: Array, T_opt: Array, T_max: Array) -> Array:
     """
     Calculate the temperature response function (fT) for forest growth.
 
@@ -17,13 +19,13 @@ def f_temperature(T_avg, T_min, T_opt, T_max):
 
     Parameters
     ----------
-    T : float
+    T : Array
         Current temperature (monthly mean temperature).
-    Tmin : float
+    Tmin : Array
         Minimum temperature for growth.
-    Topt : float
+    Topt : Array
         Optimum temperature for growth.
-    Tmax : float
+    Tmax : Array
         Maximum temperature for growth.
 
     If T < Tmin or T > Tmax, fT is set to 0.
@@ -40,7 +42,7 @@ def f_temperature(T_avg, T_min, T_opt, T_max):
     return jnp.clip(a * (b**power), 0.0, 1.0)
 
 
-def f_frost(frost_days, k_F):
+def f_frost(frost_days: Array, k_F: Array):
     """
     Calculate the frost response function (fF) for forest growth.
 
@@ -51,18 +53,18 @@ def f_frost(frost_days, k_F):
     ----------
     frost_days : int
         Number of frost days in a month.
-    frost_threshold : float
+    frost_threshold : Array
         Threshold for the number of frost days that significantly affects growth.
 
     Returns
     -------
-    float
+    Array
         Frost response function value (fF).
     """
     return jnp.clip(1.0 - k_F * frost_days / 30.0, 0.0, 1.0)
 
 
-def f_vpd(VPD, CoeffCond):
+def f_vpd(VPD: Array, CoeffCond: Array) -> Array:
     """
     Calculate the vapor pressure deficit response function (fVPD).
 
@@ -71,21 +73,21 @@ def f_vpd(VPD, CoeffCond):
 
     Parameters
     ----------
-    VPD : float
+    VPD : Array
         Vapor pressure deficit in kPa.
-    CoeffCond : float
+    CoeffCond : Array
         Threshold for the vapor pressure deficit that significantly affects growth.
 
     Returns
     -------
-    float
+    Array
         Vapor pressure deficit response function value (fVPD).
     """
     f_vpd = jnp.exp(-CoeffCond * VPD)
     return f_vpd
 
 
-def f_age(age_months, MaxAge, nAge, rAge=0.95):
+def f_age(age_months: Array, MaxAge: Array, nAge: Array, rAge: Array | None = None) -> Array:
     """
     Age-related growth modifier.
 
@@ -98,28 +100,31 @@ def f_age(age_months, MaxAge, nAge, rAge=0.95):
 
     Parameters
     ----------
-    age_months : float
+    age_months : Array
         Stand age in months.
-    MaxAge : float
+    MaxAge : Array
         Maximum stand age used to scale relative age (years).
-    nAge : float
+    nAge : Array
         Shape parameter controlling the steepness of the age-related decline.
         Higher values produce a sharper decline.
-    rAge : float, optional
+    rAge : Array, optional
         Relative age at which f_age equals 0.5 (default = 0.95).
 
     Returns
     -------
-    F_age: float
+    F_age: Array
         Age modifier ranging from 0 to 1.
     """
+    if rAge is None:
+        rAge = jnp.asarray(0.95)
+
     age_years = age_months / 12.0
     FAge = age_years / (MaxAge + 1e-8)
     f_age = 1.0 / (1.0 + (FAge / (rAge + 1e-8)) ** nAge)
     return f_age
 
 
-def f_soil_water(ASW, ASW_max, SWconst, SWpower):
+def f_soil_water(ASW: Array, ASW_max: Array, SWconst: Array, SWpower: Array) -> Array:
     """
     Soil water stress function.
 
@@ -131,18 +136,18 @@ def f_soil_water(ASW, ASW_max, SWconst, SWpower):
 
     Parameters
     ----------
-    ASW : float
+    ASW : Array
         Available soil water.
-    ASW_max : float
+    ASW_max : Array
         Maximum available soil water.
-    SWconst : float
+    SWconst : Array
         Scaling constant controlling stress onset.
-    SWpower : float
+    SWpower : Array
         Exponent controlling stress sensitivity.
 
     Returns
     -------
-    f_sw : float
+    f_sw : Array
         Soil water stress factor clipped to [0, 1].
     """
     SWdef = 1.0 - ASW / (ASW_max + 1e-8)
@@ -151,7 +156,7 @@ def f_soil_water(ASW, ASW_max, SWconst, SWpower):
     return f_sw
 
 
-def f_nutrition(FR, fN0, fNn):
+def f_nutrition(FR: Array, fN0: Array, fNn: Array) -> Array:
     """
     Soil nutrition modifier from the 3-PG model.
 
@@ -160,16 +165,16 @@ def f_nutrition(FR, fN0, fNn):
 
     Parameters
     ----------
-    fertility : float
+    fertility : Array
         Soil fertility index (0-1).
-    fN0 : float
+    fN0 : Array
         Minimum modifier at zero fertility.
-    fNn : float
+    fNn : Array
         Nutrition response exponent.
 
     Returns
     -------
-    f_N : float or ndarray
+    f_N : Array
         Nutrition modifier.
     """
     f_N = 1.0 - (1.0 - fN0) * (1.0 - FR) ** fNn
@@ -178,7 +183,7 @@ def f_nutrition(FR, fN0, fNn):
     return f_N
 
 
-def compute_dbh(WS: float, aWs: float, nWs: float) -> float:
+def compute_dbh(WS: Array, aWs: Array, nWs: Array) -> Array:
     """
     Compute DBH from stem biomass per tree (3-PG).
 
@@ -186,23 +191,23 @@ def compute_dbh(WS: float, aWs: float, nWs: float) -> float:
 
     Parameters
     ----------
-    WS : float
+    WS : Array
         Stem biomass per tree.
-    aWs : float
+    aWs : Array
         Stem biomass allometric coefficient.
-    nWs : float
+    nWs : Array
         Stem biomass exponent.
 
     Returns
     -------
-    dbh : float
+    dbh : Array
         Diameter at breast height (cm).
     """
     dbh = (WS / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
     return dbh
 
 
-def compute_light_interception(k, LAI, canopy_cover=1.0):
+def compute_light_interception(k: Array, LAI: Array, canopy_cover: Array | None = None):
     """
     Compute the light interception.
 
@@ -211,29 +216,32 @@ def compute_light_interception(k, LAI, canopy_cover=1.0):
 
     Parameters
     ----------
-    k : float
+    k : Array
         Canopy light extinction coefficient (dimensionless).
-    LAI : float
+    LAI : Array
         Leaf area index (m² leaf m⁻² ground).
-    canopy_cover : float, optional
+    canopy_cover : Array, optional
         Fractional canopy cover (0 < canopy_cover ≤ 1). Default is 1.
 
     Returns
     -------
-    lightIntcptn : float
+    lightIntcptn : Array
         Fraction of incident radiation intercepted by the canopy (0-1).
     """
+    if canopy_cover is None:
+        canopy_cover = jnp.asarray(1.0)
+
     lightIntcptn = 1.0 - jnp.exp(-k * LAI / canopy_cover)
     return lightIntcptn
 
 
 def compute_lai(
-    WF: float,
-    stand_age_months: float,
-    SLA0: float,
-    SLA1: float,
-    tSLA: float,
-):
+    WF: Array,
+    stand_age_months: Array,
+    SLA0: Array,
+    SLA1: Array,
+    tSLA: Array,
+) -> Array:
     """
     Compute Leaf Area Index (LAI) from foliage biomass and stand age.
 
@@ -252,20 +260,20 @@ def compute_lai(
 
     Parameters
     ----------
-    WF : float
+    WF : Array
         Foliage biomass per unit ground area (t ha⁻¹).
-    stand_age_months : float
+    stand_age_months : Array
         Stand age (months).
-    SLA0 : float
+    SLA0 : Array
         Minimum SLA at old age (m² kg⁻¹).
-    SLA1 : float
+    SLA1 : Array
         Difference between maximum and minimum SLA (m² kg⁻¹).
-    tSLA : float
+    tSLA : Array
         Half-life for SLA decline (years).
 
     Returns
     -------
-    LAI : float
+    LAI : Array
         Leaf Area Index (m² leaf m⁻² ground).
     """
     stand_age_years = stand_age_months / 12.0
@@ -277,7 +285,7 @@ def compute_lai(
     return LAI
 
 
-def compute_root_allocation(fN: float, phi_phys: float, r_x: float, r_n: float) -> float:
+def compute_root_allocation(fN: Array, phi_phys: Array, r_x: Array, r_n: Array) -> Array:
     """
     Compute the fraction of net production allocated to roots.
 
@@ -289,18 +297,18 @@ def compute_root_allocation(fN: float, phi_phys: float, r_x: float, r_n: float) 
 
     Parameters
     ----------
-    fN : float
+    fN : Array
         Soil nutrition modifier (0-1).
-    phi_phys : float
+    phi_phys : Array
         Physiological modifier (0-1).
-    r_x : float
+    r_x : Array
         Maximum root allocation ratio.
-    r_n : float
+    r_n : Array
         Minimum root allocation ratio.
 
     Returns
     -------
-    eta_R : float
+    eta_R : Array
         Fraction of net production allocated to roots.
     """
     m = fN * phi_phys
@@ -310,7 +318,9 @@ def compute_root_allocation(fN: float, phi_phys: float, r_x: float, r_n: float) 
     return eta_R
 
 
-def compute_allocation_fractions(B: float, eta_R: float, pFS2: float, pFS20: float):
+def compute_allocation_fractions(
+    B: Array, eta_R: Array, pFS2: Array, pFS20: Array
+) -> tuple[Array, Array]:
     """
     Compute foliage and stem allocation fractions.
 
@@ -319,20 +329,20 @@ def compute_allocation_fractions(B: float, eta_R: float, pFS2: float, pFS20: flo
 
     Parameters
     ----------
-    B : float
+    B : Array
         Tree size variable (typically DBH or biomass proxy).
-    eta_R : float
+    eta_R : Array
         Fraction of production allocated to roots.
-    pFS2 : float
+    pFS2 : Array
         Foliage:stem ratio at reference size 2.
-    pFS20 : float
+    pFS20 : Array
         Foliage:stem ratio at reference size 20.
 
     Returns
     -------
-    eta_F : float
+    eta_F : Array
         Fraction of production allocated to foliage.
-    eta_S : float
+    eta_S : Array
         Fraction of production allocated to stem.
     """
     np_alloc = jnp.log(pFS20 / (pFS2 + 1e-8)) / jnp.log(10.0)
@@ -344,24 +354,26 @@ def compute_allocation_fractions(B: float, eta_R: float, pFS2: float, pFS20: flo
     return eta_F, eta_S
 
 
-def compute_litterfall_rate(age_months: float, gammaF0: float, gammaF1: float, tgammaF: float):
+def compute_litterfall_rate(
+    age_months: Array, gammaF0: Array, gammaF1: Array, tgammaF: Array
+) -> Array:
     """
     Compute foliage litterfall rate as a function of stand age.
 
     Parameters
     ----------
-    age_months : float
+    age_months : Array
         Stand age (months).
-    gammaF0 : float
+    gammaF0 : Array
         Litterfall rate at young age.
-    gammaF1 : float
+    gammaF1 : Array
         Minimum litterfall rate at old age.
-    tgammaF : float
+    tgammaF : Array
         Characteristic age controlling litterfall decline (months).
 
     Returns
     -------
-    gammaF : float
+    gammaF : Array
         Foliage litterfall rate.
     """
     gammaF = gammaF1 + (gammaF0 - gammaF1) * jnp.exp(
@@ -370,28 +382,33 @@ def compute_litterfall_rate(age_months: float, gammaF0: float, gammaF1: float, t
     return gammaF
 
 
-def apply_self_thinning(WS: Array, N: float, wSx: float, max_mortality: float = 0.05):
+def apply_self_thinning(
+    WS: Array, N: Array, wSx: Array, max_mortality: Array | None = None
+) -> tuple[Array, Array]:
     """
     Apply self-thinning mortality based on size-density constraints.
 
     Parameters
     ----------
-    WS : float
+    WS : Array
         Stand stem biomass (t ha⁻¹).
-    N : float
+    N : Array
         Stocking density (trees ha⁻¹).
-    wSx : float
+    wSx : Array
         Maximum stem biomass parameter.
-    max_mortality : float, optional
+    max_mortality : Array, optional
         Maximum fractional mortality per timestep.
 
     Returns
     -------
-    WS_new : float
+    WS_new : Array
         Updated stem biomass after self-thinning (t ha⁻¹).
-    N_new : float
+    N_new : Array
         Updated stocking density after self-thinning (trees ha⁻¹).
     """
+    if max_mortality is None:
+        max_mortality = jnp.asarray(0.05)
+
     wS = 1000.0 * WS / (N + 1e-8)
 
     wSmax = wSx * (1000.0 / (N + 1e-8)) ** 1.5

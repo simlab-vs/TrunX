@@ -1,11 +1,9 @@
 """Base implementation of 3PG Model."""
 
 import jax.numpy as jnp
-from jax import grad
-
 import polars as pl
-
 from helper_function import plot_outputs, run_3pg, ws_final
+from jax import grad
 from model_inputs import Params, State
 from read_excel_data import read_climate_data, read_site_data, read_species_data
 
