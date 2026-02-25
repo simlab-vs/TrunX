@@ -5,6 +5,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 from jax import Array
 from model_inputs import State
 
@@ -517,35 +518,54 @@ def ws_final(alphaCx, CoeffCond, Y_val, params, initial_state, climate, site, sp
     return final_state.WS
 
 
-def plot_outputs(outputs):
+def plot_outputs(outputs, start_month):
     """Visualize key 3-PG state variables over time."""
-    months = jnp.arange(outputs["WS"].shape[0])
+    num_months = outputs["WS"].shape[0]
+
+    all_months = [start_month + np.timedelta64(i, "M") for i in range(num_months)]
+    years = [str(m)[:4] for m in all_months]
+
+    months = jnp.arange(num_months)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10), sharex=True)
 
+    # Top row
     axes[0, 0].plot(months, outputs["DBH"])
-    axes[0, 0].set_ylabel("DBH")
+    axes[0, 0].set_ylabel(r"DBH (cm)")
 
     axes[0, 1].plot(months, outputs["LAI"])
-    axes[0, 1].set_ylabel("LAI")
+    axes[0, 1].set_ylabel("LAI (dimensionless)")
 
     axes[0, 2].plot(months, outputs["GPP"])
-    axes[0, 2].set_ylabel("GPP")
+    axes[0, 2].set_ylabel(r"GPP ($\mathrm{mol\ C\ m^{-2}}$)")
 
+    # Bottom row
     axes[1, 0].plot(months, outputs["WS"])
-    axes[1, 0].set_ylabel("Stem biomass (kg)")
+    axes[1, 0].set_ylabel(r"Stem biomass ($\mathrm{kg\ ha^{-1}}$)")
 
     axes[1, 1].plot(months, outputs["WF"])
-    axes[1, 1].set_ylabel("Foliage biomass (kg)")
+    axes[1, 1].set_ylabel(r"Foliage biomass ($\mathrm{kg\ ha^{-1}}$)")
 
     axes[1, 2].plot(months, outputs["WR"])
-    axes[1, 2].set_ylabel("Root biomass (kg)")
+    axes[1, 2].set_ylabel(r"Root biomass ($\mathrm{kg\ ha^{-1}}$)")
+
+    tick_indices = [
+        i for i, m in enumerate(all_months) if m.astype("datetime64[M]").astype(int) % 12 == 0
+    ]
+    tick_labels = [years[i] for i in tick_indices]
+    last_year = int(years[-1])
+    if int(tick_labels[-1]) < last_year + 1:
+        tick_indices.append(num_months - 1)
+        tick_labels.append(str(last_year + 1))
 
     for ax in axes.flat:
+        ax.set_xticks(tick_indices)
+        ax.set_xticklabels(tick_labels, rotation=45, ha="right")
         ax.grid(True, alpha=0.3)
-        ax.set_xlabel("Time (months)")
+        ax.set_xlabel("Year")
 
     plt.tight_layout()
+    plt.savefig("./images/3PG.png")
     plt.show()
 
 

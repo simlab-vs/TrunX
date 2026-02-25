@@ -79,4 +79,4 @@ if __name__ == "__main__":
     print("∂WS/∂CoeffCond:", grad_Kg)
     print("∂WS/∂Y:", grad_Y)
 
-    plot_outputs(outputs)
+    plot_outputs(outputs, climate.start_month)
