@@ -10,33 +10,20 @@ import seaborn as sns
 
 pio.renderers.default = "notebook"
 
-def plot_yearwise_social_class(
-    tdf,
-    ax,
-    title = None,
-    height=4,
-    rotate_xticks=45
-):
+
+def plot_yearwise_social_class(tdf, ax, title=None, height=4, rotate_xticks=45):
     """Plot year wise social class from ICP data."""
     year_counts = (
-        tdf
-        .select("period_end", "social_class_mode")
+        tdf.select("period_end", "social_class_mode")
         .drop_nulls()
-        .with_columns(
-            pl.col("period_end").dt.year().alias("year")
-        )
+        .with_columns(pl.col("period_end").dt.year().alias("year"))
         .group_by(["year", "social_class_mode"])
         .len(name="count")
         .sort("year")
     )
 
     sns.barplot(
-        data=year_counts,
-        x="year",
-        y="count",
-        hue="social_class_mode",
-        errorbar=None,
-        ax=ax
+        data=year_counts, x="year", y="count", hue="social_class_mode", errorbar=None, ax=ax
     )
 
     ax.set_xlabel("Year")
@@ -50,6 +37,7 @@ def plot_yearwise_social_class(
 
     return ax
 
+
 def plot_geographic_location_species(species_df):
     """Plot geographic location of species."""
     spruce_df = species_df.filter(pl.col("specie") == "Picea abies")
@@ -57,18 +45,17 @@ def plot_geographic_location_species(species_df):
     beech_df = species_df.filter(pl.col("specie") == "Fagus sylvatica")
     oak_df = species_df.filter(pl.col("specie").is_in(["Quercus robur", "Quercus petraea"]))
 
-    # Overlaps 
+    # Overlaps
     overlaps = (
-        species_df
-        .group_by(["Lat", "Lon"])
+        species_df.group_by(["Lat", "Lon"])
         .agg(
-            pl.col("specie").n_unique().alias("n_species"),
-            pl.col("specie").unique().alias("species_list"),
+            pl.col("Species").n_unique().alias("n_species"),
+            pl.col("Species").unique().alias("species_list"),
         )
         .filter(pl.col("n_species") > 1)
     )
 
-    # Plot 
+    # Plot
     HOVER_TMPL = (
         "<b>Latitude:</b> %{lat}<br>"
         "<b>Longitude:</b> %{lon}<br>"
@@ -92,10 +79,10 @@ def plot_geographic_location_species(species_df):
         )
 
     species_layers = [
-        ("Spruce Plots", spruce_df, "green",  ["Spruce"] * len(spruce_df)),
-        ("Pine Plots",   pine_df,   "red",    ["Pine"]   * len(pine_df)),
-        ("Beech Plots",  beech_df,  "orange", ["Beech"] * len(beech_df)),
-        ("Oak Plots",    oak_df,    "purple", ["Oak"]   * len(oak_df)),
+        ("Spruce Plots", spruce_df, "green", ["Spruce"] * len(spruce_df)),
+        ("Pine Plots", pine_df, "red", ["Pine"] * len(pine_df)),
+        ("Beech Plots", beech_df, "orange", ["Beech"] * len(beech_df)),
+        ("Oak Plots", oak_df, "purple", ["Oak"] * len(oak_df)),
     ]
 
     for name, df, color, text in species_layers:
@@ -176,10 +163,7 @@ def plot_histograms_grid(
     n_rows = math.ceil(n_plots / n_cols)
 
     fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(figsize_per_col * n_cols, figsize_per_row * n_rows),
-        squeeze=False
+        n_rows, n_cols, figsize=(figsize_per_col * n_cols, figsize_per_row * n_rows), squeeze=False
     )
 
     axes = axes.flatten()
@@ -195,13 +179,14 @@ def plot_histograms_grid(
             ax.set_xlabel(col)
             ax.set_ylabel("Count")
             ax.text(
-                0.5, 0.5,
+                0.5,
+                0.5,
                 "No data available",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
                 fontsize=10,
-                color="gray"
+                color="gray",
             )
             ax.set_xticks([])
             ax.set_yticks([])
@@ -223,9 +208,9 @@ def plot_histograms_grid(
         ax.set_ylabel(stat.capitalize())
 
     # Remove unused axes
-    for ax in axes[len(columns):]:
+    for ax in axes[len(columns) :]:
         ax.remove()
 
     plt.tight_layout()
-    
-    return fig, axes[:len(columns)]
+
+    return fig, axes[: len(columns)]
