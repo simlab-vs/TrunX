@@ -10,10 +10,11 @@ import seaborn as sns
 
 pio.renderers.default = "notebook"
 
+
 def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
     """
     Plot bar charts of social_class_mode counts per year for each plot_id.
-    
+
     Parameters
     ----------
         df (pl.DataFrame): Polars DataFrame containing the columns:
@@ -23,42 +24,39 @@ def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
         n_cols (int): number of columns in subplot grid
     """
     year_counts = (
-        df
-        .select(["plot_id", "period_end", "social_class_mode"])
+        df.select(["plot_id", "period_end", "social_class_mode"])
         .drop_nulls()
         .with_columns(pl.col("period_end").dt.year().alias("year"))
         .group_by(["plot_id", "year", "social_class_mode"])
         .agg(pl.count().alias("count"))
         .sort("year")
     )
-    
+
     plots_with_years = (
         year_counts.group_by("plot_id")
         .agg(pl.col("year").n_unique().alias("num_years"))
         .filter(pl.col("num_years") == pl.col("num_years").max())
         .select("plot_id")
     )
-    
+
     year_counts_filtered = year_counts.join(plots_with_years, on="plot_id", how="inner")
-    
+
     plot_ids = year_counts_filtered.select("plot_id").unique().to_series().to_list()
     num_classes = year_counts_filtered.select("social_class_mode").n_unique()
-    unique_classes = year_counts_filtered.select("social_class_mode").unique().to_series().sort().to_list()
-    
+    unique_classes = (
+        year_counts_filtered.select("social_class_mode").unique().to_series().sort().to_list()
+    )
+
     palette = sns.cubehelix_palette(n_colors=num_classes, as_cmap=False)
-    color_dict = dict(zip(unique_classes, palette))
-    
+    color_dict = dict(zip(unique_classes, palette, strict=True))
+
     n_rows = math.ceil(len(plot_ids) / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows), sharey=True)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharey=True)
     axes = axes.flatten()
-    
+
     for i, plot_id in enumerate(plot_ids):
-        df_plot = (
-            year_counts_filtered
-            .filter(pl.col("plot_id") == plot_id)
-            .sort("year")
-        )
-        
+        df_plot = year_counts_filtered.filter(pl.col("plot_id") == plot_id).sort("year")
+
         sns.barplot(
             data=df_plot,
             x="year",
@@ -66,28 +64,34 @@ def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
             hue="social_class_mode",
             palette=color_dict,
             errorbar=None,
-            ax=axes[i]
+            ax=axes[i],
         )
         axes[i].set_title(f"Plot {plot_id}")
         axes[i].legend_.remove()
-    
-    for j in range(i+1, len(axes)):
+
+    for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
-    
+
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper right", title="Social Class Mode")
-    
+
     plt.tight_layout()
     plt.show()
 
 
-def metric_change_per_plot_tree(df: pl.DataFrame, Species: str = None, metric: str="social_class_mode", req_years: int = None, plot_id: str = "All"):
+def metric_change_per_plot_tree(
+    df: pl.DataFrame,
+    Species: str = None,
+    metric: str = "social_class_mode",
+    req_years: int = None,
+    plot_id: str = "All",
+):
     """
-    Plots the variability of a specified metric per tree within plots over years.
+    Plot the variability of a specified metric per tree within plots over years.
 
     Parameters
     ----------
-    df: pl.DataFrame 
+    df: pl.DataFrame
         DataFrame with columns 'tree_id', 'plot_id', metric, 'period_end'
     specie: str
         The species we need to examine
@@ -98,18 +102,17 @@ def metric_change_per_plot_tree(df: pl.DataFrame, Species: str = None, metric: s
     plot_id: str
         ID of the specific plot to plot ("All" for all plots)
     """
-
     if Species is not None:
         df = df.filter(pl.col("Species") == Species)
-    
+
     df = df.with_columns(pl.col("period_end").dt.year().alias("year"))
-    
+
     # Filter plots by number of years
     plots_years = df.group_by("plot_id").agg(pl.col("year").n_unique().alias("n_years"))
     max_n = req_years if req_years is not None else plots_years["n_years"].max()
     plots_filtered = plots_years.filter(pl.col("n_years") == max_n).select("plot_id")
     df_filtered = df.join(plots_filtered, on="plot_id", how="inner")
-    
+
     plot_ids = plots_filtered.to_series().to_list()
     if plot_id != "All":
         if plot_id not in plot_ids:
@@ -119,37 +122,61 @@ def metric_change_per_plot_tree(df: pl.DataFrame, Species: str = None, metric: s
 
     # Plotting
     if plot_id == "All":
-        n_cols, n_rows = 2, math.ceil(len(plot_ids)/2)
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(35, 5*n_rows))
+        n_cols, n_rows = 2, math.ceil(len(plot_ids) / 2)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(35, 5 * n_rows))
         axes = axes.flatten()
         for i, pid in enumerate(plot_ids):
             d = df_filtered.filter(pl.col("plot_id") == pid)
-            trees = d.group_by("tree_id").agg(pl.col(metric).n_unique().alias("n_unique")).filter(pl.col("n_unique")>1)["tree_id"].to_list()
+            trees = (
+                d.group_by("tree_id")
+                .agg(pl.col(metric).n_unique().alias("n_unique"))
+                .filter(pl.col("n_unique") > 1)["tree_id"]
+                .to_list()
+            )
             d_plot = d.filter(pl.col("tree_id").is_in(trees))
             ax = axes[i]
-            if d_plot.height>0:
-                sns.barplot(data=d_plot.to_pandas(), x="tree_id", y=metric, hue="year", palette="deep", ax=ax)
+            if d_plot.height > 0:
+                sns.barplot(
+                    data=d_plot.to_pandas(),
+                    x="tree_id",
+                    y=metric,
+                    hue="year",
+                    palette="deep",
+                    ax=ax,
+                )
             else:
-                ax.text(0.5,0.5,f"No variability in {metric}", ha='center', va='center')
+                ax.text(0.5, 0.5, f"No variability in {metric}", ha="center", va="center")
             ax.set_title(f"Plot {pid}")
             ax.tick_params(axis="x", rotation=90)
-            if ax.legend_: ax.legend_.remove()
-        for j in range(i+1,len(axes)): fig.delaxes(axes[j])
+            if ax.legend_:
+                ax.legend_.remove()
+        for j in range(i + 1, len(axes)):
+            fig.delaxes(axes[j])
         handles, labels = axes[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='upper right')
+        fig.legend(handles, labels, loc="upper right")
         plt.tight_layout()
         plt.show()
     else:
         pid = plot_ids[0]
         d = df_filtered.filter(pl.col("plot_id") == pid)
-        trees = d.group_by("tree_id").agg(pl.col(metric).n_unique().alias("n_unique")).filter(pl.col("n_unique")>1)["tree_id"].to_list()
+        trees = (
+            d.group_by("tree_id")
+            .agg(pl.col(metric).n_unique().alias("n_unique"))
+            .filter(pl.col("n_unique") > 1)["tree_id"]
+            .to_list()
+        )
         d_plot = d.filter(pl.col("tree_id").is_in(trees))
-        if d_plot.height>0:
-            fig, ax = plt.subplots(1,1,figsize=(35,5))
-            sns.barplot(data=d_plot.to_pandas(), x="tree_id", y=metric, hue="year", palette="deep", ax=ax)
-            ax.set_title(f"Plot {pid}"); ax.tick_params(axis="x", rotation=90); plt.show()
+        if d_plot.height > 0:
+            fig, ax = plt.subplots(1, 1, figsize=(35, 5))
+            sns.barplot(
+                data=d_plot.to_pandas(), x="tree_id", y=metric, hue="year", palette="deep", ax=ax
+            )
+            ax.set_title(f"Plot {pid}")
+            ax.tick_params(axis="x", rotation=90)
+            plt.show()
         else:
             print(f"No trees have variability in {metric} for plot {pid}.")
+
 
 def plot_yearwise_social_class(tdf, ax, title=None, height=4, rotate_xticks=45):
     """Plot year wise social class from ICP data."""
@@ -194,7 +221,7 @@ def plot_geographic_location_species(species_df):
         )
         .filter(pl.col("n_species") > 1)
     )
-    
+
     # Plot
     HOVER_TMPL = (
         "<b>Latitude:</b> %{lat}<br>"
