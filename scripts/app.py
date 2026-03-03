@@ -1,26 +1,14 @@
-import streamlit as st
-import pandas as pd
 import polars as pl
-import plotly.express as px
-import plotly.graph_objects as go
-
+import streamlit as st
 from support_utils import (
-    load_prepare_data, 
-    species_summary, 
+    load_prepare_data,
 )
 
 from trunx.plot_utils import (
-    metric_change_per_plot_tree,
     plot_geographic_location_species,
-    plot_histograms_grid,
-    plot_social_class_per_plot,
-    plot_yearwise_social_class,
 )
 
-st.set_page_config(
-    page_title="ICP Forests EDA",
-    layout="wide"
-)
+st.set_page_config(page_title="ICP Forests EDA", layout="wide")
 
 # --- Page selection ---
 st.sidebar.title("Navigation")
@@ -31,13 +19,11 @@ df = load_prepare_data()
 if page == "About":
     st.title("ICP Forests - EDA")
     # st.success(f"Loaded {len(df):,} rows")
-    st.write("Number of unique plots: "+ str(df.select(pl.col("plot_id")).unique().shape[0]))
-    
+    st.write("Number of unique plots: " + str(df.select(pl.col("plot_id")).unique().shape[0]))
+
     species_list = df.select(pl.col("Species")).unique().to_series().to_list()
     # Prepare data dictionary for the table
-    data = {
-        "Metric": ["Growth periods", "Unique trees", "Unique plots"]
-    }
+    data = {"Metric": ["Growth periods", "Unique trees", "Unique plots"]}
 
     # Loop over species and calculate metrics
     for species in species_list:
@@ -45,7 +31,7 @@ if page == "About":
         data[species] = [
             sdf.shape[0],  # Growth periods
             sdf.select(pl.col("tree_id")).unique().shape[0],  # Unique trees
-            sdf.select(pl.col("plot_id")).unique().shape[0]   # Unique plots
+            sdf.select(pl.col("plot_id")).unique().shape[0],  # Unique plots
         ]
 
     # Convert to Polars DataFrame for display
@@ -53,23 +39,15 @@ if page == "About":
 
     # Show as table in Streamlit
     st.dataframe(summary_df)
-        
-if page == "Explore locations":
 
+if page == "Explore locations":
     st.title("Geographic location of species")
     st.sidebar.header("Filters")
 
     species_list = df.select(pl.col("Species")).unique().to_series().to_list()
-    selected_species = st.sidebar.multiselect(
-        "Select species",
-        species_list,
-        default=species_list
-    )
+    selected_species = st.sidebar.multiselect("Select species", species_list, default=species_list)
 
-    fig = plot_geographic_location_species(
-        df,
-        selected_species=selected_species
-    )
+    fig = plot_geographic_location_species(df, selected_species=selected_species)
     st.plotly_chart(fig, use_container_width=True)
 
 
