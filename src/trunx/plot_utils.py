@@ -1,13 +1,14 @@
 """Helper functions for plots and EDA visualizations."""
 
 import math
+from typing import Optional
 
 import matplotlib.pyplot as plt
+import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import polars as pl
 import seaborn as sns
-import numpy as np
 
 pio.renderers.default = "notebook"
 
@@ -82,9 +83,9 @@ def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
 
 def metric_change_per_plot_tree(
     df: pl.DataFrame,
-    Species: str = None,
+    Species: str | None = None,
     metric: str = "social_class_mode",
-    req_years: int = None,
+    req_years: int | None = None,
     plot_id: str = "All",
 ):
     """
@@ -205,20 +206,20 @@ def plot_yearwise_social_class(tdf, ax, title=None, height=4, rotate_xticks=45):
 
     return ax
 
-def plot_geographic_location_species(species_df, selected_species = None):
-    """Plot geographic location of species."""
 
+def plot_geographic_location_species(species_df, selected_species=None):
+    """Plot geographic location of species."""
     if selected_species is not None:
         species_df = species_df.filter(pl.col("Species").is_in(selected_species))
 
     spruce_df = species_df.filter(pl.col("Species") == "Spruce")
     pine_df = species_df.filter(pl.col("Species") == "Pine")
     beech_df = species_df.filter(pl.col("Species") == "Beech")
-    oak_df = species_df.filter(pl.col("Species")=="Oak")
+    oak_df = species_df.filter(pl.col("Species") == "Oak")
 
     # Overlaps
     overlaps = (
-        species_df.group_by(["plot_id","Lat", "Lon"])
+        species_df.group_by(["plot_id", "Lat", "Lon"])
         .agg(
             pl.col("Species").n_unique().alias("n_species"),
             pl.col("Species").unique().alias("species_list"),
@@ -251,16 +252,44 @@ def plot_geographic_location_species(species_df, selected_species = None):
         )
 
     species_layers = [
-        ("Spruce", spruce_df, "green", np.column_stack([["Spruce"] * len(spruce_df), [str(s) for s in spruce_df["plot_id"].to_list()]])),
-        ("Pine", pine_df, "red", np.column_stack([["Pine"] * len(pine_df), [str(s) for s in pine_df["plot_id"].to_list()]])),
-        ("Beech", beech_df, "orange", np.column_stack([["Beech"] * len(beech_df), [str(s) for s in beech_df["plot_id"].to_list()]])),
-        ("Oak", oak_df, "purple", np.column_stack([["Oak"] * len(oak_df), [str(s) for s in oak_df["plot_id"].to_list()]])),
+        (
+            "Spruce",
+            spruce_df,
+            "green",
+            np.column_stack(
+                [["Spruce"] * len(spruce_df), [str(s) for s in spruce_df["plot_id"].to_list()]]
+            ),
+        ),
+        (
+            "Pine",
+            pine_df,
+            "red",
+            np.column_stack(
+                [["Pine"] * len(pine_df), [str(s) for s in pine_df["plot_id"].to_list()]]
+            ),
+        ),
+        (
+            "Beech",
+            beech_df,
+            "orange",
+            np.column_stack(
+                [["Beech"] * len(beech_df), [str(s) for s in beech_df["plot_id"].to_list()]]
+            ),
+        ),
+        (
+            "Oak",
+            oak_df,
+            "purple",
+            np.column_stack(
+                [["Oak"] * len(oak_df), [str(s) for s in oak_df["plot_id"].to_list()]]
+            ),
+        ),
     ]
 
     for name, df, color, text in species_layers:
         if len(df) > 0:
             add_scattermap(fig, df, name, color, text)
-        
+
     # overlaps layer
     if overlaps.height > 0:
         add_scattermap(
@@ -269,9 +298,11 @@ def plot_geographic_location_species(species_df, selected_species = None):
             "Overlapping plots",
             "black",
             np.column_stack(
-                [[", ".join(s) for s in overlaps["species_list"].to_list()], 
-                [str(s) for s in overlaps["plot_id"].to_list()]]
-                )
+                [
+                    [", ".join(s) for s in overlaps["species_list"].to_list()],
+                    [str(s) for s in overlaps["plot_id"].to_list()],
+                ]
+            ),
         )
 
     fig.update_layout(
@@ -392,6 +423,7 @@ def plot_histograms_grid(
 
     return fig, axes[: len(columns)]
 
+
 def plot_station_map(
     df,
     lat_col="Lat",
@@ -429,7 +461,6 @@ def plot_station_map(
     -------
     plotly.graph_objects.Figure
     """
-
     fig = go.Figure()
 
     fig.add_trace(
@@ -450,7 +481,7 @@ def plot_station_map(
             center=dict(
                 lat=df[lat_col].mean(),
                 lon=df[lon_col].mean(),
-            ), 
+            ),
         ),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
         legend=dict(x=0, y=1),
