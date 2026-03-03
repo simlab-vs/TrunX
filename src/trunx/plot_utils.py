@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import polars as pl
 import seaborn as sns
+import numpy as np
 
 pio.renderers.default = "notebook"
 
@@ -204,17 +205,20 @@ def plot_yearwise_social_class(tdf, ax, title=None, height=4, rotate_xticks=45):
 
     return ax
 
-
-def plot_geographic_location_species(species_df):
+def plot_geographic_location_species(species_df, selected_species = None):
     """Plot geographic location of species."""
-    spruce_df = species_df.filter(pl.col("specie") == "Picea abies")
-    pine_df = species_df.filter(pl.col("specie") == "Pinus sylvestris")
-    beech_df = species_df.filter(pl.col("specie") == "Fagus sylvatica")
-    oak_df = species_df.filter(pl.col("specie").is_in(["Quercus robur", "Quercus petraea"]))
+
+    if selected_species is not None:
+        species_df = species_df.filter(pl.col("Species").is_in(selected_species))
+
+    spruce_df = species_df.filter(pl.col("Species") == "Spruce")
+    pine_df = species_df.filter(pl.col("Species") == "Pine")
+    beech_df = species_df.filter(pl.col("Species") == "Beech")
+    oak_df = species_df.filter(pl.col("Species")=="Oak")
 
     # Overlaps
     overlaps = (
-        species_df.group_by(["Lat", "Lon"])
+        species_df.group_by(["plot_id","Lat", "Lon"])
         .agg(
             pl.col("Species").n_unique().alias("n_species"),
             pl.col("Species").unique().alias("species_list"),
@@ -224,9 +228,10 @@ def plot_geographic_location_species(species_df):
 
     # Plot
     HOVER_TMPL = (
+        "<b>Plot id:</b> %{text[1]}<br>"
         "<b>Latitude:</b> %{lat}<br>"
         "<b>Longitude:</b> %{lon}<br>"
-        "<b>Species:</b> %{text}"
+        "<b>Species:</b> %{text[0]}"
         "<extra></extra>"
     )
 
@@ -246,23 +251,28 @@ def plot_geographic_location_species(species_df):
         )
 
     species_layers = [
-        ("Spruce Plots", spruce_df, "green", ["Spruce"] * len(spruce_df)),
-        ("Pine Plots", pine_df, "red", ["Pine"] * len(pine_df)),
-        ("Beech Plots", beech_df, "orange", ["Beech"] * len(beech_df)),
-        ("Oak Plots", oak_df, "purple", ["Oak"] * len(oak_df)),
+        ("Spruce", spruce_df, "green", np.column_stack([["Spruce"] * len(spruce_df), [str(s) for s in spruce_df["plot_id"].to_list()]])),
+        ("Pine", pine_df, "red", np.column_stack([["Pine"] * len(pine_df), [str(s) for s in pine_df["plot_id"].to_list()]])),
+        ("Beech", beech_df, "orange", np.column_stack([["Beech"] * len(beech_df), [str(s) for s in beech_df["plot_id"].to_list()]])),
+        ("Oak", oak_df, "purple", np.column_stack([["Oak"] * len(oak_df), [str(s) for s in oak_df["plot_id"].to_list()]])),
     ]
 
     for name, df, color, text in species_layers:
-        add_scattermap(fig, df, name, color, text)
-
+        if len(df) > 0:
+            add_scattermap(fig, df, name, color, text)
+        
     # overlaps layer
-    add_scattermap(
-        fig,
-        overlaps,
-        "Overlapping plots",
-        "black",
-        [", ".join(s) for s in overlaps["species_list"].to_list()],
-    )
+    if overlaps.height > 0:
+        add_scattermap(
+            fig,
+            overlaps,
+            "Overlapping plots",
+            "black",
+            np.column_stack(
+                [[", ".join(s) for s in overlaps["species_list"].to_list()], 
+                [str(s) for s in overlaps["plot_id"].to_list()]]
+                )
+        )
 
     fig.update_layout(
         map=dict(
@@ -381,3 +391,69 @@ def plot_histograms_grid(
     plt.tight_layout()
 
     return fig, axes[: len(columns)]
+
+def plot_station_map(
+    df,
+    lat_col="Lat",
+    lon_col="Lon",
+    name="Stations",
+    title="",
+    hovertemplate=None,
+    marker_color="blue",
+    marker_size=8,
+    zoom=8,
+):
+    """
+    Plot station locations on a map using Plotly Scattermapbox.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing latitude and longitude columns
+    lat_col : str
+        Name of latitude column
+    lon_col : str
+        Name of longitude column
+    name : str
+        Name of the trace (legend label)
+    hovertemplate : str or None
+        Plotly hovertemplate string
+    marker_color : str
+        Marker color
+    marker_size : int
+        Marker size
+    zoom : int
+        Initial map zoom level
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lat=df[lat_col],
+            lon=df[lon_col],
+            mode="markers",
+            marker=dict(size=marker_size, color=marker_color),
+            name=name,
+            hovertemplate=hovertemplate,
+        )
+    )
+
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            zoom=zoom,
+            center=dict(
+                lat=df[lat_col].mean(),
+                lon=df[lon_col].mean(),
+            ), 
+        ),
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        legend=dict(x=0, y=1),
+    )
+
+    return fig
