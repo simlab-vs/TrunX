@@ -8,13 +8,21 @@ from model_inputs import Params, State
 from read_excel_data import read_climate_data, read_site_data, read_species_data
 
 if __name__ == "__main__":
-    climate = read_climate_data("./data/data.input.xlsx", sheet_name="climate")
+    # file_path = "./data/data_semisynthetic.xlsx"
+    file_path = "./data/data.input.xlsx"
 
-    site_data = read_site_data("./data/data.input.xlsx", sheet_name="site")
+    if file_path == "./data/data_semisynthetic.xlsx":
+        fig_name = "3PG_ICPdata.png"
+    elif file_path == "./data/data.input.xlsx":
+        fig_name = "3PG_trotsiuk.png"
 
-    species_data = read_species_data("./data/data.input.xlsx", sheet_name="species")
+    climate = read_climate_data(file_path, sheet_name="climate")
 
-    params_df = pl.read_excel("./data/data.input.xlsx", sheet_name="parameters")
+    site_data = read_site_data(file_path, sheet_name="site")
+
+    species_data = read_species_data(file_path, sheet_name="species")
+
+    params_df = pl.read_excel(file_path, sheet_name="parameters")
 
     default_params = dict(
         zip(params_df["parameter"].to_list(), params_df["Fagus sylvatica"].to_list(), strict=True)
@@ -79,4 +87,4 @@ if __name__ == "__main__":
     print("∂WS/∂CoeffCond:", grad_Kg)
     print("∂WS/∂Y:", grad_Y)
 
-    plot_outputs(outputs, climate.start_month)
+    plot_outputs(outputs, climate.start_month, fig_name)

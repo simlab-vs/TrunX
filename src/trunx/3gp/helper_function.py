@@ -1,5 +1,6 @@
 """Helper functions to implement 3PG model."""
 
+import os
 from typing import Optional
 
 import jax
@@ -518,8 +519,11 @@ def ws_final(alphaCx, CoeffCond, Y_val, params, initial_state, climate, site, sp
     return final_state.WS
 
 
-def plot_outputs(outputs, start_month):
+def plot_outputs(outputs, start_month, fig_name: str | None = None):
     """Visualize key 3-PG state variables over time."""
+    if fig_name is None:
+        fig_name = "3PG.png"
+
     num_months = outputs["WS"].shape[0]
 
     all_months = [start_month + np.timedelta64(i, "M") for i in range(num_months)]
@@ -565,7 +569,7 @@ def plot_outputs(outputs, start_month):
         ax.set_xlabel("Year")
 
     plt.tight_layout()
-    plt.savefig("./images/3PG.png")
+    plt.savefig(os.path.join("./images/", fig_name))
     plt.show()
 
 
