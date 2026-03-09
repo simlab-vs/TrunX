@@ -5,7 +5,6 @@ Used for centralizing paths definitions, among other things.
 
 import os
 from pathlib import Path
-
 from typing import Literal
 
 import yaml
