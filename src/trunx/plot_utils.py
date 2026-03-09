@@ -5,6 +5,7 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 import polars as pl
@@ -13,7 +14,15 @@ import seaborn as sns
 pio.renderers.default = "notebook"
 
 
-def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
+def plot_social_class_per_plot(
+    df: pl.DataFrame,
+    n_cols: int = 4,
+    x="year",
+    y="norm count",
+    hue="social_class_mode",
+    normalized=True,
+    plot_type: str = "bar",
+):
     """
     Plot bar charts of social_class_mode counts per year for each plot_id.
 
@@ -25,6 +34,9 @@ def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
             - social_class_mode
         n_cols (int): number of columns in subplot grid
     """
+    if not normalized:
+        y = "count"
+
     year_counts = (
         df.select(["plot_id", "period_end", "social_class_mode"])
         .drop_nulls()
@@ -43,33 +55,76 @@ def plot_social_class_per_plot(df: pl.DataFrame, n_cols: int = 4):
 
     year_counts_filtered = year_counts.join(plots_with_years, on="plot_id", how="inner")
 
+    if normalized:
+        year_counts_filtered = year_counts_filtered.join(
+            year_counts_filtered.group_by(["plot_id", "year"]).agg(
+                pl.sum("count").alias("total_count")
+            ),
+            on=["plot_id", "year"],
+        ).with_columns((pl.col("count") / pl.col("total_count")).alias("norm count"))
+
     plot_ids = year_counts_filtered.select("plot_id").unique().to_series().to_list()
     num_classes = year_counts_filtered.select("social_class_mode").n_unique()
     unique_classes = (
         year_counts_filtered.select("social_class_mode").unique().to_series().sort().to_list()
     )
+    num_years = year_counts_filtered.select("year").n_unique()
+    unique_years = year_counts_filtered.select("year").unique().to_series().sort().to_list()
 
-    palette = sns.cubehelix_palette(n_colors=num_classes, as_cmap=False)
-    color_dict = dict(zip(unique_classes, palette, strict=True))
+    if hue == "social_class_mode":
+        palette = sns.cubehelix_palette(n_colors=num_classes, as_cmap=False)
+        color_dict = dict(zip(unique_classes, palette, strict=True))
+    elif hue == "year":
+        palette = sns.cubehelix_palette(n_colors=num_years, as_cmap=False)
+        color_dict = dict(zip(unique_years, palette, strict=True))
+    else:
+        raise ValueError("hue must be 'social_class_mode' or 'year'")
 
     n_rows = math.ceil(len(plot_ids) / n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharey=True)
     axes = axes.flatten()
 
     for i, plot_id in enumerate(plot_ids):
-        df_plot = year_counts_filtered.filter(pl.col("plot_id") == plot_id).sort("year")
-
-        sns.barplot(
-            data=df_plot,
-            x="year",
-            y="count",
-            hue="social_class_mode",
-            palette=color_dict,
-            errorbar=None,
-            ax=axes[i],
+        df_plot = (
+            year_counts_filtered.filter(pl.col("plot_id") == plot_id).sort("year").to_pandas()
         )
+
+        if plot_type == "bar":
+            sns.barplot(
+                data=df_plot,
+                x=x,
+                y=y,
+                hue=hue,
+                palette=color_dict,
+                errorbar=None,
+                ax=axes[i],
+            )
+            axes[i].set_ylabel("Proportion" if normalized else "Count")
+
+        elif plot_type == "kde":
+            unique_hues = df_plot[hue].unique()
+            for cls in unique_hues:
+                subset = df_plot[df_plot[hue] == cls]
+                if subset.empty:
+                    continue
+                sns.kdeplot(
+                    data=subset,
+                    x=x,
+                    weights=subset[y] if normalized else None,
+                    fill=True,
+                    alpha=0.5,
+                    label=cls,
+                    color=color_dict[cls],
+                    ax=axes[i],
+                )
+            axes[i].set_ylabel("Density" if normalized else "Count")
+
+        else:
+            raise ValueError("plot_type must be 'bar' or 'kde'")
+
         axes[i].set_title(f"Plot {plot_id}")
-        axes[i].legend_.remove()
+        if axes[i].get_legend() is not None:
+            axes[i].get_legend().remove()
 
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
