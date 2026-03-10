@@ -1,25 +1,29 @@
+import matplotlib.pyplot as plt
+import pandas as pd
 import polars as pl
+import seaborn as sns
 import streamlit as st
 from support_utils import (
     load_prepare_data,
 )
 
+from trunx.gp3.PG3_model_impl import run_threepg_main
 from trunx.plot_utils import (
     plot_geographic_location_species,
 )
-
-from trunx.gp3.PG3_model_impl import run_threepg_main
-
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
 
 st.set_page_config(page_title="ICP Forests EDA", layout="wide")
 
 # --- Page selection ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select a page:", ["About", "Explore locations", # "EDA analysis",
-                                           "3PG model"])
+page = st.sidebar.radio(
+    "Select a page:",
+    [
+        "About",
+        "Explore locations",  # "EDA analysis",
+        "3PG model",
+    ],
+)
 
 df = load_prepare_data()
 
@@ -28,7 +32,7 @@ def get_DBH_plot():
     tdf = pd.read_pickle("./data/raw/ICP/icpf/03_tidy/icpf-level2_growth-periods_with-cc.pkl.gzip")
     tdf = pl.DataFrame(pl.from_pandas(tdf))
     filtered_df = tdf.filter(pl.col("specie").is_in(["Fagus sylvatica"]))
-    df_growth = filtered_df.filter(pl.col("plot_id")== "50.0013").to_pandas()
+    df_growth = filtered_df.filter(pl.col("plot_id") == "50.0013").to_pandas()
 
     avg_diameter = df_growth.groupby("period_end")["diameter_end"].mean().reset_index()
 
@@ -38,11 +42,11 @@ def get_DBH_plot():
         data=df_growth,
         x="period_end",
         y="diameter_end",
-        hue="tree_id",   # use this for multiple trees
+        hue="tree_id",  # use this for multiple trees
         marker="o",
         palette="tab10",
         legend=False,
-        alpha = 0.5
+        alpha=0.5,
     )
 
     sns.lineplot(
@@ -52,7 +56,7 @@ def get_DBH_plot():
         color="black",
         marker="o",
         linewidth=2.5,
-        label="Average"  # optional: shows legend only for the average
+        label="Average",  # optional: shows legend only for the average
     )
 
     plt.title("")
@@ -62,6 +66,7 @@ def get_DBH_plot():
     plt.grid(alpha=0.3)
     plt.tight_layout()
     return fig
+
 
 if page == "About":
     st.title("ICP Forests")
@@ -101,10 +106,7 @@ if page == "3PG model":
     st.title("3PG model implementation")
     st.sidebar.header("Filters")
 
-    file_choice = st.sidebar.selectbox(
-    "Select dataset",
-    ["ICP data", "Trotsiuk data"]
-    )
+    file_choice = st.sidebar.selectbox("Select dataset", ["ICP data", "Trotsiuk data"])
     # Map choice to path
     if file_choice == "ICP data":
         file_path = "./data/data_semisynthetic.xlsx"
@@ -112,7 +114,7 @@ if page == "3PG model":
     else:
         st.subheader("Implementation using Trotsiuk eg. weather data for beech")
         file_path = "./data/data.input.xlsx"
-    
+
     fig = run_threepg_main(file_path)
 
     st.pyplot(fig)
@@ -120,9 +122,3 @@ if page == "3PG model":
     if file_choice == "ICP data":
         fig = get_DBH_plot()
         st.pyplot(fig)
-
-            
-
-
-
-
