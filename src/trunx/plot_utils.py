@@ -373,7 +373,7 @@ def plot_geographic_location_species(species_df, selected_species=None):
         legend=dict(x=0, y=1),
     )
 
-    fig.show()
+    return fig
 
 
 def plot_histograms_grid(

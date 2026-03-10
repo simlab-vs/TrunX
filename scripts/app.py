@@ -1,8 +1,12 @@
+import matplotlib.pyplot as plt
+import pandas as pd
 import polars as pl
+import seaborn as sns
 import streamlit as st
 from support_utils import (
     load_prepare_data,
 )
+from trunx.gp3.PG3_model_impl import run_threepg_main
 
 from trunx.plot_utils import (
     plot_geographic_location_species,
@@ -12,14 +16,62 @@ st.set_page_config(page_title="ICP Forests EDA", layout="wide")
 
 # --- Page selection ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select a page:", ["About", "Explore locations", "EDA analysis"])
+page = st.sidebar.radio(
+    "Select a page:",
+    [
+        "About",
+        "Explore locations",  # "EDA analysis",
+        "3PG model",
+    ],
+)
 
 df = load_prepare_data()
 
+
+def get_DBH_plot():
+    tdf = pd.read_pickle("./data/raw/ICP/icpf/03_tidy/icpf-level2_growth-periods_with-cc.pkl.gzip")
+    tdf = pl.DataFrame(pl.from_pandas(tdf))
+    filtered_df = tdf.filter(pl.col("specie").is_in(["Fagus sylvatica"]))
+    df_growth = filtered_df.filter(pl.col("plot_id") == "50.0013").to_pandas()
+
+    avg_diameter = df_growth.groupby("period_end")["diameter_end"].mean().reset_index()
+
+    fig = plt.figure(figsize=(12, 6))
+
+    sns.lineplot(
+        data=df_growth,
+        x="period_end",
+        y="diameter_end",
+        hue="tree_id",  # use this for multiple trees
+        marker="o",
+        palette="tab10",
+        legend=False,
+        alpha=0.5,
+    )
+
+    sns.lineplot(
+        data=avg_diameter,
+        x="period_end",
+        y="diameter_end",
+        color="black",
+        marker="o",
+        linewidth=2.5,
+        label="Average",  # optional: shows legend only for the average
+    )
+
+    plt.title("")
+    plt.xlabel("Year")
+    plt.ylabel("DBH [cm]")
+    plt.xticks(rotation=45)
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
 if page == "About":
-    st.title("ICP Forests - EDA")
+    st.title("ICP Forests")
     # st.success(f"Loaded {len(df):,} rows")
-    st.write("Number of unique plots: " + str(df.select(pl.col("plot_id")).unique().shape[0]))
+    st.subheader("Number of unique plots: " + str(df.select(pl.col("plot_id")).unique().shape[0]))
 
     species_list = df.select(pl.col("Species")).unique().to_series().to_list()
     # Prepare data dictionary for the table
@@ -50,112 +102,23 @@ if page == "Explore locations":
     fig = plot_geographic_location_species(df, selected_species=selected_species)
     st.plotly_chart(fig, use_container_width=True)
 
+if page == "3PG model":
+    st.title("3PG model implementation")
+    st.sidebar.header("Filters")
 
-# filtered_df = df[
-#     (df["Species"].isin(selected_species)) &
-#     (df["Year"].between(*year_range))
-# ]
+    file_choice = st.sidebar.selectbox("Select dataset", ["ICP data", "Trotsiuk data"])
+    # Map choice to path
+    if file_choice == "ICP data":
+        file_path = "./data/data_semisynthetic.xlsx"
+        st.subheader("Implementation using ICP weather data for beech (Plot id: 50.0013, CH)")
+    else:
+        st.subheader("Implementation using Trotsiuk eg. weather data for beech")
+        file_path = "./data/data.input.xlsx"
 
-# # -----------------------------
-# # KPIs
-# # -----------------------------
-# col1, col2, col3 = st.columns(3)
+    fig = run_threepg_main(file_path)
 
-# col1.metric("Plots", filtered_df["PlotID"].nunique())
-# col2.metric("Trees", filtered_df["TreeID"].nunique())
-# col3.metric("Records", len(filtered_df))
+    st.pyplot(fig)
 
-# # -----------------------------
-# # Geographic map
-# # -----------------------------
-# st.subheader("Geographic Distribution of Species")
-
-# map_df = (
-#     filtered_df
-#     .dropna(subset=["Lat", "Lon"])
-#     .groupby(["PlotID", "Species", "Lat", "Lon"])
-#     .size()
-#     .reset_index(name="Count")
-# )
-
-# fig_map = px.scatter_mapbox(
-#     map_df,
-#     lat="Lat",
-#     lon="Lon",
-#     color="Species",
-#     size="Count",
-#     zoom=4,
-#     height=500,
-#     mapbox_style="carto-positron",
-#     hover_data=["PlotID"]
-# )
-
-# st.plotly_chart(fig_map, use_container_width=True)
-
-# # -----------------------------
-# # Social class distribution
-# # -----------------------------
-# st.subheader("Social Class Distribution")
-
-# if "SocialClass" in filtered_df.columns:
-#     fig_social = px.histogram(
-#         filtered_df,
-#         x="SocialClass",
-#         color="Species",
-#         barmode="group"
-#     )
-#     st.plotly_chart(fig_social, use_container_width=True)
-# else:
-#     st.warning("Column 'SocialClass' not found.")
-
-# # -----------------------------
-# # Year-wise social class trend
-# # -----------------------------
-# st.subheader("Year-wise Social Class Trends")
-
-# if {"Year", "SocialClass"}.issubset(filtered_df.columns):
-#     trend_df = (
-#         filtered_df
-#         .groupby(["Year", "SocialClass"])
-#         .size()
-#         .reset_index(name="Count")
-#     )
-
-#     fig_trend = px.line(
-#         trend_df,
-#         x="Year",
-#         y="Count",
-#         color="SocialClass",
-#         markers=True
-#     )
-#     st.plotly_chart(fig_trend, use_container_width=True)
-
-# # -----------------------------
-# # Variable histograms
-# # -----------------------------
-# st.subheader("Environmental Variable Distributions")
-
-# numeric_cols = filtered_df.select_dtypes("number").columns.tolist()
-# default_cols = [c for c in numeric_cols if c.startswith(("ss_", "dep_", "soph_"))]
-
-# selected_vars = st.multiselect(
-#     "Select variables",
-#     numeric_cols,
-#     default=default_cols[:4]
-# )
-
-# for var in selected_vars:
-#     fig = px.histogram(
-#         filtered_df,
-#         x=var,
-#         color="Species",
-#         nbins=30,
-#         marginal="box"
-#     )
-#     st.plotly_chart(fig, use_container_width=True)
-
-# # -----------------------------
-# # Raw data preview
-# # -----------------------------
-# with st.expander("Show raw data"):
-#     st.dataframe(filtered_df.head(1000))
+    if file_choice == "ICP data":
+        fig = get_DBH_plot()
+        st.pyplot(fig)
