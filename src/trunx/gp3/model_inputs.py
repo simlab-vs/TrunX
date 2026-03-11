@@ -21,12 +21,14 @@ class State(NamedTuple):
 class ClimateData(NamedTuple):
     """Climate data information."""
 
-    T_avg: jnp.ndarray  # Average monthly temperature
-    VPD: jnp.ndarray  # Vapor pressure deficit
-    precip: jnp.ndarray  # Monthly precipitation
-    solar_rad: jnp.ndarray  # Monthly solar radiation
+    T_avg: jnp.ndarray  # Average monthly temperature (°C)
+    VPD: jnp.ndarray  # Vapor pressure deficit (kPa)
+    precip: jnp.ndarray  # Monthly precipitation (mm)
+    solar_rad: jnp.ndarray  # Monthly solar radiation (MJ/m²)
     frost_days: jnp.ndarray  # Number of frost days in a month
     n_days: jnp.ndarray  # Number of days in each month
+    co2: jnp.ndarray  # Atmospheric CO2 concentration (ppm)
+    d13catm: jnp.ndarray  # Atmospheric d13C value (‰)
     start_month: np.datetime64  # Start month of climate data
 
 

@@ -463,7 +463,7 @@ def model_step(state, climate_month, params, site, species):
     eta_R = compute_root_allocation(fN, phi, params.pRx, params.pRn)
 
     B = compute_dbh(WS, params.aWS, params.nWS)
-    eta_F, eta_S = compute_allocation_fractions(WS, eta_R, params.pFS2, params.pFS20)
+    eta_F, eta_S = compute_allocation_fractions(B, eta_R, params.pFS2, params.pFS20)
 
     # Turnover
     gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
@@ -476,7 +476,7 @@ def model_step(state, climate_month, params, site, species):
     # Self-thinning
     WS_new, N_new = apply_self_thinning(WS_new, N, params.wSx1000)
 
-    ASW_new = jnp.clip(ASW + precip - VPD * n_days * 20.0 * phi, 0.0, site.ASW_max)
+    ASW_new = jnp.clip(ASW + precip - VPD * n_days * 0.1 * lightIntcptn, 0.0, site.ASW_max)
 
     new_state = State(WF=WF_new, WR=WR_new, WS=WS_new, N=N_new, ASW=ASW_new, age=age_months + 1.0)
 
