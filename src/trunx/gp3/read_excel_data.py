@@ -39,6 +39,7 @@ def read_species_data(
         year_p, month_p = map(int, row["planted"].split("-"))
 
         sp = SpeciesData(
+            specie=str(row["species"]),
             FR=float(row["fertility"]),
             WF=float(row["biom_foliage"]),
             WR=float(row["biom_root"]),
@@ -48,7 +49,7 @@ def read_species_data(
         )
 
         species_data.append(sp)
-    print(species_data[0])
+
     return species_data[0]  # This need to be modified later to adapt for other species
 
 
@@ -81,7 +82,7 @@ def vpd_from_tmin_tmax(tmp_min: jnp.ndarray, tmp_max: jnp.ndarray) -> jnp.ndarra
     """
     es_min = saturation_vapor_pressure(tmp_min)
     es_max = saturation_vapor_pressure(tmp_max)
-    return (es_max - es_min) / 2 
+    return (es_max - es_min) / 2
 
 
 def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:

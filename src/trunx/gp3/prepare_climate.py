@@ -8,6 +8,7 @@ import polars as pl
 
 from trunx.gp3.model_inputs import ClimateData
 
+
 def get_vpd(tmin, tmax):
     """Calculate daytime vapor pressure deficit (VPD)."""
     vpd_min = 6.10780 * (17.2690 * tmin / (237.30 + tmin)).exp()
@@ -108,7 +109,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         climate = climate.with_columns(
             pl.date(pl.col("year"), pl.col("month"), pl.lit(1)).alias("date")
         )
-        
+
         if from_date < climate["date"].min() or to_date > climate["date"].max():
             raise ValueError(
                 "Requested time period is outside of provided dates in climate table."

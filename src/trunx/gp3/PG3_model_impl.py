@@ -6,11 +6,10 @@ from jax import grad
 
 from trunx.gp3.helper_function import plot_outputs, run_3pg, ws_final
 from trunx.gp3.model_inputs import Params, State
-from trunx.gp3.read_excel_data import read_climate_data, read_site_data, read_species_data
-
 from trunx.gp3.prepare_climate import prepare_climate
 from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
+from trunx.gp3.read_excel_data import read_climate_data, read_site_data, read_species_data
 
 
 def run_threepg_main(file_path):
@@ -25,7 +24,7 @@ def run_threepg_main(file_path):
 
     d_climate = pl.read_excel(file_path, sheet_name="climate")
     climate = prepare_climate(d_climate, str(site_data.site_start), str(site_data.site_end))
-    
+
     d_species = pl.read_excel(file_path, sheet_name="species")
     species_data = prepare_species(d_species)
 

@@ -1,12 +1,13 @@
 """Prepare all inputs for 3PG model."""
 
 import polars as pl
-from prepare_climate import prepare_climate
-from prepare_parameters import prepare_parameters
-from prepare_site import prepare_site
-from prepare_sizeDist import prepare_sizeDist
-from prepare_species import prepare_species
-from prepare_thinning import prepare_thinning
+
+from trunx.gp3.prepare_climate import prepare_climate
+from trunx.gp3.prepare_parameters import prepare_parameters
+from trunx.gp3.prepare_site import prepare_site
+from trunx.gp3.prepare_sizeDist import prepare_sizeDist
+from trunx.gp3.prepare_species import prepare_species
+from trunx.gp3.prepare_thinning import prepare_thinning
 
 
 def prepare_input(
@@ -50,23 +51,16 @@ def prepare_input(
                 "Please provide forcing data for co2 and d13catm in climate, if calculate_d13c = 1"
             )
 
-    climate = prepare_climate(
-        climate=climate,
-        from_=site["from"].item(),
-        to=site["to"].item(),
-    )
+    climate = prepare_climate(climate=climate)
 
     # Thinning
-    thinning = prepare_thinning(
-        thinning=thinning,
-        sp_names=species["species"].to_list(),
-    )
+    thinning = prepare_thinning(thinning=thinning, sp_names=list(species.specie))
 
     # Parameters
     parameters = prepare_parameters(
         i_parameters=i_parameters,
         parameters=parameters,
-        sp_names=species["species"].to_list(),
+        sp_names=species.specie,
     )
 
     # Size distribution
@@ -76,7 +70,7 @@ def prepare_input(
     size_dist = prepare_sizeDist(
         i_sizeDist=i_sizeDist,
         size_dist=size_dist,
-        sp_names=species["species"].to_list(),
+        sp_names=species.specie,
     )
 
     # Output

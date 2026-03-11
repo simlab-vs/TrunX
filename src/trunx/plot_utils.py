@@ -34,9 +34,7 @@ def plot_social_class_per_plot(
             - social_class_mode
         n_cols (int): number of columns in subplot grid
     """
-    if not normalized:
-        y = "count"
-
+    y = "norm count" if normalized else "count"
     year_counts = (
         df.select(["plot_id", "period_end", "social_class_mode"])
         .drop_nulls()

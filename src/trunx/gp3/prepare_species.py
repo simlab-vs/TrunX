@@ -2,9 +2,9 @@
 
 import warnings
 
-import polars as pl
-import pandas as pd
 import numpy as np
+import pandas as pd
+import polars as pl
 
 from trunx.gp3.model_inputs import SpeciesData
 
@@ -65,6 +65,7 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
         year_p, month_p = map(int, row["planted"].split("-"))
 
         sp = SpeciesData(
+            specie=str(row["species"]),
             FR=float(row["fertility"]),
             WF=float(row["biom_foliage"]),
             WR=float(row["biom_root"]),
@@ -74,7 +75,7 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
         )
 
         species_data.append(sp)
-    
+
     return species_data[0]
 
 
@@ -82,4 +83,3 @@ if __name__ == "__main__":
     species = pl.read_excel("./data/data.input.xlsx", sheet_name="species")
     species_data = prepare_species(species)
     print(species_data)
-

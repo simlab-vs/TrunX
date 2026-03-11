@@ -286,7 +286,7 @@ def compute_lai(
     SLA = jnp.where(
         tSLA != 0,
         SLA1 + (SLA0 - SLA1) * jnp.exp(-jnp.log(2.0) * (stand_age_years / tSLA) ** 2),
-        jnp.ones_like(stand_age_years) * SLA1
+        jnp.ones_like(stand_age_years) * SLA1,
     )
 
     LAI = WF * SLA * 0.1

@@ -1,10 +1,12 @@
 """Prepare site data for 3PG model."""
 
-import polars as pl
-from trunx.gp3.model_inputs import SiteData
 import numpy as np
+import polars as pl
 
-def prepare_site(site: pl.DataFrame) -> pl.DataFrame:
+from trunx.gp3.model_inputs import SiteData
+
+
+def prepare_site(site: pl.DataFrame) -> SiteData:
     """Check the site data for consistency."""
     # Ensure Polars DataFrame
     if not isinstance(site, pl.DataFrame):
