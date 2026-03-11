@@ -13,7 +13,6 @@ def read_site_data(filepath: str, sheet_name: str) -> SiteData:
 
     # Take the first row
     row = df.row(0, named=True)
-    year_i, month_i = map(int, row["from"].split("-"))
 
     site_data = SiteData(
         latitude=float(row["latitude"]),
@@ -22,6 +21,8 @@ def read_site_data(filepath: str, sheet_name: str) -> SiteData:
         ASW=float(row["asw_i"]),
         ASW_max=float(row["asw_max"]),
         ASW_min=float(row["asw_min"]),
+        site_start=np.datetime64(row["from"]),
+        site_end=np.datetime64(row["to"]),
     )
     return site_data
 
@@ -47,7 +48,7 @@ def read_species_data(
         )
 
         species_data.append(sp)
-
+    print(species_data[0])
     return species_data[0]  # This need to be modified later to adapt for other species
 
 
@@ -63,7 +64,7 @@ def saturation_vapor_pressure(T: jnp.ndarray) -> jnp.ndarray:
     -------
     kPa
     """
-    kPa = 0.6108 * jnp.exp((17.27 * T) / (T + 237.3))
+    kPa = 6.108 * jnp.exp((17.27 * T) / (T + 237.3))
     return kPa
 
 
@@ -80,7 +81,7 @@ def vpd_from_tmin_tmax(tmp_min: jnp.ndarray, tmp_max: jnp.ndarray) -> jnp.ndarra
     """
     es_min = saturation_vapor_pressure(tmp_min)
     es_max = saturation_vapor_pressure(tmp_max)
-    return es_max - es_min
+    return (es_max - es_min) / 2 
 
 
 def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:

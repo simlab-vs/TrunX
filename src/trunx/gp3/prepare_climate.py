@@ -2,9 +2,11 @@
 
 from datetime import date
 
+import jax.numpy as jnp
 import numpy as np
 import polars as pl
 
+from trunx.gp3.model_inputs import ClimateData
 
 def get_vpd(tmin, tmax):
     """Calculate daytime vapor pressure deficit (VPD)."""
@@ -106,7 +108,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         climate = climate.with_columns(
             pl.date(pl.col("year"), pl.col("month"), pl.lit(1)).alias("date")
         )
-        print(from_date, to_date, climate["date"].min(), climate["date"].max())
+        
         if from_date < climate["date"].min() or to_date > climate["date"].max():
             raise ValueError(
                 "Requested time period is outside of provided dates in climate table."
@@ -161,16 +163,25 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
 
     clim_range(climate)
 
-    # climate_data = ClimateData(
-    #     T_avg=jnp.array(climate["tmp_ave"].to_numpy()),
-    #     precip=jnp.array(climate["prcp"].to_numpy()),
-    #     solar_rad=jnp.array(climate["srad"].to_numpy()),
-    #     frost_days=jnp.array(climate["frost_days"].to_numpy()),
-    #     n_days=jnp.array(days_in_month),
-    #     VPD=jnp.array(climate["vpd_day"].to_numpy()),
-    # )
+    n_years = len(climate.select(pl.col("year")).unique())
+    start_month = np.datetime64(
+        str(climate.select(pl.col("year")).min().item())
+        + "-"
+        + str(climate.select(pl.col("month")).min().item()).zfill(2),
+        "M",
+    )
 
-    return climate
+    climate_data = ClimateData(
+        T_avg=jnp.array(climate["tmp_ave"].to_numpy()),
+        precip=jnp.array(climate["prcp"].to_numpy()),
+        solar_rad=jnp.array(climate["srad"].to_numpy()),
+        frost_days=jnp.array(climate["frost_days"].to_numpy()),
+        n_days=jnp.tile(jnp.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]), n_years),
+        VPD=jnp.array(climate["vpd_day"].to_numpy()),
+        start_month=start_month,
+    )
+
+    return climate_data
 
 
 if __name__ == "__main__":
@@ -179,6 +190,6 @@ if __name__ == "__main__":
 
     climate = pl.read_excel(file_path, sheet_name=sheet_name)
 
-    climate_out = prepare_climate(climate, "2001-01", "2010-12")
+    climate = prepare_climate(climate)
 
-    print(climate_out)
+    print(climate)

@@ -67,6 +67,6 @@ def prepare_parameters(
 if __name__ == "__main__":
     i_parameters = pl.read_csv("./data/i_parameters.csv")
 
-    parameters_out = prepare_parameters(i_parameters)
+    parameters_out = prepare_parameters(i_parameters, sp_names=["Fagus sylvatica"])
 
     print(parameters_out)

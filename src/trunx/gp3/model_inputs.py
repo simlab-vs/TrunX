@@ -39,7 +39,9 @@ class SiteData(NamedTuple):
     ASW: float  # available soil water
     ASW_max: float  # Maximum available soil water
     ASW_min: float  # Minimum available soil water
-
+    site_start:np.datetime64 # Start month of simulation
+    site_end:np.datetime64 # End month of simulation
+   
 
 class SpeciesData(NamedTuple):
     """Species data information."""

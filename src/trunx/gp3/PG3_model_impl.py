@@ -8,6 +8,10 @@ from trunx.gp3.helper_function import plot_outputs, run_3pg, ws_final
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.read_excel_data import read_climate_data, read_site_data, read_species_data
 
+from trunx.gp3.prepare_climate import prepare_climate
+from trunx.gp3.prepare_site import prepare_site
+from trunx.gp3.prepare_species import prepare_species
+
 
 def run_threepg_main(file_path):
     """Run 3PG model."""
@@ -16,11 +20,14 @@ def run_threepg_main(file_path):
     elif file_path == "./data/data.input.xlsx":
         fig_name = "3PG_trotsiuk.png"
 
-    climate = read_climate_data(file_path, sheet_name="climate")
+    d_site = pl.read_excel(file_path, sheet_name="site")
+    site_data = prepare_site(d_site)
 
-    site_data = read_site_data(file_path, sheet_name="site")
-
-    species_data = read_species_data(file_path, sheet_name="species")
+    d_climate = pl.read_excel(file_path, sheet_name="climate")
+    climate = prepare_climate(d_climate, str(site_data.site_start), str(site_data.site_end))
+    
+    d_species = pl.read_excel(file_path, sheet_name="species")
+    species_data = prepare_species(d_species)
 
     params_df = pl.read_excel(file_path, sheet_name="parameters")
 
@@ -93,8 +100,8 @@ def run_threepg_main(file_path):
 
 
 if __name__ == "__main__":
-    file_path = "./data/data_semisynthetic.xlsx"
-    # file_path = "./data/data.input.xlsx"
+    # file_path = "./data/data_semisynthetic.xlsx"
+    file_path = "./data/data.input.xlsx"
 
     fig = run_threepg_main(file_path)
 

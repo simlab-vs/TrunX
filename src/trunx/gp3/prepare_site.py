@@ -1,7 +1,8 @@
 """Prepare site data for 3PG model."""
 
 import polars as pl
-
+from trunx.gp3.model_inputs import SiteData
+import numpy as np
 
 def prepare_site(site: pl.DataFrame) -> pl.DataFrame:
     """Check the site data for consistency."""
@@ -75,22 +76,20 @@ def prepare_site(site: pl.DataFrame) -> pl.DataFrame:
     # Return final table (same columns, unchanged)
     site = site.select(required_cols)
 
-    # row = site.row(0, named=True)
+    row = site.row(0, named=True)
     # year_i, month_i = map(int, row["from"].split("-"))
 
-    # site_data = SiteData(
-    #     latitude=float(row["latitude"]),
-    #     altitude=float(row["altitude"]),
-    #     social_class=int(row["soil_class"]),
-    #     ASW=float(row["asw_i"]),
-    #     ASW_max=float(row["asw_max"]),
-    #     ASW_min=float(row["asw_min"]),
-    #     year_i=year_i,
-    #     month_i=month_i
-    # )
-    # return site_data
-
-    return site
+    site_data = SiteData(
+        latitude=float(row["latitude"]),
+        altitude=float(row["altitude"]),
+        social_class=int(row["soil_class"]),
+        ASW=float(row["asw_i"]),
+        ASW_max=float(row["asw_max"]),
+        ASW_min=float(row["asw_min"]),
+        site_start=np.datetime64(row["from"]),
+        site_end=np.datetime64(row["to"]),
+    )
+    return site_data
 
 
 if __name__ == "__main__":
@@ -100,3 +99,5 @@ if __name__ == "__main__":
     df = pl.read_excel(file_path, sheet_name=sheet_name)
 
     site_data = prepare_site(df)
+
+    print(site_data)
