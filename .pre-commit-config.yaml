@@ -9,11 +9,21 @@ repos:
       - id: trailing-whitespace
         files: \.(js|rb|md|py|sh|txt|yaml|yml|kidm)$
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.13
+  - repo: local
     hooks:
       - id: ruff-check
+        name: ruff check
+        language: system
+        entry: uvx ruff check --fix
         types_or: [ python, pyi ]
-        args: [ --fix ]
       - id: ruff-format
+        name: ruff format
+        language: system
+        entry: uvx ruff format
         types_or: [ python, pyi ]
+      - id: ty
+        name: ty check
+        language: system
+        entry: uvx ty check
+        types_or: [ python, pyi ]
+        pass_filenames: false
