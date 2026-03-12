@@ -186,6 +186,38 @@ def f_nutrition(FR: Array, fN0: Array, fNn: Array) -> Array:
     return f_N
 
 
+def compute_dbh_from_stand(WS_stand: Array, N: Array, aWs: Array, nWs: Array) -> Array:
+    """
+    Compute DBH from stand-level values.
+
+    Parameters
+    ----------
+    WS_stand : Array
+        Stand stem biomass (t/ha)
+    N : Array
+        Stem density (trees/ha)
+    aWs : Array
+        Allometric coefficient (e.g., 0.07)
+    nWs : Array
+        Allometric exponent (e.g., 2.4)
+
+    Returns
+    -------
+    DBH : Array
+        Diameter at breast height (cm)
+    """
+    # Convert stand biomass (t/ha) to per tree biomass (kg/tree)
+    # 1 t/ha = 1000 kg / 10000 m² = 0.1 kg/m²
+    # But we need total kg per tree: (WS_stand * 1000 kg/t) / (N trees/ha * 1 ha/10000 m²)
+    # Actually simpler: WS_stand (t/ha) * 1000 kg/t = kg/ha
+    # Then divide by N (trees/ha) = kg/tree
+    wS_per_tree = (WS_stand * 1000.0) / (N + 1e-8)  # kg/tree
+
+    DBH = (wS_per_tree / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
+
+    return DBH
+
+
 def compute_dbh(WS: Array, aWs: Array, nWs: Array) -> Array:
     """
     Compute DBH from stem biomass per tree (3-PG).
@@ -462,7 +494,9 @@ def model_step(state, climate_month, params, site, species):
     # Allocation
     eta_R = compute_root_allocation(fN, phi, params.pRx, params.pRn)
 
-    B = compute_dbh(WS, params.aWS, params.nWS)
+    # B = compute_dbh(WS, params.aWS, params.nWS)
+    B = compute_dbh_from_stand(WS, N, params.aWS, params.nWS)
+
     eta_F, eta_S = compute_allocation_fractions(B, eta_R, params.pFS2, params.pFS20)
 
     # Turnover

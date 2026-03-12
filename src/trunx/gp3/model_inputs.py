@@ -37,10 +37,12 @@ class SiteData(NamedTuple):
 
     latitude: float  # Latitude of the site
     altitude: float  # Altitude of the site location
-    social_class: int  # Soil parameter for soil class
+    soil_class: int  # Soil parameter for soil class
     ASW: float  # available soil water
     ASW_max: float  # Maximum available soil water
     ASW_min: float  # Minimum available soil water
+    year_i: int  # Initial year of simulation
+    month_i: int  # Initial month of simulation
     site_start: np.datetime64  # Start month of simulation
     site_end: np.datetime64  # End month of simulation
 
@@ -54,7 +56,9 @@ class SpeciesData(NamedTuple):
     WR: float  # Root mass
     WS: float  # Stem mass
     N: float  # Stems per hectare
-    planted: np.datetime64  # Planted date
+    planted: np.datetime64  # Date of planting
+    year_p: int  # Planting year
+    month_p: int  # Planting month
 
 
 class Params(NamedTuple):

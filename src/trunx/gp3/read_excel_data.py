@@ -17,12 +17,14 @@ def read_site_data(filepath: str, sheet_name: str) -> SiteData:
     site_data = SiteData(
         latitude=float(row["latitude"]),
         altitude=float(row["altitude"]),
-        social_class=int(row["soil_class"]),
+        soil_class=int(row["soil_class"]),
         ASW=float(row["asw_i"]),
         ASW_max=float(row["asw_max"]),
         ASW_min=float(row["asw_min"]),
         site_start=np.datetime64(row["from"]),
         site_end=np.datetime64(row["to"]),
+        year_i=int(row["from"].split("-")[0]),
+        month_i=int(row["from"].split("-")[1]),
     )
     return site_data
 
@@ -46,6 +48,8 @@ def read_species_data(
             WS=float(row["biom_stem"]),
             N=float(row["stems_n"]),
             planted=np.datetime64(row["planted"], "M"),
+            year_p=year_p,
+            month_p=month_p,
         )
 
         species_data.append(sp)
@@ -107,6 +111,8 @@ def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:
         n_days=jnp.tile(jnp.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]), n_years),
         VPD=vpd_from_tmin_tmax(tmp_min, tmp_max),
         start_month=start_month,
+        co2=jnp.array(df["co2"].to_numpy()),
+        d13catm=jnp.array(df["d13c"].to_numpy()),
     )
 
     return climate_data

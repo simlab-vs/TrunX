@@ -179,6 +179,8 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         frost_days=jnp.array(climate["frost_days"].to_numpy()),
         n_days=jnp.tile(jnp.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]), n_years),
         VPD=jnp.array(climate["vpd_day"].to_numpy()),
+        co2=jnp.array(climate["co2"].to_numpy()),
+        d13catm=jnp.array(climate["d13catm"].to_numpy()),
         start_month=start_month,
     )
 

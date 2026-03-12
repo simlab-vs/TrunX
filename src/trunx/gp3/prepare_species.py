@@ -72,6 +72,8 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
             WS=float(row["biom_stem"]),
             N=float(row["stems_n"]),
             planted=np.datetime64(row["planted"], "M"),
+            year_p=year_p,
+            month_p=month_p,
         )
 
         species_data.append(sp)

@@ -79,15 +79,17 @@ def prepare_site(site: pl.DataFrame) -> SiteData:
     site = site.select(required_cols)
 
     row = site.row(0, named=True)
-    # year_i, month_i = map(int, row["from"].split("-"))
+    year_i, month_i = map(int, row["from"].split("-"))
 
     site_data = SiteData(
         latitude=float(row["latitude"]),
         altitude=float(row["altitude"]),
-        social_class=int(row["soil_class"]),
+        soil_class=int(row["soil_class"]),
         ASW=float(row["asw_i"]),
         ASW_max=float(row["asw_max"]),
         ASW_min=float(row["asw_min"]),
+        year_i=year_i,
+        month_i=month_i,
         site_start=np.datetime64(row["from"]),
         site_end=np.datetime64(row["to"]),
     )
