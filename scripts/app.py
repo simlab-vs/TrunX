@@ -106,16 +106,29 @@ if page == "3PG model":
     st.title("3PG model implementation")
     st.sidebar.header("Filters")
 
-    file_choice = st.sidebar.selectbox("Select dataset", ["ICP data", "Trotsiuk data"])
+    file_choice = st.sidebar.selectbox(
+        "Select dataset",
+        [
+            "Single species Trotsiuk data",
+            "Trotsiuk data",
+            "ICP data",
+        ],
+    )
     # Map choice to path
-    if file_choice == "ICP data":
+    if file_choice == "Single species Trotsiuk data":
+        file_path = "./data/data_sspecies_nothinning.xlsx"
+        st.subheader(
+            "Implementation using Trotsiuk eg. weather data \
+            for beech (single species + no thinning)"
+        )
+    elif file_choice == "ICP data":
         file_path = "./data/data_semisynthetic.xlsx"
         st.subheader("Implementation using ICP weather data for beech (Plot id: 50.0013, CH)")
     else:
         st.subheader("Implementation using Trotsiuk eg. weather data for beech")
         file_path = "./data/data.input.xlsx"
 
-    fig = run_threepg_main(file_path)
+    fig, outputs = run_threepg_main(file_path, plot_output=True, r_comparison=True)
 
     st.pyplot(fig)
 
