@@ -20,6 +20,7 @@ class State(NamedTuple):
     prev_month: Array  # Previous month for dormancy transition detection
     water_runoff_polled: Array
 
+
 class ClimateData(NamedTuple):
     """Climate data information."""
 

@@ -7,7 +7,10 @@ import jax.numpy as jnp
 
 from trunx.gp3.helper_function import (
     apply_self_thinning,
+    calculate_base_conductance,
+    calculate_day_length,
     compute_allocation_fraction,
+    compute_asw,
     compute_canopy_cover,
     compute_dbh,
     compute_lai,
@@ -15,19 +18,17 @@ from trunx.gp3.helper_function import (
     compute_litterfall_rate,
     f_age,
     f_calpha,
+    f_cg,
     f_frost,
     f_nutrition,
     f_soil_water,
     f_temperature,
+    f_temperature_gc,
     f_vpd,
     is_dormant,
-    calculate_base_conductance,
-    f_temperature_gc,
-    f_cg,
-    calculate_day_length,
-    compute_asw
 )
 from trunx.gp3.model_inputs import State
+
 
 def model_step(state, climate_month, params, site, species):
     """Compute one model step."""
@@ -41,11 +42,11 @@ def model_step(state, climate_month, params, site, species):
     first_dormant = jnp.array(dormant & ~prev_dormant)
     first_growing = jnp.array(~dormant & prev_dormant)
 
-    WF_active = jnp.where(first_dormant, jnp.zeros_like(WF), WF)
+    WF_active = jnp.where(first_dormant, 0.0, WF)
     WF_debt_new = jnp.where(first_dormant, WF, WF_debt)
 
-    WF_active = jnp.where(first_growing, WF_debt, WF_active)[0]
-    WF_debt_new = jnp.where(first_growing, jnp.zeros_like(WF_debt), WF_debt_new)[0]
+    WF_active = jnp.where(first_growing, WF_debt, WF_active)
+    WF_debt_new = jnp.where(first_growing, 0.0, WF_debt_new)
 
     # Leaf area index
     LAI, SLA = compute_lai(WF, age_months, params.SLA0, params.SLA1, params.tSLA)
@@ -67,7 +68,7 @@ def model_step(state, climate_month, params, site, species):
 
     phi = fA * jnp.minimum(fD, fSW)
     # phi = fA * fD * fSW
-    
+
     alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha
     alpha_c = jnp.where(LAI == 0.0, 0.0, alpha_c)
     # Primary production
@@ -89,18 +90,15 @@ def model_step(state, climate_month, params, site, species):
     WF_new = jnp.where(
         dormant,
         WF_active - gammaF * WF_active,  # Only litterfall in dormant months
-        WF_active + eta_F * NPP - gammaF * WF_active, # Normal growth
+        WF_active + eta_F * NPP - gammaF * WF_active,  # Normal growth
     )
     WF_new = jnp.clip(WF_new, 0.0, None)
     # WR_new = jnp.clip(WR + eta_R * NPP - params.gammaR * WR, 0.0, None)
-    WR_new = jnp.where(
-        dormant, 
-        WR, 
-        WR + eta_R * NPP - params.gammaR * WR)
+    WR_new = jnp.where(dormant, WR, WR + eta_R * NPP - params.gammaR * WR)
     WR_new = jnp.clip(WR_new, 0.0, None)
-    
+
     WS_new = jnp.clip(WS + eta_S * NPP, 0.0, None)
-    
+
     # Self-thinning
     WS_new, N_new = apply_self_thinning(WS_new, N, params.wSx1000, params.thinPower)
 
@@ -108,14 +106,13 @@ def model_step(state, climate_month, params, site, species):
     # ASW_new = jnp.clip(
     #     ASW + precip - VPD * n_days * transp_factor * lightIntcptn, 0.0, site.ASW_max
     # )
-    
+
     gC = calculate_base_conductance(LAI, params.MaxCond, params.MinCond, params.LAIgcx)
-    ftmp_gc = f_temperature_gc(T_avg, T_max,
-                               params.Tmin, params.Topt, params.Tmax)
+    ftmp_gc = f_temperature_gc(T_avg, T_max, params.Tmin, params.Topt, params.Tmax)
     fcg = f_cg(co2, params.fCg700)
     conduct_canopy = gC * phi * ftmp_gc * fcg
     day_length = calculate_day_length(site.latitude, month)
-    
+
     asw_results = compute_asw(
         # Input state
         ASW=ASW,
@@ -136,10 +133,9 @@ def model_step(state, climate_month, params, site, species):
         LAImaxIntcptn=params.LAImaxIntcptn,
         asw_min=site.ASW_min,
         asw_max=site.ASW_max,
-        evapotra_soil=jnp.array(0.0),  # or calculated soil evaporation
     )
-    ASW_new = asw_results['ASW_final']
-    water_runoff_polled_new = asw_results['water_runoff_polled_new']
+    ASW_new = asw_results["ASW_final"]
+    water_runoff_polled_new = asw_results["water_runoff_polled_new"]
 
     new_state = State(
         WF=WF_new,

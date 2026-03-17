@@ -105,6 +105,7 @@ def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:
 
     climate_data = ClimateData(
         T_avg=jnp.array(df["tmp_ave"].to_numpy()),
+        T_max=jnp.array(df["tmp_max"].to_numpy()),
         precip=jnp.array(df["prcp"].to_numpy()),
         solar_rad=jnp.array(df["srad"].to_numpy()),
         frost_days=jnp.array(df["frost_days"].to_numpy()),
@@ -113,7 +114,7 @@ def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:
         start_month=start_month,
         co2=jnp.array(df["co2"].to_numpy()),
         d13catm=jnp.array(df["d13c"].to_numpy()),
-        month = jnp.array(df["month"].to_numpy()),
+        month=jnp.array(df["month"].to_numpy()),
     )
 
     return climate_data

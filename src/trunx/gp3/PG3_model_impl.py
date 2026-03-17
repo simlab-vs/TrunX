@@ -77,7 +77,7 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         age=jnp.asarray(int(climate.start_month - species_data.planted)),
         WF_debt=jnp.asarray(initial_WF_debt),
         prev_month=jnp.asarray(12 if start_month == 1 else start_month - 1),
-        water_runoff_polled=jnp.asarray(0.0)
+        water_runoff_polled=jnp.asarray(0.0),
     )
 
     final_state, outputs = run_3pg(
