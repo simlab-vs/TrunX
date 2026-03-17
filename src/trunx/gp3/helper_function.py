@@ -416,7 +416,7 @@ def compute_canopy_cover(age: Array, fullCanAge: Array):
     return canopy_cover
 
 
-def is_dormant(month: int, leafgrow: float, leaffall: float) -> int:
+def is_dormant(month, leafgrow, leaffall):
     """
     Determine if current month is in dormant period.
 

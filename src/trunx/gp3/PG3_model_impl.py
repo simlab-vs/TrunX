@@ -132,7 +132,7 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     if r_comparison and plot_output:
         r_outputs = run_comparison_r(file_path)
         fig = plot_combined_3pg_outputs(r_outputs, outputs, climate.start_month, fig_name)
-        create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        # create_comparison_dataframe(r_outputs, outputs, climate.start_month)
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month)
