@@ -182,6 +182,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         co2=jnp.array(climate["co2"].to_numpy()),
         d13catm=jnp.array(climate["d13catm"].to_numpy()),
         start_month=start_month,
+        month=jnp.array(climate["month"].to_numpy()),
     )
 
     return climate_data

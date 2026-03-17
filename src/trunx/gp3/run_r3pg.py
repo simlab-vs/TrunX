@@ -9,8 +9,9 @@ from rpy2.rinterface_lib import callbacks
 from rpy2.robjects import default_converter, pandas2ri
 from rpy2.robjects.conversion import localconverter
 
-callbacks.consolewrite_print = lambda s: None # type: ignore 
-callbacks.consolewrite_warnerror = lambda s: None # type: ignore
+callbacks.consolewrite_print = lambda s: None  # type: ignore
+callbacks.consolewrite_warnerror = lambda s: None  # type: ignore
+
 
 def run_comparison_r(file_path: str | None = None) -> pl.DataFrame | None:
     """

@@ -113,6 +113,7 @@ def read_climate_data(file_path: str, sheet_name: str) -> ClimateData:
         start_month=start_month,
         co2=jnp.array(df["co2"].to_numpy()),
         d13catm=jnp.array(df["d13c"].to_numpy()),
+        month = jnp.array(df["month"].to_numpy()),
     )
 
     return climate_data

@@ -16,6 +16,8 @@ class State(NamedTuple):
     N: Array  # Stems per hectare
     ASW: Array  # Available soil water
     age: Array  # Age in months
+    WF_debt: Array  # Foliage biomass stored during dormant period
+    prev_month: Array  # Previous month for dormancy transition detection
 
 
 class ClimateData(NamedTuple):
@@ -29,6 +31,7 @@ class ClimateData(NamedTuple):
     n_days: jnp.ndarray  # Number of days in each month
     co2: jnp.ndarray  # Atmospheric CO2 concentration (ppm)
     d13catm: jnp.ndarray  # Atmospheric d13C value (‰)
+    month: jnp.ndarray  # Current month of climate data
     start_month: np.datetime64  # Start month of climate data
 
 

@@ -127,7 +127,9 @@ def f_age(age_months: Array, MaxAge: Array, nAge: Array, rAge: Array | None = No
     return f_age
 
 
-def f_soil_water(ASW: Array, ASW_max: Array, SWconst: Array, SWpower: Array) -> Array:
+def f_soil_water(
+    ASW: Array, ASW_max: Array, SWconst: Array, SWpower: Array, soil_class: Array
+) -> Array:
     """
     Soil water stress function.
 
@@ -153,6 +155,18 @@ def f_soil_water(ASW: Array, ASW_max: Array, SWconst: Array, SWpower: Array) -> 
     f_sw : Array
         Soil water stress factor clipped to [0, 1].
     """
+    if soil_class > 0:
+        SWconst = 0.8 - 0.10 * soil_class
+        SWpower = 11.0 - 2.0 * soil_class
+    elif soil_class < 0:
+        if SWconst is None or SWpower is None:
+            raise ValueError("SWconst0 and SWpower0 must be provided when soil_class < 0")
+        SWconst = SWconst
+        SWpower = SWpower
+    else:
+        SWconst = jnp.asarray(999.0)
+        SWpower = SWpower if SWpower is not None else jnp.asarray(0.0)
+
     SWdef = 1.0 - ASW / (ASW_max + 1e-8)
     f_sw = 1 / (1 + (SWdef / (SWconst + 1e-8)) ** SWpower)
     f_sw = jnp.clip(f_sw, 0.0, 1.0)
@@ -186,48 +200,16 @@ def f_nutrition(FR: Array, fN0: Array, fNn: Array) -> Array:
     return f_N
 
 
-def compute_dbh_from_stand(WS_stand: Array, N: Array, aWs: Array, nWs: Array) -> Array:
+def compute_dbh(WS: Array, N: Array, aWs: Array, nWs: Array) -> Array:
     """
     Compute DBH from stand-level values.
-
-    Parameters
-    ----------
-    WS_stand : Array
-        Stand stem biomass (t/ha)
-    N : Array
-        Stem density (trees/ha)
-    aWs : Array
-        Allometric coefficient (e.g., 0.07)
-    nWs : Array
-        Allometric exponent (e.g., 2.4)
-
-    Returns
-    -------
-    DBH : Array
-        Diameter at breast height (cm)
-    """
-    # Convert stand biomass (t/ha) to per tree biomass (kg/tree)
-    # 1 t/ha = 1000 kg / 10000 m² = 0.1 kg/m²
-    # But we need total kg per tree: (WS_stand * 1000 kg/t) / (N trees/ha * 1 ha/10000 m²)
-    # Actually simpler: WS_stand (t/ha) * 1000 kg/t = kg/ha
-    # Then divide by N (trees/ha) = kg/tree
-    wS_per_tree = (WS_stand * 1000.0) / (N + 1e-8)  # kg/tree
-
-    DBH = (wS_per_tree / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
-
-    return DBH
-
-
-def compute_dbh(WS: Array, aWs: Array, nWs: Array) -> Array:
-    """
-    Compute DBH from stem biomass per tree (3-PG).
 
     DBH = (WS / aWs) ** (1 / nWs)
 
     Parameters
     ----------
     WS : Array
-        Stem biomass per tree.
+        Stem biomass.
     aWs : Array
         Stem biomass allometric coefficient.
     nWs : Array
@@ -238,8 +220,11 @@ def compute_dbh(WS: Array, aWs: Array, nWs: Array) -> Array:
     dbh : Array
         Diameter at breast height (cm).
     """
-    dbh = (WS / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
-    return dbh
+    wS_per_tree = (WS * 1000.0) / (N + 1e-8)  # kg/tree
+
+    DBH = (wS_per_tree / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
+
+    return DBH
 
 
 def compute_light_interception(k: Array, LAI: Array, canopy_cover: Array | None = None):
@@ -266,7 +251,7 @@ def compute_light_interception(k: Array, LAI: Array, canopy_cover: Array | None 
     if canopy_cover is None:
         canopy_cover = jnp.asarray(1.0)
 
-    lightIntcptn = 1.0 - jnp.exp(-k * LAI / canopy_cover)
+    lightIntcptn = 1.0 - jnp.exp(-k * LAI / (canopy_cover + 1e-8))
     return lightIntcptn
 
 
@@ -276,7 +261,7 @@ def compute_lai(
     SLA0: Array,
     SLA1: Array,
     tSLA: Array,
-) -> Array:
+) -> tuple[Array, Array]:
     """
     Compute Leaf Area Index (LAI) from foliage biomass and stand age.
 
@@ -323,76 +308,7 @@ def compute_lai(
 
     LAI = WF * SLA * 0.1
 
-    return LAI
-
-
-def compute_root_allocation(fN: Array, phi_phys: Array, r_x: Array, r_n: Array) -> Array:
-    """
-    Compute the fraction of net production allocated to roots.
-
-    Root allocation is controlled by nutrient availability and
-    physiological limitation following the 3-PG formulation:
-
-        m     = fN * phi_phys
-        eta_R = (r_x * r_n) / (r_n + (r_x - r_n) * m)
-
-    Parameters
-    ----------
-    fN : Array
-        Soil nutrition modifier (0-1).
-    phi_phys : Array
-        Physiological modifier (0-1).
-    r_x : Array
-        Maximum root allocation ratio.
-    r_n : Array
-        Minimum root allocation ratio.
-
-    Returns
-    -------
-    eta_R : Array
-        Fraction of net production allocated to roots.
-    """
-    m = fN * phi_phys
-
-    eta_R = (r_x * r_n) / (r_n + (r_x - r_n) * m + 1e-8)
-
-    return eta_R
-
-
-def compute_allocation_fractions(
-    B: Array, eta_R: Array, pFS2: Array, pFS20: Array
-) -> tuple[Array, Array]:
-    """
-    Compute foliage and stem allocation fractions.
-
-    Allocation depends on tree size through the foliage:stem ratio,
-    following the standard 3-PG power-law formulation.
-
-    Parameters
-    ----------
-    B : Array
-        Tree size variable (typically DBH or biomass proxy).
-    eta_R : Array
-        Fraction of production allocated to roots.
-    pFS2 : Array
-        Foliage:stem ratio at reference size 2.
-    pFS20 : Array
-        Foliage:stem ratio at reference size 20.
-
-    Returns
-    -------
-    eta_F : Array
-        Fraction of production allocated to foliage.
-    eta_S : Array
-        Fraction of production allocated to stem.
-    """
-    np_alloc = jnp.log(pFS20 / (pFS2 + 1e-8)) / jnp.log(10.0)
-    ap_alloc = pFS2 * (2.0 ** (-np_alloc))
-    pFS = ap_alloc * jnp.clip(B, 0.1, None) ** np_alloc
-    eta_F = (pFS / (1.0 + pFS)) * (1.0 - eta_R)
-    eta_S = (1.0 / (1.0 + pFS)) * (1.0 - eta_R)
-
-    return eta_F, eta_S
+    return LAI, SLA
 
 
 def compute_litterfall_rate(
@@ -424,7 +340,11 @@ def compute_litterfall_rate(
 
 
 def apply_self_thinning(
-    WS: Array, N: Array, wSx: Array, max_mortality: Array | None = None
+    WS: Array,
+    N: Array,
+    wSx: Array,
+    max_mortality: Array | None = None,
+    thinPower: Array | None = None,
 ) -> tuple[Array, Array]:
     """
     Apply self-thinning mortality based on size-density constraints.
@@ -450,9 +370,12 @@ def apply_self_thinning(
     if max_mortality is None:
         max_mortality = jnp.asarray(0.05)
 
+    if thinPower is None:
+        thinPower = jnp.asarray(1.5)
+
     wS = 1000.0 * WS / (N + 1e-8)
 
-    wSmax = wSx * (1000.0 / (N + 1e-8)) ** 1.5
+    wSmax = wSx * (1000.0 / (N + 1e-8)) ** thinPower
 
     rel_excess = (wS - wSmax) / (wSmax + 1e-8)
 
@@ -464,171 +387,161 @@ def apply_self_thinning(
     return WS_new, N_new
 
 
-def model_step(state, climate_month, params, site, species):
-    """Compute one model step."""
-    T_avg, VPD, precip, solar_rad, frost_days, n_days = climate_month
-    WF, WR, WS, N, ASW, age_months = state
-
-    # Leaf area index
-    LAI = jnp.clip(compute_lai(WF, age_months, params.SLA0, params.SLA1, params.tSLA), 0.0, 15.0)
-
-    # Light interception (Beer's Law)
-    lightIntcptn = compute_light_interception(params.k, LAI)
-    APAR = solar_rad * n_days * lightIntcptn
-
-    # Growth modifiers
-    fT = f_temperature(T_avg, params.Tmin, params.Topt, params.Tmax)
-    fF = f_frost(frost_days, params.kF)
-    fN = f_nutrition(species.FR, params.fN0, params.fNn)
-    fD = f_vpd(VPD, params.CoeffCond)
-    fSW = f_soil_water(ASW, site.ASW_max, params.SWconst, params.SWpower)
-    fA = f_age(age_months, params.MaxAge, params.nAge, params.rAge)
-
-    phi = fA * jnp.minimum(fD, fSW)
-    alpha_c = params.alphaCx * fT * fF * fN * phi
-
-    # Primary production
-    GPP = alpha_c * APAR
-    NPP = params.Y * GPP
-
-    # Allocation
-    eta_R = compute_root_allocation(fN, phi, params.pRx, params.pRn)
-
-    # B = compute_dbh(WS, params.aWS, params.nWS)
-    B = compute_dbh_from_stand(WS, N, params.aWS, params.nWS)
-
-    eta_F, eta_S = compute_allocation_fractions(B, eta_R, params.pFS2, params.pFS20)
-
-    # Turnover
-    gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
-
-    # Biomass updates
-    WF_new = jnp.clip(WF + eta_F * NPP - gammaF * WF, 0.0, None)
-    WR_new = jnp.clip(WR + eta_R * NPP - params.gammaR * WR, 0.0, None)
-    WS_new = jnp.clip(WS + eta_S * NPP, 0.0, None)
-
-    # Self-thinning
-    WS_new, N_new = apply_self_thinning(WS_new, N, params.wSx1000)
-
-    ASW_new = jnp.clip(ASW + precip - VPD * n_days * 0.1 * lightIntcptn, 0.0, site.ASW_max)
-
-    new_state = State(WF=WF_new, WR=WR_new, WS=WS_new, N=N_new, ASW=ASW_new, age=age_months + 1.0)
-
-    outputs = dict(
-        GPP=GPP,
-        NPP=NPP,
-        LAI=LAI,
-        DBH=B,
-        fT=fT,
-        fD=fD,
-        fSW=fSW,
-        fAge=fA,
-        WF=WF_new,
-        WR=WR_new,
-        WS=WS_new,
-        N=N_new,
-        Volume=WS_new * 0.85 / (params.tRho + 1e-8),
-    )
-
-    return new_state, outputs
-
-
-def run_3pg(initial_state, climate, params, site, species):
-    """Run 3PG model."""
-    climate_stack = jnp.stack(
-        [
-            climate.T_avg,
-            climate.VPD,
-            climate.precip,
-            climate.solar_rad,
-            climate.frost_days,
-            climate.n_days,
-        ],
-        axis=-1,
-    )
-
-    def step(state, climate_row):
-        return model_step(state, climate_row, params, site, species)
-
-    return jax.lax.scan(step, initial_state, climate_stack)
-
-
-def ws_final(alphaCx, CoeffCond, Y_val, params, initial_state, climate, site, species):
-    """Compute final stem biomass as a scalar function."""
-    p = params._replace(alphaCx=alphaCx, CoeffCond=CoeffCond, Y=Y_val)
-    final_state, _ = run_3pg(initial_state, climate, p, site, species)
-    return final_state.WS
-
-
-def plot_outputs(outputs, start_month, fig_name: str | None = None):
-    """Visualize key 3-PG state variables over time."""
-    if fig_name is None:
-        fig_name = "3PG.png"
-
-    num_months = outputs["WS"].shape[0]
-
-    all_months = [start_month + np.timedelta64(i, "M") for i in range(num_months)]
-    years = [str(m)[:4] for m in all_months]
-
-    months = jnp.arange(num_months)
-
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10), sharex=True)
-
-    # Top row
-    axes[0, 0].plot(months, outputs["DBH"])
-    axes[0, 0].set_ylabel(r"DBH (cm)")
-
-    axes[0, 1].plot(months, outputs["LAI"])
-    axes[0, 1].set_ylabel("LAI")
-
-    axes[0, 2].plot(months, outputs["GPP"])
-    axes[0, 2].set_ylabel(r"GPP ($\mathrm{mol\ C\ m^{-2}}$)")
-
-    # Bottom row
-    axes[1, 0].plot(months, outputs["WS"])
-    axes[1, 0].set_ylabel(r"Stem biomass ($\mathrm{kg\ ha^{-1}}$)")
-
-    axes[1, 1].plot(months, outputs["WF"])
-    axes[1, 1].set_ylabel(r"Foliage biomass ($\mathrm{kg\ ha^{-1}}$)")
-
-    axes[1, 2].plot(months, outputs["WR"])
-    axes[1, 2].set_ylabel(r"Root biomass ($\mathrm{kg\ ha^{-1}}$)")
-
-    tick_indices = [
-        i for i, m in enumerate(all_months) if m.astype("datetime64[M]").astype(int) % 12 == 0
-    ]
-    tick_labels = [years[i] for i in tick_indices]
-    last_year = int(years[-1])
-    if int(tick_labels[-1]) < last_year + 1:
-        tick_indices.append(num_months - 1)
-        tick_labels.append(str(last_year + 1))
-
-    for ax in axes.flat:
-        ax.set_xticks(tick_indices)
-        ax.set_xticklabels(tick_labels, rotation=45, ha="right")
-        ax.grid(True, alpha=0.3)
-        ax.set_xlabel("Year")
-
-    plt.tight_layout()
-    plt.savefig(os.path.join("./images/", fig_name))
-    plt.show()
-
-    return fig
-
-
-def loss_fn(log_params_arr, fixed_params, s0, climate, site, obs_WS, obs_times, species):
+def compute_canopy_cover(age: Array, fullCanAge: Array):
     """
-    MSE loss for gradient-based calibration.
+    Calculate fractional canopy cover.
 
-    log_params_arr:
-        [log(alphaCx), log(CoeffCond), logit(Y)]
+    Parameters
+    ----------
+    age_years : float
+        Stand age in years
+    fullCanAge : float
+        Age at canopy closure (years)
+
+    Returns
+    -------
+    canopy_cover : float
+        Fractional canopy cover (0-1)
     """
-    alphaCx = jnp.exp(log_params_arr[0])
-    CoeffCond = jnp.exp(log_params_arr[1])
-    Y = jax.nn.sigmoid(log_params_arr[2])
+    age_years = age / 12.0
+    condition = (fullCanAge > 0) & (age_years < fullCanAge)
 
-    params = fixed_params._replace(alphaCx=alphaCx, CoeffCond=CoeffCond, Y=Y)
-    _, outputs = run_3pg(s0, climate, params, site, species)
+    # Calculate cover for young stands
+    young_cover = (age_years + 0.01) / fullCanAge
 
-    pred_WS = outputs["WS"][obs_times]
-    return jnp.mean((pred_WS - obs_WS) ** 2)
+    # Use jnp.where to select between young and mature cover
+    canopy_cover = jnp.where(condition, young_cover, 1.0)
+
+    return canopy_cover
+
+
+def is_dormant(month, leafgrow, leaffall):
+    """
+    Determine if current month is in dormant period.
+
+    Parameters
+    ----------
+    month : Array
+        Current month (1-12)
+    leafgrow : Array
+        Month when leaves start growing
+    leaffall : Array
+        Month when leaves start falling
+
+    Returns
+    -------
+    dormant : Array
+        True if dormant period, False otherwise
+    """
+    # Default to False (evergreen)
+    dormant = jnp.array(False)
+    cond_north = (leafgrow > leaffall) & (month >= leaffall) & (month <= leafgrow)
+
+    cond_south = (leafgrow < leaffall) & ((month < leafgrow) | (month >= leaffall))
+
+    dormant = cond_north | cond_south
+
+    return dormant
+
+
+def f_cg(co2, fCg0) -> Array:
+    """
+    CO2 modifier for canopy conductance.
+
+    Parameters
+    ----------
+    co2 : Array
+        Atmospheric CO2 concentration (ppm)
+    fCg0 : Array
+        CO2 modifier parameter for conductance
+
+    Returns
+    -------
+    f_cg : Array
+        CO2 modifier for canopy conductance
+    """
+    f_cg = fCg0 / (1.0 + (fCg0 - 1.0) * co2 / 350.0)
+    return f_cg
+
+
+def f_calpha(co2: Array, fCalpha700: Array):
+    """
+    CO2 modifier for photosynthesis (alpha).
+
+    Parameters
+    ----------
+    co2 : Array
+        Atmospheric CO2 concentration (ppm)
+    fCalphax : Array
+        CO2 modifier parameter for photosynthesis
+
+    Returns
+    -------
+    f_calpha : Array
+        CO2 modifier for photosynthesis
+    """
+    fCalphax = fCalpha700 / (2.0 - fCalpha700 + 1e-8)
+    fcalpha = fCalphax * co2 / (350.0 * (fCalphax - 1.0) + co2)
+    return fcalpha
+
+
+def compute_allocation_fraction(
+    FR: Array,
+    pRx: Array,
+    pRn: Array,
+    pFS2: Array,
+    pFS20: Array,
+    phi_phys: Array,
+    DBH: Array,
+    m0: Array | None = None,
+):
+    """
+    Compute all allocation fractions (roots, foliage, stem) for 3-PG model.
+
+    eta_R = (r_x * r_n) / (r_n + (r_x - r_n) * m)
+
+    Parameters
+    ----------
+    B : Array
+        Tree size (DBH in cm)
+    FR : Array
+        Fertility rating (0-1)
+    phi_phys : Array
+        Physiological modifier (0-1)
+    pFS2 : Array
+        Foliage:stem ratio at reference size 2 cm
+    pFS20 : Array
+        Foliage:stem ratio at reference size 20 cm
+    pRx : Array
+        Maximum root allocation ratio
+    pRn : Array
+        Minimum root allocation ratio
+    m0 : Array, optional
+        Base fertility effect parameter (default 0.5)
+
+    Returns
+    -------
+    eta_R : Array
+        Fraction of NPP allocated to roots
+    eta_F : Array
+        Fraction of NPP allocated to foliage
+    eta_S : Array
+        Fraction of NPP allocated to stem
+    pFS : Array
+        Foliage:stem ratio (intermediate value)
+    """
+    if m0 is None:
+        m0 = jnp.asarray(0.5)
+
+    m = m0 + (1.0 - m0) * FR
+
+    eta_R = (pRx * pRn) / (pRn + (pRx - pRn) * phi_phys * m)
+
+    pfsPower = jnp.log(pFS20 / (pFS2 + 1e-8)) / jnp.log(10.0)
+    pfsConst = pFS2 / 2.0**pfsPower
+    pFS = pfsConst * (jnp.clip(DBH, 0.1, None) ** pfsPower)
+
+    eta_S = (1.0 - eta_R) / (1.0 + pFS)
+    eta_F = 1.0 - eta_R - eta_S
+
+    return pFS, eta_F, eta_S, eta_R
