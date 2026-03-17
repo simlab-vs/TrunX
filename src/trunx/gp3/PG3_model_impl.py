@@ -56,11 +56,11 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     start_dormant = is_dormant(start_month, params.leafgrow, params.leaffall)
 
     if start_dormant:
-        initial_WF = 0.0
+        initial_WF = jnp.asarray(0.0)
         initial_WF_debt = species_data.WF
     else:
         initial_WF = species_data.WF
-        initial_WF_debt = 0.0
+        initial_WF_debt = jnp.asarray(0.0)
 
     asw_min = jnp.where(
         site_data.ASW_min > site_data.ASW_max, site_data.ASW_max, site_data.ASW_min
@@ -77,6 +77,7 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         age=jnp.asarray(int(climate.start_month - species_data.planted)),
         WF_debt=jnp.asarray(initial_WF_debt),
         prev_month=jnp.asarray(12 if start_month == 1 else start_month - 1),
+        water_runoff_polled=jnp.asarray(0.0)
     )
 
     final_state, outputs = run_3pg(

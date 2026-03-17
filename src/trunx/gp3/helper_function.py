@@ -160,7 +160,7 @@ def f_soil_water(
         SWpower = 11.0 - 2.0 * soil_class
     elif soil_class < 0:
         if SWconst is None or SWpower is None:
-            raise ValueError("SWconst0 and SWpower0 must be provided when soil_class < 0")
+            raise ValueError("SWconst and SWpower must be provided when soil_class < 0")
         SWconst = SWconst
         SWpower = SWpower
     else:
@@ -170,6 +170,7 @@ def f_soil_water(
     SWdef = 1.0 - ASW / (ASW_max + 1e-8)
     f_sw = 1 / (1 + (SWdef / (SWconst + 1e-8)) ** SWpower)
     f_sw = jnp.clip(f_sw, 0.0, 1.0)
+    
     return f_sw
 
 
@@ -415,7 +416,7 @@ def compute_canopy_cover(age: Array, fullCanAge: Array):
     return canopy_cover
 
 
-def is_dormant(month, leafgrow, leaffall):
+def is_dormant(month: Array, leafgrow: Array, leaffall: Array)-> Array:
     """
     Determine if current month is in dormant period.
 
@@ -545,3 +546,601 @@ def compute_allocation_fraction(
     eta_F = 1.0 - eta_R - eta_S
 
     return pFS, eta_F, eta_S, eta_R
+
+
+def compute_ASW(Irrig, water_runoff_polled, poolFractn, ASW, prcp, solar_rad, VPD, day_length, days_in_month, 
+          Qa, Qb, rhoAir, lambda_v, VPDconv, BLcond, conduct_canopy, e20,
+          MaxIntcptn, lai, LAImaxIntcptn, asw_min, asw_max):
+    
+    ASW = ASW + prcp + (100.0 * Irrig / 12.0) + water_runoff_polled
+    
+    if VPD == 0.0:
+        transp_veg = 0.0
+    else:
+        solar_rad_w = solar_rad * 1e6 / day_length
+        netRad = Qa + Qb * solar_rad_w
+        defTerm = rhoAir * lambda_v * VPDconv * VPD * BLcond
+        div = conduct_canopy * (1.0 + e20) + BLcond
+        transp_rate = conduct_canopy * (e20 * netRad + defTerm) / div / lambda_v
+        transp_veg = transp_rate * day_length * days_in_month
+        transp_veg = max(0.0, transp_veg)
+    
+    prcp_interc_fract = MaxIntcptn
+    
+    # Adjust if LAImaxIntcptn is provided and > 0
+    condition = LAImaxIntcptn > 0
+    adjusted_fract = MaxIntcptn * jnp.minimum(1.0, lai / (LAImaxIntcptn + 1e-8)) * lai
+    prcp_interc_fract = jnp.where(condition, adjusted_fract, prcp_interc_fract)
+    
+    # Calculate interception amounts
+    prcp_interc = prcp * prcp_interc_fract
+    
+    total_demand = transp_veg + evapotra_soil + prcp_interc
+    evapo_transp = jnp.minimum(ASW, total_demand)
+    excessSW = jnp.maximum(ASW - evapo_transp - asw_max, 0.0)
+    
+    ASW = ASW - evapo_transp - excessSW
+    
+    water_runoff_polled_new = poolFractn * excessSW
+    prcp_runoff = (1.0 - poolFractn) * excessSW
+    
+    irrig_supl = jnp.maximum(asw_min - ASW, 0.0)
+    ASW = jnp.maximum(ASW, asw_min)
+    
+    f_transp_scale = jnp.where(
+        total_demand == 0,
+        1.0,
+        evapo_transp / total_demand
+    )
+
+def calculate_interception(
+    prcp: Array,
+    lai: Array,
+    MaxIntcptn: Array,
+    LAImaxIntcptn: Array
+) -> tuple[Array, Array]:
+    """
+    Calculate rainfall interception for a single species (JAX-compatible).
+    
+    From Fortran:
+        prcp_interc_fract = MaxIntcptn
+        if (LAImaxIntcptn > 0) then
+            prcp_interc_fract = MaxIntcptn * min(1.0, lai / LAImaxIntcptn)
+        end if
+        prcp_interc = prcp * prcp_interc_fract
+    
+    Parameters
+    ----------
+    prcp : Array
+        Monthly precipitation (mm)
+    lai : Array
+        Leaf Area Index
+    MaxIntcptn : Array
+        Maximum interception fraction
+    LAImaxIntcptn : Array
+        LAI at which interception reaches maximum
+    
+    Returns
+    -------
+    prcp_interc_fract : Array
+        Interception fraction
+    prcp_interc : Array
+        Interception amount (mm)
+    """
+    condition = LAImaxIntcptn > 0
+    adjusted_fract = MaxIntcptn * jnp.minimum(1.0, lai / (LAImaxIntcptn + 1e-8))
+    prcp_interc_fract = jnp.where(condition, adjusted_fract, MaxIntcptn)
+    
+    prcp_interc = prcp * prcp_interc_fract
+    
+    return prcp_interc_fract, prcp_interc
+
+
+def calculate_transpiration(
+    solar_rad: Array,
+    day_length: Array,
+    VPD: Array,
+    BLcond: Array,
+    conduct_canopy: Array,
+    days_in_month: Array,
+    Qa: Array,
+    Qb: Array,
+    rhoAir: Array = jnp.array(1.2),
+    lambda_v: Array = jnp.array(2460000.0),
+    VPDconv: Array = jnp.array(0.000622),
+    e20: Array = jnp.array(0.66)
+) -> tuple[Array, dict]:
+    """
+    Calculate transpiration using Penman-Monteith (JAX-compatible).
+    
+    Returns transpiration in mm/month and intermediate values.
+    """
+    # Convert solar radiation from MJ/m²/day to W/m² for daytime
+    solar_rad_w = solar_rad * 1e6 / day_length
+    
+    # Net radiation (W/m²)
+    netRad = Qa + Qb * solar_rad_w
+    
+    # Deficit term (related to VPD)
+    defTerm = rhoAir * lambda_v * VPDconv * VPD * BLcond
+    
+    # Divisor (combined conductance term)
+    div = conduct_canopy * (1.0 + e20) + BLcond
+    
+    # Transpiration rate (mm/s)
+    transp_rate = conduct_canopy * (e20 * netRad + defTerm) / div / lambda_v
+    
+    # Convert to mm/month
+    transp_veg = transp_rate * day_length * days_in_month
+    transp_veg = jnp.maximum(0.0, transp_veg)
+    
+    # Handle VPD=0 case (no transpiration)
+    transp_veg = jnp.where(VPD == 0.0, 0.0, transp_veg)
+    
+    intermediates = {
+        'solar_rad_w': solar_rad_w,
+        'netRad': netRad,
+        'defTerm': defTerm,
+        'div': div,
+        'transp_rate': transp_rate,
+    }
+    
+    return transp_veg, intermediates
+
+
+def update_soil_water(
+    ASW: Array,
+    prcp: Array,
+    Irrig: Array,
+    water_runoff_polled: Array,
+    transp_veg: Array,
+    evapotra_soil: Array,
+    prcp_interc: Array,
+    asw_max: Array,
+    asw_min: Array,
+    poolFractn: Array
+) -> dict[str, Array]:
+    """
+    Update soil water balance (JAX-compatible).
+    
+    From Fortran:
+        ASW = ASW + prcp + (100 * Irrig / 12) + water_runoff_polled
+        total_demand = transp_veg + evapotra_soil + prcp_interc
+        evapo_transp = min(ASW, total_demand)
+        excessSW = max(ASW - evapo_transp - asw_max, 0)
+        ASW = ASW - evapo_transp - excessSW
+        water_runoff_polled_new = poolFractn * excessSW
+        prcp_runoff = (1 - poolFractn) * excessSW
+        irrig_supl = max(asw_min - ASW, 0)
+        ASW = max(ASW, asw_min)
+        f_transp_scale = 1 if total_demand == 0 else evapo_transp / total_demand
+    """
+    # Convert annual irrigation to monthly
+    monthly_irrig = (100.0 * Irrig) / 12.0
+    
+    # Add water inputs
+    ASW = ASW + prcp + monthly_irrig + water_runoff_polled
+    
+    # Total water demand
+    total_demand = transp_veg + evapotra_soil + prcp_interc
+    
+    # Actual ET (can't exceed available water)
+    evapo_transp = jnp.minimum(ASW, total_demand)
+    
+    # Excess above field capacity
+    excessSW = jnp.maximum(ASW - evapo_transp - asw_max, 0.0)
+    
+    # Update ASW after ET and excess
+    ASW = ASW - evapo_transp - excessSW
+    
+    # Split excess into runoff pool and immediate runoff
+    water_runoff_polled_new = poolFractn * excessSW
+    prcp_runoff = (1.0 - poolFractn) * excessSW
+    
+    # Check wilting point
+    irrig_supl = jnp.maximum(asw_min - ASW, 0.0)
+    ASW = jnp.maximum(ASW, asw_min)
+    
+    # Transpiration scaling factor
+    f_transp_scale = jnp.where(
+        total_demand == 0,
+        1.0,
+        evapo_transp / total_demand
+    )
+    
+    return {
+        'ASW_final': ASW,
+        'water_runoff_polled_new': water_runoff_polled_new,
+        'prcp_runoff': prcp_runoff,
+        'irrig_supl': irrig_supl,
+        'f_transp_scale': f_transp_scale,
+        'evapo_transp': evapo_transp,
+        'excessSW': excessSW,
+        'total_demand': total_demand,
+        'monthly_irrig': monthly_irrig,
+    }
+
+
+def scale_transpiration(
+    transp_veg: Array,
+    evapotra_soil: Array,
+    prcp_interc: Array,
+    evapo_transp: Array,
+    f_transp_scale: Array
+) -> tuple[Array, Array]:
+    """
+    Scale transpiration and evaporation when water-limited (JAX-compatible).
+    
+    From Fortran:
+        if (transp_total > 0 and f_transp_scale < 1) then
+            transp_veg = (evapo_transp - prcp_interc) / transp_total * transp_veg
+            evapotra_soil = (evapo_transp - prcp_interc) / transp_total * evapotra_soil
+        end if
+    """
+    transp_total = transp_veg + evapotra_soil
+    scale_factor = (evapo_transp - prcp_interc) / (transp_total + 1e-8)
+    condition = (transp_total > 0) & (f_transp_scale < 1)
+    
+    transp_veg_scaled = jnp.where(
+        condition,
+        scale_factor * transp_veg,
+        transp_veg
+    )
+    
+    evapotra_soil_scaled = jnp.where(
+        condition,
+        scale_factor * evapotra_soil,
+        evapotra_soil
+    )
+    
+    return transp_veg_scaled, evapotra_soil_scaled
+
+
+def compute_asw(
+    # Input state
+    ASW: Array,
+    water_runoff_polled: Array,
+    
+    # Climate inputs
+    prcp: Array,
+    solar_rad: Array,
+    VPD: Array,
+    day_length: Array,
+    days_in_month: Array,
+    
+    # Parameters
+    Qa: Array,
+    Qb: Array,
+    BLcond: Array,
+    conduct_canopy: Array,
+    MaxIntcptn: Array,
+    lai: Array,
+    LAImaxIntcptn: Array,
+    asw_min: Array,
+    asw_max: Array,
+    
+    # Optional soil evaporation
+    evapotra_soil: Array = jnp.array(0.0),
+    
+    # Physical constants (with defaults)
+    Irrig: Array =jnp.array(0.0),
+    poolFractn: Array = jnp.array(0.0),
+    rhoAir: Array = jnp.array(1.2),
+    lambda_v: Array = jnp.array(2460000.0),
+    VPDconv: Array = jnp.array(0.000622),
+    e20: Array = jnp.array(0.66)
+) -> dict[str, Array]:
+    """
+    Complete soil water balance for a single species following Fortran 3-PG code.
+    
+    This function combines:
+    1. Rainfall interception calculation
+    2. Transpiration calculation (Penman-Monteith)
+    3. Soil water balance update
+    4. Transpiration scaling
+    
+    All operations are JAX-compatible for use in jit-compiled functions.
+    
+    Parameters
+    ----------
+    ASW : Array
+        Current available soil water (mm)
+    water_runoff_polled : Array
+        Water from previous month's runoff pool (mm)
+    prcp : Array
+        Monthly precipitation (mm)
+    solar_rad : Array
+        Solar radiation (MJ/m²/day)
+    VPD : Array
+        Vapor pressure deficit (kPa)
+    day_length : Array
+        Day length (seconds)
+    days_in_month : Array
+        Number of days in the month
+    Irrig : Array
+        Annual irrigation (mm/year)
+    poolFractn : Array
+        Fraction of excess water that goes to runoff pool (0-1)
+    Qa, Qb : Array
+        Net radiation parameters
+    BLcond : Array
+        Boundary layer conductance (m/s)
+    conduct_canopy : Array
+        Canopy conductance (m/s)
+    MaxIntcptn : Array
+        Maximum interception fraction
+    lai : Array
+        Leaf Area Index
+    LAImaxIntcptn : Array
+        LAI at which interception reaches maximum
+    asw_min : Array
+        Minimum available soil water (wilting point) (mm)
+    asw_max : Array
+        Maximum available soil water (field capacity) (mm)
+    evapotra_soil : Array, optional
+        Soil evaporation (mm), default 0.0
+    rhoAir : Array, optional
+        Air density (kg/m³)
+    lambda_v : Array, optional
+        Latent heat of vaporization (J/kg)
+    VPDconv : Array, optional
+        VPD conversion factor (kPa⁻¹)
+    e20 : Array, optional
+        Constant for Penman-Monteith
+    
+    Returns
+    -------
+    dict[str, Array]
+        Dictionary containing all calculated variables:
+        - ASW_final: Updated available soil water
+        - water_runoff_polled_new: Updated runoff pool for next month
+        - prcp_runoff: Immediate runoff
+        - irrig_supl: Irrigation supplement needed
+        - f_transp_scale: Transpiration scaling factor
+        - transp_veg: Calculated transpiration
+        - transp_veg_scaled: Scaled transpiration
+        - evapotra_soil_scaled: Scaled soil evaporation
+        - prcp_interc: Rainfall interception
+        - prcp_interc_fract: Interception fraction
+        - evapo_transp: Actual evapotranspiration
+        - excessSW: Excess water above field capacity
+        - total_demand: Total water demand
+        - monthly_irrig: Monthly irrigation amount
+        - GPP_scale_factor: Factor to scale GPP (same as f_transp_scale)
+    """
+    # Step 1: Calculate rainfall interception
+    prcp_interc_fract, prcp_interc = calculate_interception(
+        prcp=prcp,
+        lai=lai,
+        MaxIntcptn=MaxIntcptn,
+        LAImaxIntcptn=LAImaxIntcptn
+    )
+    
+    # Step 2: Calculate transpiration
+    transp_veg, trans_intermediates = calculate_transpiration(
+        solar_rad=solar_rad,
+        day_length=day_length,
+        VPD=VPD,
+        BLcond=BLcond,
+        conduct_canopy=conduct_canopy,
+        days_in_month=days_in_month,
+        Qa=Qa,
+        Qb=Qb,
+        rhoAir=rhoAir,
+        lambda_v=lambda_v,
+        VPDconv=VPDconv,
+        e20=e20
+    )
+    
+    # Step 3: Update soil water balance
+    water_results = update_soil_water(
+        ASW=ASW,
+        prcp=prcp,
+        Irrig=Irrig,
+        water_runoff_polled=water_runoff_polled,
+        transp_veg=transp_veg,
+        evapotra_soil=evapotra_soil,
+        prcp_interc=prcp_interc,
+        asw_max=asw_max,
+        asw_min=asw_min,
+        poolFractn=poolFractn
+    )
+    
+    # Step 4: Scale transpiration if needed
+    transp_veg_scaled, evapotra_soil_scaled = scale_transpiration(
+        transp_veg=transp_veg,
+        evapotra_soil=evapotra_soil,
+        prcp_interc=prcp_interc,
+        evapo_transp=water_results['evapo_transp'],
+        f_transp_scale=water_results['f_transp_scale']
+    )
+    
+    # Combine all results
+    results = {
+        # Soil water states
+        'ASW_final': water_results['ASW_final'],
+        'water_runoff_polled_new': water_results['water_runoff_polled_new'],
+        'prcp_runoff': water_results['prcp_runoff'],
+        'irrig_supl': water_results['irrig_supl'],
+        
+        # Scaling factors
+        'f_transp_scale': water_results['f_transp_scale'],
+        'GPP_scale_factor': water_results['f_transp_scale'],
+        
+        # Water balance components
+        'transp_veg': transp_veg,
+        'transp_veg_scaled': transp_veg_scaled,
+        'evapotra_soil_scaled': evapotra_soil_scaled,
+        'prcp_interc': prcp_interc,
+        'prcp_interc_fract': prcp_interc_fract,
+        'evapo_transp': water_results['evapo_transp'],
+        'excessSW': water_results['excessSW'],
+        'total_demand': water_results['total_demand'],
+        'monthly_irrig': water_results['monthly_irrig'],
+    }
+    
+    # Add transpiration intermediates for debugging
+    results.update(trans_intermediates)
+    
+    return results
+
+
+def initialize_water_variables(
+    Irrig: float = 0.0,
+    poolFractn: float = 0.0
+) -> dict[str, Array]:
+    """
+    Initialize water-related variables as in Fortran.
+    
+    From Fortran:
+        Irrig = 0.d0
+        water_runoff_polled = 0.d0
+        poolFractn = 0.d0
+        poolFractn = max(0.d0, min(1.d0, poolFractn))
+    """
+    # Constrain poolFractn to [0, 1]
+    poolFractn = jnp.clip(poolFractn, 0.0, 1.0)
+    
+    return {
+        'Irrig': jnp.array(Irrig),
+        'water_runoff_polled': jnp.array(0.0),
+        'poolFractn': jnp.array(poolFractn)
+    }
+    
+    
+def calculate_day_length(latitude: Array, month: Array) -> Array:
+    """
+    Calculate day length in seconds for a given latitude and month.
+    JAX-compatible version.
+    
+    Parameters
+    ----------
+    latitude : Array
+        Latitude in degrees
+    month : Array
+        Current month (1-12)
+    
+    Returns
+    -------
+    day_length : Array
+        Day length in seconds
+    """
+    # Day of year for middle of month (approximate)
+    day_of_year_values = jnp.array([15, 45, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349])
+    month_idx = jnp.clip(month - 1, 0, 11).astype(int)
+    day_of_year = day_of_year_values[month_idx]
+    
+    # Solar declination (radians)
+    decl = 0.4093 * jnp.sin(2 * jnp.pi * (284 + day_of_year) / 365)
+    
+    # Latitude in radians
+    lat_rad = jnp.radians(latitude)
+    
+    # Hour angle at sunset (radians)
+    cos_omega = -jnp.tan(lat_rad) * jnp.tan(decl)
+    omega = jnp.arccos(jnp.clip(cos_omega, -1.0, 1.0))
+    
+    # Day length in hours, convert to seconds
+    day_length_hours = (24.0 / jnp.pi) * omega
+    day_length_seconds = day_length_hours * 3600.0
+    
+    return day_length_seconds
+
+
+def calculate_base_conductance(
+    lai: Array,
+    MaxCond: Array,
+    MinCond: Array,
+    LAIgcx: Array
+) -> Array:
+    """
+    Calculate base canopy conductance (gC) as function of LAI.
+    
+    Parameters
+    ----------
+    lai : Array
+        LAI
+    MaxCond : Array
+        Maximum canopy conductance (m/s)
+    MinCond : Array
+        Minimum canopy conductance (m/s)
+    LAIgcx : Array
+        LAI at which conductance reaches maximum
+    
+    Returns
+    -------
+    gC : Array
+        Base canopy conductance (m/s)
+    """
+    # Default to MaxCond
+    gC = MaxCond
+    
+    # For LAI below LAIgcx, scale between MinCond and MaxCond
+    condition = lai <= LAIgcx
+    scaled_cond = MinCond + (MaxCond - MinCond) * lai / (LAIgcx + 1e-8)
+    gC = jnp.where(condition, scaled_cond, gC)
+    
+    return gC
+
+
+def f_temperature_gc(
+    T_avg: Array,
+    T_max: Array,
+    T_min: Array,
+    T_opt: Array,
+    T_max_val: Array
+) -> Array:
+    """
+    Temperature response function for canopy conductance.
+    Uses (T_avg + T_max)/2 instead of just T_avg.
+    
+    Parameters
+    ----------
+    T_avg : Array
+        Average monthly temperature (°C)
+    T_max : Array
+        Maximum monthly temperature (°C)
+    T_min : Array
+        Minimum temperature for growth (°C)
+    T_opt : Array
+        Optimum temperature for growth (°C)
+    T_max_val : Array
+        Maximum temperature for growth (°C)
+    
+    Returns
+    -------
+    f_tmp_gc : Array
+        Temperature modifier for canopy conductance (0-1)
+    """
+    eps = 1e-8
+    T_mid = (T_avg + T_max) / 2.0
+    
+    invalid = (T_mid <= T_min) | (T_mid >= T_max_val)
+    
+    a = (T_mid - T_min) / (T_opt - T_min + eps)
+    b = (T_max_val - T_mid) / (T_max_val - T_opt + eps)
+    power = (T_max_val - T_opt) / (T_opt - T_min + eps)
+    
+    f_tmp_gc = jnp.where(invalid, 0.0, a * (b ** power))
+    return jnp.clip(f_tmp_gc, 0.0, 1.0)
+
+def f_cg(co2: Array, fCg700: Array) -> Array:
+    """
+    CO2 modifier for canopy conductance.
+    
+    Parameters
+    ----------
+    co2 : Array
+        Atmospheric CO2 concentration (ppm)
+    fCg0 : Array
+        CO2 modifier parameter for conductance
+    
+    Returns
+    -------
+    f_cg : Array
+        CO2 modifier for canopy conductance
+    """
+    fCg0 = fCg700 / (2.0 * fCg700 - 1.0 + 1e-8)
+    f_cg = fCg0 / (1.0 + (fCg0 - 1.0) * co2 / 350.0)
+    return jnp.clip(f_cg, 0.0, 1.0)
+

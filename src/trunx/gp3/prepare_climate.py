@@ -174,6 +174,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
 
     climate_data = ClimateData(
         T_avg=jnp.array(climate["tmp_ave"].to_numpy()),
+        T_max=jnp.asarray(climate["tmp_max"].to_numpy()),
         precip=jnp.array(climate["prcp"].to_numpy()),
         solar_rad=jnp.array(climate["srad"].to_numpy()),
         frost_days=jnp.array(climate["frost_days"].to_numpy()),

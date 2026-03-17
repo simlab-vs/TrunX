@@ -18,12 +18,13 @@ class State(NamedTuple):
     age: Array  # Age in months
     WF_debt: Array  # Foliage biomass stored during dormant period
     prev_month: Array  # Previous month for dormancy transition detection
-
+    water_runoff_polled: Array
 
 class ClimateData(NamedTuple):
     """Climate data information."""
 
     T_avg: jnp.ndarray  # Average monthly temperature (°C)
+    T_max: jnp.ndarray  # Maximum monthly temperature (°C)
     VPD: jnp.ndarray  # Vapor pressure deficit (kPa)
     precip: jnp.ndarray  # Monthly precipitation (mm)
     solar_rad: jnp.ndarray  # Monthly solar radiation (MJ/m²)
