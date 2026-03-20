@@ -67,37 +67,6 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
         ]
     )
 
-    # species_data: list[SpeciesData] = []
-
-    # for row in species.iter_rows(named=True):
-    #     year_p, month_p = map(int, row["planted"].split("-"))
-
-    #     sp = SpeciesData(
-    #         specie=str(row["species"]),
-    #         FR=float(row["fertility"]),
-    #         WF=float(row["biom_foliage"]),
-    #         WR=float(row["biom_root"]),
-    #         WS=float(row["biom_stem"]),
-    #         N=float(row["stems_n"]),
-    #         planted=np.datetime64(row["planted"], "M"),
-    #         year_p=year_p,
-    #         month_p=month_p,
-    #     )
-
-    #     species_data.append(sp)
-
-    # species_data = SpeciesData(
-    #     specie=list(species["species"]),
-    #     FR=jnp.asarray(species["fertility"]),
-    #     WF=jnp.asarray(species["biom_foliage"]),
-    #     WR=jnp.asarray(species["biom_root"]),
-    #     WS=jnp.asarray(species["biom_stem"]),
-    #     N=jnp.asarray(species["stems_n"]),
-    #     planted=list(species["planted"]),
-    #     year_p=jnp.asarray(species["year_p"]),
-    #     month_p=jnp.asarray(species["month_p"]),
-    # )
-
     species_data = SpeciesData(
         specie=list(species["species"]),
         FR=jnp.asarray(species["fertility"], dtype=jnp.float32),
