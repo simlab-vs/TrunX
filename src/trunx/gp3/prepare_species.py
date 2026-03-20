@@ -2,6 +2,7 @@
 
 import warnings
 
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -58,27 +59,58 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
 
     # Return final table (unchanged, but explicitly selected)
     species = species.select(required_cols)
+    species = species.with_columns(
+        [
+            pl.col("planted").str.split("-").list.get(0).cast(pl.Int32).alias("year_p"),
+            pl.col("planted").str.split("-").list.get(1).cast(pl.Int32).alias("month_p"),
+            pl.col("planted").str.to_datetime(format="%Y-%m").alias("planted"),
+        ]
+    )
 
-    species_data: list[SpeciesData] = []
+    # species_data: list[SpeciesData] = []
 
-    for row in species.iter_rows(named=True):
-        year_p, month_p = map(int, row["planted"].split("-"))
+    # for row in species.iter_rows(named=True):
+    #     year_p, month_p = map(int, row["planted"].split("-"))
 
-        sp = SpeciesData(
-            specie=str(row["species"]),
-            FR=float(row["fertility"]),
-            WF=float(row["biom_foliage"]),
-            WR=float(row["biom_root"]),
-            WS=float(row["biom_stem"]),
-            N=float(row["stems_n"]),
-            planted=np.datetime64(row["planted"], "M"),
-            year_p=year_p,
-            month_p=month_p,
-        )
+    #     sp = SpeciesData(
+    #         specie=str(row["species"]),
+    #         FR=float(row["fertility"]),
+    #         WF=float(row["biom_foliage"]),
+    #         WR=float(row["biom_root"]),
+    #         WS=float(row["biom_stem"]),
+    #         N=float(row["stems_n"]),
+    #         planted=np.datetime64(row["planted"], "M"),
+    #         year_p=year_p,
+    #         month_p=month_p,
+    #     )
 
-        species_data.append(sp)
+    #     species_data.append(sp)
 
-    return species_data[0]
+    # species_data = SpeciesData(
+    #     specie=list(species["species"]),
+    #     FR=jnp.asarray(species["fertility"]),
+    #     WF=jnp.asarray(species["biom_foliage"]),
+    #     WR=jnp.asarray(species["biom_root"]),
+    #     WS=jnp.asarray(species["biom_stem"]),
+    #     N=jnp.asarray(species["stems_n"]),
+    #     planted=list(species["planted"]),
+    #     year_p=jnp.asarray(species["year_p"]),
+    #     month_p=jnp.asarray(species["month_p"]),
+    # )
+
+    species_data = SpeciesData(
+        specie=list(species["species"]),
+        FR=jnp.asarray(species["fertility"], dtype=jnp.float32),
+        WF=jnp.asarray(species["biom_foliage"], dtype=jnp.float32),
+        WR=jnp.asarray(species["biom_root"], dtype=jnp.float32),
+        WS=jnp.asarray(species["biom_stem"], dtype=jnp.float32),
+        N=jnp.asarray(species["stems_n"], dtype=jnp.float32),
+        planted=list([np.datetime64(dt, "M") for dt in species["planted"].to_list()]),
+        year_p=jnp.asarray(species["year_p"], dtype=jnp.int32),
+        month_p=jnp.asarray(species["month_p"], dtype=jnp.int32),
+    )
+
+    return species_data
 
 
 if __name__ == "__main__":

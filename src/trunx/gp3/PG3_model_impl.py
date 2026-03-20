@@ -3,7 +3,9 @@
 # %%
 import os
 
+import jax
 import jax.numpy as jnp
+import pandas as pd
 import polars as pl
 from jax import grad
 
@@ -18,7 +20,7 @@ from trunx.gp3.plot_function import (
 from trunx.gp3.prepare_climate import prepare_climate
 from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
-from trunx.gp3.run_3pg import run_3pg, ws_final
+from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
 from trunx.gp3.run_r3pg import run_comparison_r
 
 os.chdir(project_root)
@@ -32,6 +34,8 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         fig_name = "r_3PG_trotsiuk.png"
     elif file_path == "./data/data_semisynthetic.xlsx":
         fig_name = "r_3PG_ICPdata.png"
+    elif file_path == "./data/data_nothinning.xlsx":
+        fig_name = "r_3PG_trotsiuk_mult_nothinning.png"
     else:
         fig_name = None
 
@@ -46,38 +50,51 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
 
     params_df = pl.read_excel(file_path, sheet_name="parameters")
 
-    default_params = dict(
-        zip(params_df["parameter"].to_list(), params_df["Fagus sylvatica"].to_list(), strict=True)
-    )
-    params = Params(**default_params)
+    param_names = params_df["parameter"].to_list()
+    species_names = [col for col in params_df.columns if col != "parameter"]
+    values_matrix = params_df[species_names].to_numpy()
+
+    params_dict = {}
+    for i, param_name in enumerate(param_names):
+        params_dict[param_name] = values_matrix[i, :]
+
+    params = Params(**params_dict)
 
     # Check if start month is dormant
-    start_month = 1  # January
+    start_month = site_data.month_i
     start_dormant = is_dormant(start_month, params.leafgrow, params.leaffall)
 
-    if start_dormant:
-        initial_WF = jnp.asarray(0.0)
-        initial_WF_debt = species_data.WF
-    else:
-        initial_WF = species_data.WF
-        initial_WF_debt = jnp.asarray(0.0)
+    initial_WF = jnp.where(start_dormant, jnp.asarray(0.0), species_data.WF)
+
+    initial_WF_debt = jnp.where(start_dormant, species_data.WF, jnp.asarray(0.0))
 
     asw_min = jnp.where(
         site_data.ASW_min > site_data.ASW_max, site_data.ASW_max, site_data.ASW_min
     )
+
     asw_max = site_data.ASW_max
+
+    # Clip ASW to [asw_min, asw_max] for each species
     initial_ASW = jnp.clip(site_data.ASW, asw_min, asw_max)
+
+    n_species = len(species_data.specie)
+    climate_year, climate_month = (
+        pd.to_datetime(climate.start_month).year,
+        pd.to_datetime(climate.start_month).month,
+    )
+
+    age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
 
     initial_state = State(
         WF=jnp.asarray(initial_WF),
         WR=jnp.asarray(species_data.WR),
         WS=jnp.asarray(species_data.WS),
         N=jnp.asarray(species_data.N),
-        ASW=jnp.asarray(initial_ASW),
-        age=jnp.asarray(int(climate.start_month - species_data.planted)),
+        ASW=jnp.full(n_species, initial_ASW, dtype=jnp.float32),
+        age=jnp.asarray(age_months),
         WF_debt=jnp.asarray(initial_WF_debt),
-        prev_month=jnp.asarray(12 if start_month == 1 else start_month - 1),
-        water_runoff_polled=jnp.asarray(0.0),
+        prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
+        water_runoff_polled=jnp.zeros(n_species),
     )
 
     final_state, outputs = run_3pg(
@@ -86,53 +103,36 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         params=params,
         site=site_data,
         species=species_data,
+        n_species=n_species,
     )
 
     print("Final stem biomass (Mg/ha):", final_state.WS)
     print("Final LAI:", outputs["LAI"][-1])
-
-    grad_alpha = grad(ws_final, argnums=0)(
-        params.alphaCx,
-        params.CoeffCond,
-        params.Y,
-        params,
-        initial_state,
-        climate,
-        site_data,
-        species_data,
-    )
-
-    grad_Kg = grad(ws_final, argnums=1)(
-        params.alphaCx,
-        params.CoeffCond,
-        params.Y,
-        params,
-        initial_state,
-        climate,
-        site_data,
-        species_data,
-    )
-
-    grad_Y = grad(ws_final, argnums=2)(
-        params.alphaCx,
-        params.CoeffCond,
-        params.Y,
-        params,
-        initial_state,
-        climate,
-        site_data,
-        species_data,
-    )
-
     print("Final WS:", final_state.WS)
-    print("∂WS/∂alphaCx:", grad_alpha)
-    print("∂WS/∂CoeffCond:", grad_Kg)
-    print("∂WS/∂Y:", grad_Y)
+
+    params_vec = jnp.array(
+        [
+            params.alphaCx,
+            params.CoeffCond,
+            params.Y,
+        ]
+    )
+
+    # Get Jacobian matrix (n_species × 3)
+    jacobian = jax.jacobian(ws_final_vector)(
+        params_vec, params, initial_state, climate, site_data, species_data, n_species
+    )
+
+    # jacobian has shape (n_species, 3)
+    for idx, specie in enumerate(species_data.specie):
+        print(f"{specie}: [∂WS/∂alphaCx, ∂WS/∂CoeffCond, ∂WS/∂Y] = {jacobian[idx]}")
 
     if r_comparison and plot_output:
         r_outputs = run_comparison_r(file_path)
-        fig = plot_combined_3pg_outputs(r_outputs, outputs, climate.start_month, fig_name)
-        # create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        fig = plot_combined_3pg_outputs(
+            r_outputs, outputs, climate.start_month, species_data.specie, fig_name
+        )
+        create_comparison_dataframe(r_outputs, outputs, climate.start_month)
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month)
@@ -148,8 +148,10 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
 if __name__ == "__main__":
     # file_path = "./data/data_semisynthetic.xlsx"
     # file_path = "./data/data.input.xlsx"
-    file_path = "./data/data_sspecies_nothinning.xlsx"
+    # file_path = "./data/data_sspecies_nothinning.xlsx"
+    file_path = "./data/data_nothinning.xlsx"
 
     fig, outputs = run_threepg_main(file_path, plot_output=True, r_comparison=True)
+
 
 # %%

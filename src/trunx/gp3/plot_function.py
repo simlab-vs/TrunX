@@ -67,7 +67,9 @@ def plot_outputs(outputs, start_month, fig_name: str | None = None):
     return fig
 
 
-def plot_combined_3pg_outputs(r_df, outputs, start_month, fig_name: str | None = None):
+def plot_combined_3pg_outputs(
+    r_df, outputs, start_month, species_list, fig_name: str | None = None
+):
     """
     Visualize both R 3-PG outputs and python implementation in the same plot.
 
@@ -109,9 +111,6 @@ def plot_combined_3pg_outputs(r_df, outputs, start_month, fig_name: str | None =
     # Filter R data for variables of interest
     plot_data = r_df.filter(pl.col("variable").is_in(i_var))
 
-    # Get unique species from R data
-    species_list = plot_data["species"].unique().to_list()
-
     # Get dates from R data
     dates = plot_data["date"].unique().sort().to_numpy()
     num_months = len(dates)
@@ -142,20 +141,20 @@ def plot_combined_3pg_outputs(r_df, outputs, start_month, fig_name: str | None =
                     linewidth=1.5,
                     alpha=0.7,
                 )
-
-        orig_key = var_mapping[var]
-        if orig_key in outputs:
-            orig_values = outputs[orig_key]
-            if len(orig_values) >= num_months:
-                ax.plot(
-                    months,
-                    orig_values[:num_months],
-                    "-",
-                    label="Python",
-                    color="black",
-                    linewidth=2,
-                    alpha=0.8,
-                )
+        for idx, (species, color) in enumerate(zip(species_list, r_colors, strict=True)):
+            orig_key = var_mapping[var]
+            if orig_key in outputs:
+                orig_values = outputs[orig_key][:, idx]
+                if len(orig_values) >= num_months:
+                    ax.plot(
+                        months,
+                        orig_values[:num_months],
+                        "-",
+                        label=f"P - {species}",
+                        color=color,
+                        linewidth=2,
+                        alpha=0.8,
+                    )
 
         ax.set_ylabel(label, fontsize=11)
         ax.grid(True, alpha=0.3)
@@ -210,6 +209,8 @@ def create_comparison_dataframe(r_df, outputs, start_month):
     pl.DataFrame
         Combined DataFrame of R and Python outputs.
     """
+    species_list = r_df.select("species").unique().to_series().to_list()
+    n_species = len(species_list)
     # Generate dates
     num_months = outputs["WS"].shape[0]
     dates = [start_month + np.timedelta64(i, "M") for i in range(num_months)]
@@ -245,7 +246,10 @@ def create_comparison_dataframe(r_df, outputs, start_month):
         )
     )
 
-    r_outputs = r_outputs.pivot(index="date", columns="variable", values="value").sort("date")
+    r_outputs = r_outputs.pivot(
+        index=["date", "species"], columns="variable", values="value"
+    ).sort(["date", "species"])
+
     rename_dict = {
         "dbh": "r_DBH",
         "lai": "r_LAI",
@@ -271,11 +275,43 @@ def create_comparison_dataframe(r_df, outputs, start_month):
         "npp_fract_root": "r_eta_R",
     }
     r_outputs = r_outputs.rename(rename_dict)
-    r_outputs = r_outputs.with_columns(pl.Series("Dates", dates, dtype=pl.Date))
+
+    dates_expanded = []
+    for date in dates:
+        for _ in range(n_species):
+            dates_expanded.append(date)
+
+    # r_outputs = r_outputs.with_columns(pl.Series("Dates", dates, dtype=pl.Date))
+
+    r_outputs = r_outputs.with_columns(pl.Series("Dates", dates_expanded, dtype=pl.Date))
     r_outputs = r_outputs.drop("date")
 
-    p_outputs = pl.from_pandas(pd.DataFrame(outputs)).select(
+    p_records = []
+    for var in outputs:
+        for t in range(num_months):
+            for s, specie in enumerate(species_list):
+                p_records.append(
+                    {
+                        "Dates": dates[t],
+                        "species": f"{specie}",
+                        "variable": var,
+                        "p_value": outputs[var][t, s]
+                        if outputs[var].ndim > 1
+                        else outputs[var][t],
+                    }
+                )
+
+    p_outputs = pl.DataFrame(p_records)
+    p_outputs = p_outputs.pivot(
+        index=["Dates", "species"],
+        on="variable",
+        values="p_value",
+    )
+
+    p_outputs = p_outputs.select(
         [
+            "Dates",
+            "species",
             "DBH",
             "LAI",
             "GPP",
@@ -301,9 +337,7 @@ def create_comparison_dataframe(r_df, outputs, start_month):
         ]
     )
 
-    p_outputs = p_outputs.with_columns(pl.Series("Dates", dates, dtype=pl.Date))
-
-    df = p_outputs.join(r_outputs, on="Dates", how="inner")
+    df = p_outputs.join(r_outputs, on=["Dates", "species"], how="inner")
 
     df.write_csv("./data/r_python.comparison.csv")
 

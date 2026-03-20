@@ -33,28 +33,21 @@ def read_species_data(
     filepath: str, sheet_name: str
 ) -> SpeciesData:  # Replace with List[SpeciesData] for full adaptation of code
     """Read species data from excel data file."""
-    df = pl.read_excel(filepath, sheet_name=sheet_name)
+    species = pl.read_excel(filepath, sheet_name=sheet_name)
 
-    species_data: list[SpeciesData] = []
+    species_data = SpeciesData(
+        specie=list(species["species"]),
+        FR=jnp.asarray(species["fertility"], dtype=jnp.float32),
+        WF=jnp.asarray(species["biom_foliage"], dtype=jnp.float32),
+        WR=jnp.asarray(species["biom_root"], dtype=jnp.float32),
+        WS=jnp.asarray(species["biom_stem"], dtype=jnp.float32),
+        N=jnp.asarray(species["stems_n"], dtype=jnp.float32),
+        planted=list([np.datetime64(dt, "M") for dt in species["planted"].to_list()]),
+        year_p=jnp.asarray(species["year_p"], dtype=jnp.int32),
+        month_p=jnp.asarray(species["month_p"], dtype=jnp.int32),
+    )
 
-    for row in df.iter_rows(named=True):
-        year_p, month_p = map(int, row["planted"].split("-"))
-
-        sp = SpeciesData(
-            specie=str(row["species"]),
-            FR=float(row["fertility"]),
-            WF=float(row["biom_foliage"]),
-            WR=float(row["biom_root"]),
-            WS=float(row["biom_stem"]),
-            N=float(row["stems_n"]),
-            planted=np.datetime64(row["planted"], "M"),
-            year_p=year_p,
-            month_p=month_p,
-        )
-
-        species_data.append(sp)
-
-    return species_data[0]  # This need to be modified later to adapt for other species
+    return species_data  # This need to be modified later to adapt for other species
 
 
 def saturation_vapor_pressure(T: jnp.ndarray) -> jnp.ndarray:

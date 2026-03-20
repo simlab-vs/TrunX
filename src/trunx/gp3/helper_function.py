@@ -222,9 +222,7 @@ def compute_dbh(WS: Array, N: Array, aWs: Array, nWs: Array) -> Array:
         Diameter at breast height (cm).
     """
     wS_per_tree = (WS * 1000.0) / (N + 1e-8)  # kg/tree
-
     DBH = (wS_per_tree / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
-
     return DBH
 
 
