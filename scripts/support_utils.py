@@ -46,5 +46,5 @@ def dms_to_decimal(dms):
     minutes = (dms % 10000) // 100
     seconds = dms % 100
 
-    val = round(sign * (degrees + minutes / 60 + seconds / 3600), 4)
+    val = sign * (degrees + minutes / 60 + seconds / 3600)
     return val
