@@ -15,6 +15,7 @@ from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
     create_comparison_dataframe,
     plot_combined_3pg_outputs,
+    plot_combined_3pg_outputs_per_species,
     plot_outputs,
 )
 from trunx.gp3.prepare_climate import prepare_climate
@@ -84,7 +85,7 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     )
 
     age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
-
+    print(age_months)
     initial_state = State(
         WF=jnp.asarray(initial_WF),
         WR=jnp.asarray(species_data.WR),
@@ -94,7 +95,6 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         age=jnp.asarray(age_months),
         WF_debt=jnp.asarray(initial_WF_debt),
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
-        water_runoff_polled=jnp.zeros(n_species),
     )
 
     final_state, outputs = run_3pg(

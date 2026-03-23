@@ -18,7 +18,6 @@ class State(NamedTuple):
     age: Array  # Age in months
     WF_debt: Array  # Foliage biomass stored during dormant period
     prev_month: Array  # Previous month for dormancy transition detection
-    water_runoff_polled: Array
 
 
 class ClimateData(NamedTuple):

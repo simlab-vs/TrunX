@@ -20,6 +20,7 @@ from trunx.gp3.helper_function import (
     f_age,
     f_calpha,
     f_cg,
+    f_exp_foliage,
     f_frost,
     f_nutrition,
     f_soil_water,
@@ -34,7 +35,7 @@ from trunx.gp3.model_inputs import State
 def model_step(state, climate_month, params, site, species, n_species):
     """Compute one model step."""
     T_avg, T_max, VPD, precip, solar_rad, frost_days, co2, n_days, month = climate_month
-    WF, WR, WS, N, ASW, age_months, WF_debt, prev_month, water_runoff_polled = state
+    WF, WR, WS, N, ASW, age_months, WF_debt, prev_month = state
 
     # Check if dormant
     dormant = is_dormant(month, params.leafgrow, params.leaffall)
@@ -52,6 +53,8 @@ def model_step(state, climate_month, params, site, species, n_species):
     # Leaf area index
     LAI, SLA = compute_lai(WF, age_months, params.SLA0, params.SLA1, params.tSLA)
     LAI = jnp.clip(LAI, 0.0, 15.0)
+    lai_total = jnp.sum(LAI)
+    LAI_per = jnp.where(lai_total > 0.0, LAI / lai_total, 0.0)
 
     # Light interception (Beer's Law)
     canopy_cover = compute_canopy_cover(age_months, params.fullCanAge)
@@ -84,8 +87,8 @@ def model_step(state, climate_month, params, site, species, n_species):
         species.FR, params.pRx, params.pRn, params.pFS2, params.pFS20, phi, DBH, params.m0
     )
     # Turnover
-    gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
-
+    # gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
+    gammaF = f_exp_foliage(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
     # Biomass updates
     # WF_new = jnp.clip(WF + eta_F * NPP - gammaF * WF, 0.0, None)
     WF_new = jnp.where(
@@ -103,40 +106,27 @@ def model_step(state, climate_month, params, site, species, n_species):
     # Self-thinning
     WS_new, N_new = apply_self_thinning(WS_new, N, params.wSx1000, params.thinPower)
 
-    # transp_factor = 0.1
-    # ASW_new = jnp.clip(
-    #     ASW + precip - VPD * n_days * transp_factor * lightIntcptn, 0.0, site.ASW_max
-    # )
-
-    gC = calculate_base_conductance(LAI, params.MaxCond, params.MinCond, params.LAIgcx)
+    gC = calculate_base_conductance(lai_total, params.MaxCond, params.MinCond, params.LAIgcx)
     ftmp_gc = f_temperature_gc(T_avg, T_max, params.Tmin, params.Topt, params.Tmax)
     fcg = f_cg(co2, params.fCg700)
-    conduct_canopy = gC * phi * ftmp_gc * fcg
+    conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
     day_length = calculate_day_length(site.latitude, month)
 
-    asw_results = compute_asw(
-        # Input state
+    ASW_new, f_transp_scale = compute_asw(
+        params,
+        site,
         ASW=ASW,
-        water_runoff_polled=water_runoff_polled,  # You'll need to add this to State
-        # Climate inputs
         prcp=precip,
         solar_rad=solar_rad,
         VPD=VPD,
         day_length=day_length,
         days_in_month=n_days,
-        # Parameters
-        Qa=params.Qa,
-        Qb=params.Qb,
-        BLcond=params.BLcond,
         conduct_canopy=conduct_canopy,
-        MaxIntcptn=params.MaxIntcptn,
         lai=LAI,
-        LAImaxIntcptn=params.LAImaxIntcptn,
-        asw_min=site.ASW_min,
-        asw_max=site.ASW_max,
     )
-    ASW_new = asw_results["ASW_final"]
-    water_runoff_polled_new = asw_results["water_runoff_polled_new"]
+
+    GPP = GPP * f_transp_scale
+    NPP = NPP * f_transp_scale
 
     new_state = State(
         WF=WF_new,
@@ -147,7 +137,6 @@ def model_step(state, climate_month, params, site, species, n_species):
         age=jnp.asarray(age_months + 1),
         WF_debt=jnp.asarray(WF_debt_new),
         prev_month=jnp.full(n_species, month),
-        water_runoff_polled=jnp.full(n_species, water_runoff_polled_new),
     )
 
     outputs = dict(
@@ -175,6 +164,7 @@ def model_step(state, climate_month, params, site, species, n_species):
         SLA=SLA,
         alpha_c=alpha_c,
         fcalpha=fcalpha,
+        gammaF=gammaF,
         Volume=WS_new * 0.85 / (params.tRho + 1e-8),
     )
 
