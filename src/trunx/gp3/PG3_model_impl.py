@@ -64,15 +64,12 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     # Check if start month is dormant
     start_month = site_data.month_i
     start_dormant = is_dormant(start_month, params.leafgrow, params.leaffall)
-
     initial_WF = jnp.where(start_dormant, jnp.asarray(0.0), species_data.WF)
-
     initial_WF_debt = jnp.where(start_dormant, species_data.WF, jnp.asarray(0.0))
 
     asw_min = jnp.where(
         site_data.ASW_min > site_data.ASW_max, site_data.ASW_max, site_data.ASW_min
     )
-
     asw_max = site_data.ASW_max
 
     # Clip ASW to [asw_min, asw_max] for each species
@@ -85,15 +82,15 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     )
 
     age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
-    print(age_months)
+
     initial_state = State(
-        WF=jnp.asarray(initial_WF),
-        WR=jnp.asarray(species_data.WR),
-        WS=jnp.asarray(species_data.WS),
-        N=jnp.asarray(species_data.N),
+        WF=initial_WF,
+        WR=species_data.WR,
+        WS=species_data.WS,
+        N=species_data.N,
         ASW=jnp.full(n_species, initial_ASW, dtype=jnp.float32),
-        age=jnp.asarray(age_months),
-        WF_debt=jnp.asarray(initial_WF_debt),
+        age=age_months,
+        WF_debt=initial_WF_debt,
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
     )
 
@@ -148,8 +145,8 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
 if __name__ == "__main__":
     # file_path = "./data/data_semisynthetic.xlsx"
     # file_path = "./data/data.input.xlsx"
-    # file_path = "./data/data_sspecies_nothinning.xlsx"
-    file_path = "./data/data_nothinning.xlsx"
+    file_path = "./data/data_sspecies_nothinning.xlsx"
+    # file_path = "./data/data_nothinning.xlsx"
 
     fig, outputs = run_threepg_main(file_path, plot_output=True, r_comparison=True)
 

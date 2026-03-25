@@ -12,7 +12,7 @@ from jax import Array
 from trunx.gp3.model_inputs import State
 
 
-def f_temperature(T_avg: Array, T_min: Array, T_opt: Array, T_max: Array) -> Array:
+def f_temperature(params, T_avg: Array) -> Array:
     """
     Calculate the temperature response function (fT) for forest growth.
 
@@ -39,18 +39,18 @@ def f_temperature(T_avg: Array, T_min: Array, T_opt: Array, T_max: Array) -> Arr
         Temperature response function value (fT).
     """
     eps = 1e-8
-    a = jnp.clip((T_avg - T_min) / (T_opt - T_min + eps), 0.0, None)
-    b = jnp.clip((T_max - T_avg) / (T_max - T_opt + eps), 0.0, None)
-    power = (T_max - T_opt) / (T_opt - T_min + eps)
+    a = jnp.clip((T_avg - params.Tmin) / (params.Topt - params.Tmin + eps), 0.0, None)
+    b = jnp.clip((params.Tmax - T_avg) / (params.Tmax - params.Topt + eps), 0.0, None)
+    power = (params.Tmax - params.Topt) / (params.Topt - params.Tmin + eps)
     return jnp.clip(a * (b**power), 0.0, 1.0)
 
 
-def f_frost(frost_days: Array, k_F: Array):
+def f_frost(params, frost_days: Array):
     """
     Calculate the frost response function (fF) for forest growth.
 
     The function is defined as:
-    fF = 1 - k_F * frost_days/30
+    fF = 1 - kF * frost_days/30
 
     Parameters
     ----------
@@ -64,7 +64,7 @@ def f_frost(frost_days: Array, k_F: Array):
     Array
         Frost response function value (fF).
     """
-    return jnp.clip(1.0 - k_F * frost_days / 30.0, 0.0, 1.0)
+    return jnp.clip(1.0 - params.kF * frost_days / 30.0, 0.0, 1.0)
 
 
 def f_vpd(VPD: Array, CoeffCond: Array) -> Array:
@@ -90,7 +90,11 @@ def f_vpd(VPD: Array, CoeffCond: Array) -> Array:
     return f_vpd
 
 
-def f_age(age_months: Array, MaxAge: Array, nAge: Array, rAge: Array | None = None) -> Array:
+def f_age(
+    params,
+    age_months: Array,
+    # MaxAge: Array, nAge: Array, rAge: Array | None = None
+) -> Array:
     """
     Age-related growth modifier.
 
@@ -118,17 +122,19 @@ def f_age(age_months: Array, MaxAge: Array, nAge: Array, rAge: Array | None = No
     F_age: Array
         Age modifier ranging from 0 to 1.
     """
-    if rAge is None:
-        rAge = jnp.asarray(0.95)
+    rAge = jnp.where(params.rAge is None, jnp.asarray(0.95), params.rAge)
+    age_years = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
 
-    age_years = age_months / 12.0
-    FAge = age_years / (MaxAge + 1e-8)
-    f_age = 1.0 / (1.0 + (FAge / (rAge + 1e-8)) ** nAge)
+    FAge = age_years / (params.MaxAge + 1e-8)
+    f_age = 1.0 / (1.0 + (FAge / (rAge + 1e-8)) ** params.nAge)
     return f_age
 
 
 def f_soil_water(
-    ASW: Array, ASW_max: Array, SWconst: Array, SWpower: Array, soil_class: Array
+    ASW: Array,
+    site,
+    params,
+    # ASW_max: Array, SWconst: Array, SWpower: Array, soil_class: Array
 ) -> Array:
     """
     Soil water stress function.
@@ -155,26 +161,29 @@ def f_soil_water(
     f_sw : Array
         Soil water stress factor clipped to [0, 1].
     """
-    if soil_class > 0:
-        SWconst = 0.8 - 0.10 * soil_class
-        SWpower = 11.0 - 2.0 * soil_class
-    elif soil_class < 0:
-        if SWconst is None or SWpower is None:
+    if site.soil_class > 0:
+        SWconst = 0.8 - 0.10 * site.soil_class
+        SWpower = 11.0 - 2.0 * site.soil_class
+    elif site.soil_class < 0:
+        if params.SWconst is None or params.SWpower is None:
             raise ValueError("SWconst and SWpower must be provided when soil_class < 0")
-        SWconst = SWconst
-        SWpower = SWpower
+        SWconst = params.SWconst
+        SWpower = params.SWpower
     else:
         SWconst = jnp.asarray(999.0)
-        SWpower = SWpower if SWpower is not None else jnp.asarray(0.0)
+        SWpower = params.SWpower if params.SWpower is not None else jnp.asarray(0.0)
 
-    SWdef = 1.0 - ASW / (ASW_max + 1e-8)
+    SWdef = 1.0 - ASW / (site.ASW_max + 1e-8)
     f_sw = 1 / (1 + (SWdef / (SWconst + 1e-8)) ** SWpower)
     f_sw = jnp.clip(f_sw, 0.0, 1.0)
 
     return f_sw
 
 
-def f_nutrition(FR: Array, fN0: Array, fNn: Array) -> Array:
+def f_nutrition(
+    species,
+    params,
+) -> Array:
     """
     Soil nutrition modifier from the 3-PG model.
 
@@ -195,8 +204,8 @@ def f_nutrition(FR: Array, fN0: Array, fNn: Array) -> Array:
     f_N : Array
         Nutrition modifier.
     """
-    f_N = 1.0 - (1.0 - fN0) * (1.0 - FR) ** fNn
-    f_N = jnp.where(fNn == 0.0, 1.0, f_N)
+    f_N = 1.0 - (1.0 - params.fN0) * (1.0 - species.FR) ** params.fNn
+    f_N = jnp.where(params.fNn == 0.0, 1.0, f_N)
 
     return f_N
 
@@ -226,7 +235,7 @@ def compute_dbh(WS: Array, N: Array, aWs: Array, nWs: Array) -> Array:
     return DBH
 
 
-def compute_light_interception(k: Array, LAI: Array, canopy_cover: Array | None = None):
+def compute_light_interception(params, LAI: Array, canopy_cover: Array | None = None):
     """
     Compute the light interception.
 
@@ -250,17 +259,11 @@ def compute_light_interception(k: Array, LAI: Array, canopy_cover: Array | None 
     if canopy_cover is None:
         canopy_cover = jnp.asarray(1.0)
 
-    lightIntcptn = 1.0 - jnp.exp(-k * LAI / (canopy_cover + 1e-8))
+    lightIntcptn = 1.0 - jnp.exp(-params.k * LAI / (canopy_cover + 1e-8))
     return lightIntcptn
 
 
-def compute_lai(
-    WF: Array,
-    stand_age_months: Array,
-    SLA0: Array,
-    SLA1: Array,
-    tSLA: Array,
-) -> tuple[Array, Array]:
+def compute_lai(params, WF: Array, age_months: Array) -> tuple[Array, Array]:
     """
     Compute Leaf Area Index (LAI) from foliage biomass and stand age.
 
@@ -295,19 +298,33 @@ def compute_lai(
     LAI : Array
         Leaf Area Index (m² leaf m⁻² ground).
     """
-    stand_age_years = stand_age_months / 12.0
+    age_year = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
 
     # SLA = SLA1 * jnp.exp(-jnp.log(2.0) * stand_age_years / tSLA) + SLA0
 
     SLA = jnp.where(
-        tSLA != 0,
-        SLA1 + (SLA0 - SLA1) * jnp.exp(-jnp.log(2.0) * (stand_age_years / tSLA) ** 2),
-        jnp.ones_like(stand_age_years) * SLA1,
+        params.tSLA != 0,
+        params.SLA1
+        + (params.SLA0 - params.SLA1) * jnp.exp(-jnp.log(2.0) * (age_year / params.tSLA) ** 2),
+        jnp.ones_like(age_year) * params.SLA1,
     )
 
     LAI = WF * SLA * 0.1
 
     return LAI, SLA
+
+
+def compute_sla(params, age_years):
+    """Compute specific leaf area following Fortran's f_exp function."""
+    SLA = params.SLA1  # Default to final SLA
+
+    SLA = jnp.where(
+        params.tSLA != 0,
+        params.SLA1
+        + (params.SLA0 - params.SLA1) * jnp.exp(-jnp.log(2.0) * (age_years / params.tSLA) ** 2),
+        jnp.ones_like(age_years) * params.SLA1,
+    )
+    return SLA
 
 
 def compute_litterfall_rate(
@@ -339,11 +356,12 @@ def compute_litterfall_rate(
 
 
 def apply_self_thinning(
+    params,
     WS: Array,
     N: Array,
-    wSx: Array,
+    # wSx: Array,
     max_mortality: Array | None = None,
-    thinPower: Array | None = None,
+    # thinPower: Array | None = None,
 ) -> tuple[Array, Array]:
     """
     Apply self-thinning mortality based on size-density constraints.
@@ -369,12 +387,13 @@ def apply_self_thinning(
     if max_mortality is None:
         max_mortality = jnp.asarray(0.05)
 
-    if thinPower is None:
-        thinPower = jnp.asarray(1.5)
+    # if params.thinPower is None:
+    #     thinPower = jnp.asarray(1.5)
+    thinPower = jnp.where(params.thinPower is None, jnp.asarray(1.5), params.thinPower)
 
     wS = 1000.0 * WS / (N + 1e-8)
 
-    wSmax = wSx * (1000.0 / (N + 1e-8)) ** thinPower
+    wSmax = params.wSx1000 * (1000.0 / (N + 1e-8)) ** thinPower
 
     rel_excess = (wS - wSmax) / (wSmax + 1e-8)
 
@@ -386,7 +405,7 @@ def apply_self_thinning(
     return WS_new, N_new
 
 
-def compute_canopy_cover(age: Array, fullCanAge: Array):
+def compute_canopy_cover(params, age: Array):
     """
     Calculate fractional canopy cover.
 
@@ -403,10 +422,10 @@ def compute_canopy_cover(age: Array, fullCanAge: Array):
         Fractional canopy cover (0-1)
     """
     age_years = age / 12.0
-    condition = (fullCanAge > 0) & (age_years < fullCanAge)
+    condition = (params.fullCanAge > 0) & (age_years < params.fullCanAge)
 
     # Calculate cover for young stands
-    young_cover = (age_years + 0.01) / fullCanAge
+    young_cover = (age_years + 0.01) / params.fullCanAge
 
     # Use jnp.where to select between young and mature cover
     canopy_cover = jnp.where(condition, young_cover, 1.0)
@@ -414,7 +433,7 @@ def compute_canopy_cover(age: Array, fullCanAge: Array):
     return canopy_cover
 
 
-def is_dormant(month, leafgrow, leaffall):
+def is_dormant(month: int, leafgrow: Array, leaffall: Array) -> Array:
     """
     Determine if current month is in dormant period.
 
@@ -433,17 +452,23 @@ def is_dormant(month, leafgrow, leaffall):
         True if dormant period, False otherwise
     """
     # Default to False (evergreen)
-    dormant = jnp.array(False)
-    cond_north = (leafgrow > leaffall) & (month >= leaffall) & (month <= leafgrow)
+    dormant = jnp.zeros_like(leafgrow, dtype=bool)
 
-    cond_south = (leafgrow < leaffall) & ((month < leafgrow) | (month >= leaffall))
+    cond_north = jnp.logical_and(
+        leafgrow > leaffall, jnp.logical_and(month >= leaffall, month <= leafgrow)
+    )
 
-    dormant = cond_north | cond_south
+    cond_south = jnp.logical_and(
+        leafgrow < leaffall, jnp.logical_or(month < leafgrow, month >= leaffall)
+    )
+
+    # Combine and ensure boolean type
+    dormant = jnp.logical_or(cond_north, cond_south)
 
     return dormant
 
 
-def f_calpha(co2: Array, fCalpha700: Array):
+def f_calpha(params, co2: Array):
     """
     CO2 modifier for photosynthesis (alpha).
 
@@ -459,21 +484,12 @@ def f_calpha(co2: Array, fCalpha700: Array):
     f_calpha : Array
         CO2 modifier for photosynthesis
     """
-    fCalphax = fCalpha700 / (2.0 - fCalpha700 + 1e-8)
+    fCalphax = params.fCalpha700 / (2.0 - params.fCalpha700 + 1e-8)
     fcalpha = fCalphax * co2 / (350.0 * (fCalphax - 1.0) + co2)
     return fcalpha
 
 
-def compute_allocation_fraction(
-    FR: Array,
-    pRx: Array,
-    pRn: Array,
-    pFS2: Array,
-    pFS20: Array,
-    phi_phys: Array,
-    DBH: Array,
-    m0: Array | None = None,
-):
+def compute_allocation_fraction(species, params, phi_phys: Array, DBH: Array):
     """
     Compute all allocation fractions (roots, foliage, stem) for 3-PG model.
 
@@ -509,15 +525,13 @@ def compute_allocation_fraction(
     pFS : Array
         Foliage:stem ratio (intermediate value)
     """
-    if m0 is None:
-        m0 = jnp.asarray(0.5)
+    m0 = jnp.where(params.m0 is None, jnp.asarray(0.5), params.m0)
+    m = m0 + (1.0 - params.m0) * species.FR
 
-    m = m0 + (1.0 - m0) * FR
+    eta_R = (params.pRx * params.pRn) / (params.pRn + (params.pRx - params.pRn) * phi_phys * m)
 
-    eta_R = (pRx * pRn) / (pRn + (pRx - pRn) * phi_phys * m)
-
-    pfsPower = jnp.log(pFS20 / (pFS2 + 1e-8)) / jnp.log(10.0)
-    pfsConst = pFS2 / 2.0**pfsPower
+    pfsPower = jnp.log(params.pFS20 / (params.pFS2 + 1e-8)) / jnp.log(10.0)
+    pfsConst = params.pFS2 / 2.0**pfsPower
     pFS = pfsConst * (jnp.clip(DBH, 0.1, None) ** pfsPower)
 
     eta_S = (1.0 - eta_R) / (1.0 + pFS)
@@ -620,13 +634,12 @@ def calculate_transpiration(
 
 
 def update_soil_water(
+    site,
     ASW: Array,
     prcp: Array,
     transp_veg: Array,
     evapotra_soil: Array,
     prcp_interc: Array,
-    asw_max: Array,
-    asw_min: Array,
     Irrig: Array | None = None,
     water_runoff_polled: Array | None = None,
     poolFractn: Array | None = None,
@@ -657,15 +670,15 @@ def update_soil_water(
     ASW = ASW + prcp + monthly_irrig + water_runoff_polled
     total_demand = transp_veg + evapotra_soil + prcp_interc
     evapo_transp = jnp.minimum(ASW, total_demand)
-    excessSW = jnp.maximum(ASW - evapo_transp - asw_max, 0.0)
+    excessSW = jnp.maximum(ASW - evapo_transp - site.ASW_max, 0.0)
     ASW = ASW - evapo_transp - excessSW
 
     # water_runoff_polled_new = poolFractn * excessSW
     # prcp_runoff = (1.0 - poolFractn) * excessSW
     # irrig_supl = jnp.maximum(asw_min - ASW, 0.0)
 
-    ASW = jnp.maximum(ASW, asw_min)
-    f_transp_scale = jnp.where(total_demand == 0, 1.0, evapo_transp / total_demand)
+    ASW = jnp.maximum(ASW, site.ASW_min)
+    f_transp_scale = jnp.where(total_demand == 0, 1.0, evapo_transp / (total_demand + 1e-8))
 
     return ASW, f_transp_scale, evapo_transp
 
@@ -759,13 +772,12 @@ def compute_asw(
 
     # Step 3: Update soil water balance
     ASW, f_transp_scale, evapo_transp = update_soil_water(
+        site=site,
         ASW=ASW,
         prcp=prcp,
         transp_veg=transp_veg,
         evapotra_soil=evapotra_soil,
         prcp_interc=prcp_interc,
-        asw_max=site.ASW_max,
-        asw_min=site.ASW_min,
     )
 
     # Step 4: Scale transpiration if needed
@@ -816,7 +828,7 @@ def calculate_day_length(latitude: Array, month: Array) -> Array:
     return day_length
 
 
-def calculate_base_conductance(lai: Array, MaxCond: Array, MinCond: Array, LAIgcx: Array) -> Array:
+def calculate_base_conductance(params, lai: Array) -> Array:
     """
     Calculate base canopy conductance (gC) as function of LAI.
 
@@ -836,16 +848,18 @@ def calculate_base_conductance(lai: Array, MaxCond: Array, MinCond: Array, LAIgc
     gC : Array
         Base canopy conductance (m/s)
     """
-    gC = MaxCond
-    condition = lai <= LAIgcx
-    scaled_cond = MinCond + (MaxCond - MinCond) * lai / (LAIgcx + 1e-8)
+    gC = params.MaxCond
+    condition = lai <= params.LAIgcx
+    scaled_cond = params.MinCond + (params.MaxCond - params.MinCond) * lai / (params.LAIgcx + 1e-8)
     gC = jnp.where(condition, scaled_cond, gC)
 
     return gC
 
 
 def f_temperature_gc(
-    T_avg: Array, T_max: Array, T_min: Array, T_opt: Array, T_max_val: Array
+    params,
+    T_avg: Array,
+    T_max: Array,
 ) -> Array:
     """
     Temperature response function for canopy conductance.
@@ -858,11 +872,11 @@ def f_temperature_gc(
         Average monthly temperature (°C)
     T_max : Array
         Maximum monthly temperature (°C)
-    T_min : Array
+    Tmin : Array
         Minimum temperature for growth (°C)
-    T_opt : Array
+    Topt : Array
         Optimum temperature for growth (°C)
-    T_max_val : Array
+    Tmax : Array
         Maximum temperature for growth (°C)
 
     Returns
@@ -873,17 +887,17 @@ def f_temperature_gc(
     eps = 1e-8
     T_mid = (T_avg + T_max) / 2.0
 
-    invalid = (T_mid <= T_min) | (T_mid >= T_max_val)
+    invalid = (T_mid <= params.Tmin) | (T_mid >= params.Tmax)
 
-    a = (T_mid - T_min) / (T_opt - T_min + eps)
-    b = (T_max_val - T_mid) / (T_max_val - T_opt + eps)
-    power = (T_max_val - T_opt) / (T_opt - T_min + eps)
+    a = (T_mid - params.Tmin) / (params.Topt - params.Tmin + eps)
+    b = (params.Tmax - T_mid) / (params.Tmax - params.Topt + eps)
+    power = (params.Tmax - params.Topt) / (params.Topt - params.Tmin + eps)
 
     f_tmp_gc = jnp.where(invalid, 0.0, a * (b**power))
     return jnp.clip(f_tmp_gc, 0.0, 1.0)
 
 
-def f_cg(co2: Array, fCg700: Array) -> Array:
+def f_cg(params, co2: Array) -> Array:
     """
     CO2 modifier for canopy conductance.
 
@@ -899,12 +913,12 @@ def f_cg(co2: Array, fCg700: Array) -> Array:
     f_cg : Array
         CO2 modifier for canopy conductance
     """
-    fCg0 = fCg700 / (2.0 * fCg700 - 1.0 + 1e-8)
+    fCg0 = params.fCg700 / (2.0 * params.fCg700 - 1.0 + 1e-8)
     f_cg = fCg0 / (1.0 + (fCg0 - 1.0) * co2 / 350.0)
     return jnp.clip(f_cg, 0.0, 1.0)
 
 
-def f_exp_foliage(age_months: Array, gammaF0: Array, gammaF1: Array, tgammaF: Array) -> Array:
+def f_exp_foliage(params, age_months: Array) -> Array:
     """
     Exponential foliage growth function.
 
@@ -925,12 +939,14 @@ def f_exp_foliage(age_months: Array, gammaF0: Array, gammaF1: Array, tgammaF: Ar
         Output array of same shape as x, representing foliage biomass.
     """
     eps = 1e-8
-    kg = 12.0 * jnp.log(1.0 + gammaF1 / (gammaF0 + eps)) / (tgammaF + eps)
-    age_year = age_months / 12.0
+    kg = 12.0 * jnp.log(1.0 + params.gammaF1 / (params.gammaF0 + eps)) / (params.tgammaF + eps)
+    age_year = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
     out = jnp.where(
-        (tgammaF * gammaF1) < eps,
-        gammaF1,
-        gammaF1 * gammaF0 / (gammaF0 + (gammaF1 - gammaF0) * jnp.exp(-kg * age_year)),
+        (params.tgammaF * params.gammaF1) < eps,
+        params.gammaF1,
+        params.gammaF1
+        * params.gammaF0
+        / (params.gammaF0 + (params.gammaF1 - params.gammaF0) * jnp.exp(-kg * age_year)),
     )
 
     return out

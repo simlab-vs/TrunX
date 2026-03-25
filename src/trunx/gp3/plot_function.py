@@ -243,6 +243,7 @@ def create_comparison_dataframe(r_df, outputs, start_month):
                 "npp_fract_stem",
                 "npp_fract_root",
                 "gammaF",
+                "f_transp_scale",
             ]
         )
     )
@@ -275,6 +276,7 @@ def create_comparison_dataframe(r_df, outputs, start_month):
         "npp_fract_stem": "r_eta_S",
         "npp_fract_root": "r_eta_R",
         "gammaF": "r_gammaF",
+        "f_transp_scale": "r_f_transp_scale",
     }
     r_outputs = r_outputs.rename(rename_dict)
 
@@ -336,6 +338,7 @@ def create_comparison_dataframe(r_df, outputs, start_month):
             "eta_S",
             "eta_F",
             "gammaF",
+            "f_transp_scale",
         ]
     )
 

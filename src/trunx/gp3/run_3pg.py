@@ -4,7 +4,7 @@ import os
 
 import jax
 import jax.numpy as jnp
-from jax import debug
+from jax import debug, lax
 
 from trunx.gp3.helper_function import (
     apply_self_thinning,
@@ -41,8 +41,8 @@ def model_step(state, climate_month, params, site, species, n_species):
     dormant = is_dormant(month, params.leafgrow, params.leaffall)
     prev_dormant = is_dormant(prev_month, params.leafgrow, params.leaffall)
 
-    first_dormant = jnp.array(dormant & ~prev_dormant)
-    first_growing = jnp.array(~dormant & prev_dormant)
+    first_dormant = jnp.logical_and(dormant, jnp.logical_not(prev_dormant))
+    first_growing = jnp.logical_and(jnp.logical_not(dormant), prev_dormant)
 
     WF_active = jnp.where(first_dormant, 0.0, WF)
     WF_debt_new = jnp.where(first_dormant, WF, WF_debt)
@@ -51,27 +51,34 @@ def model_step(state, climate_month, params, site, species, n_species):
     WF_debt_new = jnp.where(first_growing, 0.0, WF_debt_new)
 
     # Leaf area index
-    LAI, SLA = compute_lai(WF, age_months, params.SLA0, params.SLA1, params.tSLA)
+    # Note with WF, we get better fitting.
+    LAI, SLA = compute_lai(params, WF_active, age_months)
     LAI = jnp.clip(LAI, 0.0, 15.0)
+
     lai_total = jnp.sum(LAI)
     LAI_per = jnp.where(lai_total > 0.0, LAI / lai_total, 0.0)
 
     # Light interception (Beer's Law)
-    canopy_cover = compute_canopy_cover(age_months, params.fullCanAge)
-    lightIntcptn = compute_light_interception(params.k, LAI, canopy_cover)
+    canopy_cover = compute_canopy_cover(params, age_months)
+    lightIntcptn = compute_light_interception(params, LAI, canopy_cover)
     APAR = solar_rad * n_days * lightIntcptn * canopy_cover
 
     # Growth modifiers
-    fT = f_temperature(T_avg, params.Tmin, params.Topt, params.Tmax)
-    fF = f_frost(frost_days, params.kF)
-    fN = f_nutrition(species.FR, params.fN0, params.fNn)
+    fT = f_temperature(params, T_avg)
+    fF = f_frost(params, frost_days)
+    fN = f_nutrition(species, params)
     fD = f_vpd(VPD, params.CoeffCond)
-    fSW = f_soil_water(ASW, site.ASW_max, params.SWconst, params.SWpower, site.soil_class)
-    fA = f_age(age_months, params.MaxAge, params.nAge, params.rAge)
-    fcalpha = f_calpha(co2, params.fCalpha700)
+    fSW = f_soil_water(ASW, site, params)
+    fA = f_age(params, age_months)
+    fcalpha = f_calpha(params, co2)
 
     phi = fA * jnp.minimum(fD, fSW)
     # phi = fA * fD * fSW
+
+    gC = calculate_base_conductance(params, lai_total)
+    ftmp_gc = f_temperature_gc(params, T_avg, T_max)
+    fcg = f_cg(params, co2)
+    conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
 
     alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha
     alpha_c = jnp.where(LAI == 0.0, 0.0, alpha_c)
@@ -81,35 +88,6 @@ def model_step(state, climate_month, params, site, species, n_species):
     GPP = epsilon * APAR / 100
     NPP = params.Y * GPP
 
-    DBH = compute_dbh(WS, N, params.aWS, params.nWS)
-
-    pFS, eta_F, eta_S, eta_R = compute_allocation_fraction(
-        species.FR, params.pRx, params.pRn, params.pFS2, params.pFS20, phi, DBH, params.m0
-    )
-    # Turnover
-    # gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
-    gammaF = f_exp_foliage(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
-    # Biomass updates
-    # WF_new = jnp.clip(WF + eta_F * NPP - gammaF * WF, 0.0, None)
-    WF_new = jnp.where(
-        dormant,
-        WF_active - gammaF * WF_active,  # Only litterfall in dormant months
-        WF_active + eta_F * NPP - gammaF * WF_active,  # Normal growth
-    )
-    WF_new = jnp.clip(WF_new, 0.0, None)
-    # WR_new = jnp.clip(WR + eta_R * NPP - params.gammaR * WR, 0.0, None)
-    WR_new = jnp.where(dormant, WR, WR + eta_R * NPP - params.gammaR * WR)
-    WR_new = jnp.clip(WR_new, 0.0, None)
-
-    WS_new = jnp.clip(WS + eta_S * NPP, 0.0, None)
-
-    # Self-thinning
-    WS_new, N_new = apply_self_thinning(WS_new, N, params.wSx1000, params.thinPower)
-
-    gC = calculate_base_conductance(lai_total, params.MaxCond, params.MinCond, params.LAIgcx)
-    ftmp_gc = f_temperature_gc(T_avg, T_max, params.Tmin, params.Topt, params.Tmax)
-    fcg = f_cg(co2, params.fCg700)
-    conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
     day_length = calculate_day_length(site.latitude, month)
 
     ASW_new, f_transp_scale = compute_asw(
@@ -126,7 +104,69 @@ def model_step(state, climate_month, params, site, species, n_species):
     )
 
     GPP = GPP * f_transp_scale
-    NPP = NPP * f_transp_scale
+    NPP_scaled = NPP * f_transp_scale
+
+    DBH = compute_dbh(WS, N, params.aWS, params.nWS)
+
+    pFS, eta_F, eta_S, eta_R = compute_allocation_fraction(species, params, phi, DBH)
+
+    # Turnover
+    # gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
+    gammaF = f_exp_foliage(params, age_months)
+
+    WF_debt_after = WF_debt_new
+    NPP_after_debt = NPP_scaled
+
+    growing = ~dormant
+    has_debt = WF_debt_new > jnp.zeros(n_species, dtype=float)
+
+    # Calculate new debt and NPP after repayment
+    WF_debt_after = jnp.where(
+        growing & has_debt,
+        jnp.where(NPP_scaled >= WF_debt_new, 0.0, WF_debt_new - NPP_scaled),
+        WF_debt_new,
+    )
+
+    NPP_after_debt = jnp.where(
+        growing & has_debt,
+        jnp.where(NPP_scaled >= WF_debt_new, NPP_scaled - WF_debt_new, 0.0),
+        NPP_scaled,
+    )
+
+    # Calculate biomass losses (litterfall) using current foliage
+    biom_loss_foliage = jnp.where(growing, gammaF * WF_active, 0.0)
+
+    # biom_loss_foliage = jnp.where(
+    #     dormant,
+    #     jnp.where(first_dormant, WF_debt_new, 0.0),
+    #     gammaF * WF_active
+    # )
+
+    biom_loss_root = jnp.where(dormant, 0.0, params.gammaR * WR)
+
+    # Calculate biomass increments (only in growing season)
+    biom_incr_foliage = jnp.where(dormant, 0.0, NPP_after_debt * eta_F)
+    biom_incr_root = jnp.where(dormant, 0.0, NPP_after_debt * eta_R)
+    biom_incr_stem = jnp.where(dormant, 0.0, NPP_after_debt * eta_S)
+
+    # Update biomass starting from current values
+    WF_new = WF_active + biom_incr_foliage - biom_loss_foliage
+    WF_new = jnp.clip(WF_new, 0.0, None)
+
+    WR_new = WR + biom_incr_root - biom_loss_root
+    WR_new = jnp.clip(WR_new, 0.0, None)
+
+    WS_new = WS + biom_incr_stem
+    WS_new = jnp.clip(WS_new, 0.0, None)
+
+    # Self-thinning (only in growing season)
+    WS_thinned, N_thinned = apply_self_thinning(params, WS_new, N)
+    WS_new = jnp.where(~dormant, WS_thinned, WS_new)
+    N_new = jnp.where(~dormant, N_thinned, N)
+
+    # Recalculate LAI after all updates
+    LAI, SLA = compute_lai(params, WF_new, age_months + 1)
+    LAI = jnp.clip(LAI, 0.0, 15.0)
 
     new_state = State(
         WF=WF_new,
@@ -135,7 +175,7 @@ def model_step(state, climate_month, params, site, species, n_species):
         N=N_new,
         ASW=ASW_new,
         age=jnp.asarray(age_months + 1),
-        WF_debt=jnp.asarray(WF_debt_new),
+        WF_debt=jnp.asarray(WF_debt_after),
         prev_month=jnp.full(n_species, month),
     )
 
@@ -165,6 +205,9 @@ def model_step(state, climate_month, params, site, species, n_species):
         alpha_c=alpha_c,
         fcalpha=fcalpha,
         gammaF=gammaF,
+        f_transp_scale=f_transp_scale,
+        conduct_canopy=conduct_canopy,
+        f_cg=gC,
         Volume=WS_new * 0.85 / (params.tRho + 1e-8),
     )
 
