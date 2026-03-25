@@ -50,7 +50,7 @@ def f_frost(params, frost_days: Array):
     Calculate the frost response function (fF) for forest growth.
 
     The function is defined as:
-    fF = 1 - kF * frost_days/30
+        fF = 1 - kF * frost_days/30
 
     Parameters
     ----------
@@ -134,7 +134,6 @@ def f_soil_water(
     ASW: Array,
     site,
     params,
-    # ASW_max: Array, SWconst: Array, SWpower: Array, soil_class: Array
 ) -> Array:
     """
     Soil water stress function.
@@ -314,19 +313,6 @@ def compute_lai(params, WF: Array, age_months: Array) -> tuple[Array, Array]:
     return LAI, SLA
 
 
-def compute_sla(params, age_years):
-    """Compute specific leaf area following Fortran's f_exp function."""
-    SLA = params.SLA1  # Default to final SLA
-
-    SLA = jnp.where(
-        params.tSLA != 0,
-        params.SLA1
-        + (params.SLA0 - params.SLA1) * jnp.exp(-jnp.log(2.0) * (age_years / params.tSLA) ** 2),
-        jnp.ones_like(age_years) * params.SLA1,
-    )
-    return SLA
-
-
 def compute_litterfall_rate(
     age_months: Array, gammaF0: Array, gammaF1: Array, tgammaF: Array
 ) -> Array:
@@ -359,9 +345,7 @@ def apply_self_thinning(
     params,
     WS: Array,
     N: Array,
-    # wSx: Array,
     max_mortality: Array | None = None,
-    # thinPower: Array | None = None,
 ) -> tuple[Array, Array]:
     """
     Apply self-thinning mortality based on size-density constraints.
@@ -548,13 +532,6 @@ def calculate_interception(
     """
     Calculate rainfall interception for a single species (JAX-compatible).
 
-    From Fortran:
-        prcp_interc_fract = MaxIntcptn
-        if (LAImaxIntcptn > 0) then
-            prcp_interc_fract = MaxIntcptn * min(1.0, lai / LAImaxIntcptn)
-        end if
-        prcp_interc = prcp * prcp_interc_fract
-
     Parameters
     ----------
     prcp : Array
@@ -595,7 +572,7 @@ def calculate_transpiration(
     e20: Array | None = None,
 ) -> Array:
     """
-    Calculate transpiration using Penman-Monteith (JAX-compatible).
+    Calculate transpiration using Penman-Monteith.
 
     Returns transpiration in mm/month.
     """
@@ -644,21 +621,7 @@ def update_soil_water(
     water_runoff_polled: Array | None = None,
     poolFractn: Array | None = None,
 ) -> tuple[Array, Array, Array]:
-    """
-    Update soil water balance (JAX-compatible).
-
-    From Fortran:
-        ASW = ASW + prcp + (100 * Irrig / 12) + water_runoff_polled
-        total_demand = transp_veg + evapotra_soil + prcp_interc
-        evapo_transp = min(ASW, total_demand)
-        excessSW = max(ASW - evapo_transp - asw_max, 0)
-        ASW = ASW - evapo_transp - excessSW
-        water_runoff_polled_new = poolFractn * excessSW
-        prcp_runoff = (1 - poolFractn) * excessSW
-        irrig_supl = max(asw_min - ASW, 0)
-        ASW = max(ASW, asw_min)
-        f_transp_scale = 1 if total_demand == 0 else evapo_transp / total_demand
-    """
+    """Update soil water balance."""
     if Irrig is None:
         Irrig = jnp.array(0.0)
     if water_runoff_polled is None:
@@ -936,7 +899,6 @@ def f_exp_foliage(params, age_months: Array) -> Array:
     Returns
     -------
     out : Array
-        Output array of same shape as x, representing foliage biomass.
     """
     eps = 1e-8
     kg = 12.0 * jnp.log(1.0 + params.gammaF1 / (params.gammaF0 + eps)) / (params.tgammaF + eps)
