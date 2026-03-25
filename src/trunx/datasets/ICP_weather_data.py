@@ -253,10 +253,13 @@ class prepare_icp_weather_data:
         missing_months_list = []
         for row in coverage.iter_rows(named=True):
             plot_id = row["plot_id"]
+            code_var = row["code_variable"]
             min_month = row["min_month_year"]
             max_month = row["max_month_year"]
             existing_months = (
-                monthly_summary.filter(pl.col("plot_id") == plot_id)
+                monthly_summary.filter(
+                    (pl.col("plot_id") == plot_id) & (pl.col("code_variable") == code_var)
+                )
                 .select("month_year")
                 .to_series()
                 .to_list()
