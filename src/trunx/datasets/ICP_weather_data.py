@@ -212,8 +212,8 @@ class prepare_icp_weather_data:
             .agg(
                 [
                     pl.col("daily_mean").mean().alias("avg_daily_mean"),
-                    pl.col("daily_min").min().alias("min_daily_min"),
-                    pl.col("daily_max").max().alias("max_daily_max"),
+                    pl.col("daily_min").mean().alias("min_daily_min"),
+                    pl.col("daily_max").mean().alias("max_daily_max"),
                     (pl.col("daily_min") < 0).sum().alias("frost_days"),
                     pl.col("daily_completeness").mean().alias("avg_completeness"),
                 ]
