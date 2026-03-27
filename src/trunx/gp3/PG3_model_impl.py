@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pandas as pd
 import polars as pl
-from jax import grad
+from jax import config, grad
 
 from trunx.config import project_root
 from trunx.gp3.helper_function import is_dormant
@@ -23,6 +23,8 @@ from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
 from trunx.gp3.run_r3pg import run_comparison_r
+
+# config.update("jax_debug_nans", True)  # Enable NaN debugging
 
 os.chdir(project_root)
 

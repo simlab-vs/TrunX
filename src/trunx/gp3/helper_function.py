@@ -209,7 +209,7 @@ def f_nutrition(
     return f_N
 
 
-def compute_dbh(WS: Array, N: Array, aWs: Array, nWs: Array) -> Array:
+def compute_dbh(params, WS: Array, N: Array) -> Array:
     """
     Compute DBH from stand-level values.
 
@@ -230,7 +230,7 @@ def compute_dbh(WS: Array, N: Array, aWs: Array, nWs: Array) -> Array:
         Diameter at breast height (cm).
     """
     wS_per_tree = (WS * 1000.0) / (N + 1e-8)  # kg/tree
-    DBH = (wS_per_tree / (aWs + 1e-8)) ** (1.0 / (nWs + 1e-8))
+    DBH = (wS_per_tree / (params.aWS + 1e-8)) ** (1.0 / (params.nWS + 1e-8))
     return DBH
 
 

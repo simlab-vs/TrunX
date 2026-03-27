@@ -106,13 +106,14 @@ def model_step(state, climate_month, params, site, species, n_species):
     GPP = GPP * f_transp_scale
     NPP_scaled = NPP * f_transp_scale
 
-    DBH = compute_dbh(WS, N, params.aWS, params.nWS)
+    DBH = compute_dbh(params, WS, N)
 
     pFS, eta_F, eta_S, eta_R = compute_allocation_fraction(species, params, phi, DBH)
 
     # Turnover
     # gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
     gammaF = f_exp_foliage(params, age_months)
+    gammaF = jnp.clip(gammaF, 0.0, 1.0)
 
     WF_debt_after = WF_debt_new
     NPP_after_debt = NPP_scaled
@@ -134,13 +135,13 @@ def model_step(state, climate_month, params, site, species, n_species):
     )
 
     # Calculate biomass losses (litterfall) using current foliage
-    biom_loss_foliage = jnp.where(growing, gammaF * WF_active, 0.0)
+    # biom_loss_foliage = jnp.where(growing, gammaF * WF_active, 0.0)
 
-    # biom_loss_foliage = jnp.where(
-    #     dormant,
-    #     jnp.where(first_dormant, WF_debt_new, 0.0),
-    #     gammaF * WF_active
-    # )
+    biom_loss_foliage = jnp.where(
+        dormant & first_dormant,
+        WF_debt,  # should be WF_debt_new
+        jnp.where(growing, gammaF * WF_active, 0.0),
+    )
 
     biom_loss_root = jnp.where(dormant, 0.0, params.gammaR * WR)
 
@@ -165,8 +166,8 @@ def model_step(state, climate_month, params, site, species, n_species):
     N_new = jnp.where(~dormant, N_thinned, N)
 
     # Recalculate LAI after all updates
-    LAI, SLA = compute_lai(params, WF_new, age_months + 1)
-    LAI = jnp.clip(LAI, 0.0, 15.0)
+    # LAI, SLA = compute_lai(params, WF_new, age_months + 1)
+    # LAI = jnp.clip(LAI, 0.0, 15.0)
 
     new_state = State(
         WF=WF_new,
