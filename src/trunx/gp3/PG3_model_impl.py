@@ -9,7 +9,7 @@ import pandas as pd
 import polars as pl
 from jax import config, grad
 
-from trunx.config import project_root
+from trunx.config import clean_data_folder, icp_raw_data_folder, project_root
 
 # config.update("jax_debug_nans", True)  # Enable NaN debugging
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
@@ -19,6 +19,7 @@ from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
     create_comparison_dataframe,
     plot_combined_3pg_outputs,
+    plot_combined_3pg_outputs_obv,
     plot_combined_3pg_outputs_per_species,
     plot_outputs,
 )
@@ -90,7 +91,7 @@ def prepare_data(file_path):
     return initial_state, climate, params, site_data, species_data, n_species
 
 
-def run_threepg_main(file_path, plot_output=True, r_comparison=False):
+def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparison=False):
     """Run 3PG model."""
     if file_path == "./data/data_sspecies_nothinning.xlsx":
         fig_name = "r_3PG_trotsiuk_nothinning.png"
@@ -137,10 +138,11 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
 
     if r_comparison and plot_output:
         r_outputs = run_comparison_r(file_path)
-        fig = plot_combined_3pg_outputs(
-            r_outputs, outputs, climate.start_month, species_data.specie, fig_name
-        )
-        create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        # fig = plot_combined_3pg_outputs(
+        #     r_outputs, outputs, climate.start_month, species_data.specie, fig_name
+        # )
+        df_comp = create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        fig = plot_combined_3pg_outputs_obv(df_comp, observed_data=observed_data)
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month)
@@ -153,18 +155,35 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
     return fig, outputs
 
 
+def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
+    """Run 3PG model with ICP weather data."""
+    file_path = os.path.join("./data/", "S_weather_data.xlsx")
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        print(f"Deleted: {file_path}")
+    miss_months, observed_data = create_input_data(file_path, plot_id)
+    if len(miss_months) == 0:
+        fig, outputs = run_threepg_main(
+            file_path, observed_data, plot_output=plot_output, r_comparison=r_comparison
+        )
+        return fig, outputs
+    else:
+        print(
+            "The weather data is not complete and need pre-processing before 3PG implementation."
+        )
+        return None, None
+
+
 if __name__ == "__main__":
     # # file_path = "./data/data_semisynthetic.xlsx"
     # # file_path = "./data/data.input.xlsx"
     # file_path = "./data/data_sspecies_nothinning.xlsx"
-    # # file_path = "./data/data_nothinning.xlsx"
-
-    raw_file_path = "./data/raw/ICP/595_mm_20260227091917/mm_mem.csv"
-    processor = prepare_icp_weather_data(raw_file_path)
-    df = processor.clean_data()
+    # file_path = "./data/data_nothinning.xlsx"
+    # fig, outputs = run_threepg_main(file_path, 
+    #                                   observed_data = None, 
+    #                                   plot_output=True, 
+    #                                   r_comparison=True
+    # )
 
     plot_id = "50.0013"
-    file_path = os.path.join("./data/", "S_weather_data.xlsx")
-    create_input_data(df, file_path, plot_id)
-
-    fig, outputs = run_threepg_main(file_path, plot_output=True, r_comparison=True)
+    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

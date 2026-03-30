@@ -1,7 +1,12 @@
 """Create data input for 3PG model using ICP data."""
 
+import os
+
 import pandas as pd
 import polars as pl
+
+from trunx.config import icp_raw_data_folder
+from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 
 
 def dms_to_decimal(dms):
@@ -259,8 +264,13 @@ def create_site_data(icp_df, weather_df):
     return site_df
 
 
-def create_input_data(df, input_data_file, plot_id):
+def create_input_data(input_data_file, plot_id):
     """Create input data for 3PG model."""
+    # ICP weather data
+    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    processor = prepare_icp_weather_data(raw_file_path)
+    df = processor.clean_data()
+
     # ICP data
     icp_df = pl.read_parquet("./data/clean/icp_level2_cleaned.parquet")
     icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
@@ -297,6 +307,11 @@ def create_input_data(df, input_data_file, plot_id):
     # Site data
     input_site_df = create_site_data(icp_df, weather_df)
 
+    icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"]))
+    observed_data = icp_df.group_by(["specie", "period_end"]).agg(
+        pl.col("diameter_end").mean().alias("DBH")
+    )
+
     if len(miss_months) == 0:
         with pd.ExcelWriter(input_data_file, engine="openpyxl") as writer:
             weather_df.to_pandas().to_excel(writer, sheet_name="climate", index=False)
@@ -305,7 +320,10 @@ def create_input_data(df, input_data_file, plot_id):
             input_site_df.to_pandas().to_excel(writer, sheet_name="site", index=False)
             pd.DataFrame().to_excel(writer, sheet_name="thinning", index=False)
             pd.DataFrame().to_excel(writer, sheet_name="sizeDist", index=False)
+            observed_data.to_pandas().to_excel(writer, sheet_name="observed", index=False)
     else:
         print("The weather data is not complete and need processing to fill missing data.")
         summary_wdf = weather_summary(weather_df)
         print(summary_wdf)
+
+    return miss_months, observed_data.to_pandas()
