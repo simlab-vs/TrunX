@@ -10,6 +10,10 @@ import polars as pl
 from jax import config, grad
 
 from trunx.config import project_root
+
+# config.update("jax_debug_nans", True)  # Enable NaN debugging
+from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+from trunx.gp3.create_data_inputs import create_input_data, create_weather_input
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
@@ -24,24 +28,11 @@ from trunx.gp3.prepare_species import prepare_species
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
 from trunx.gp3.run_r3pg import run_comparison_r
 
-# config.update("jax_debug_nans", True)  # Enable NaN debugging
-
 os.chdir(project_root)
 
 
-def run_threepg_main(file_path, plot_output=True, r_comparison=False):
-    """Run 3PG model."""
-    if file_path == "./data/data_sspecies_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_nothinning.png"
-    elif file_path == "./data/data.input.xlsx":
-        fig_name = "r_3PG_trotsiuk.png"
-    elif file_path == "./data/data_semisynthetic.xlsx":
-        fig_name = "r_3PG_ICPdata.png"
-    elif file_path == "./data/data_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_mult_nothinning.png"
-    else:
-        fig_name = None
-
+def prepare_data(file_path):
+    """Prepare data and initial state for 3PG model."""
     d_site = pl.read_excel(file_path, sheet_name="site")
     site_data = prepare_site(d_site)
 
@@ -96,6 +87,24 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
     )
 
+    return initial_state, climate, params, site_data, species_data, n_species
+
+
+def run_threepg_main(file_path, plot_output=True, r_comparison=False):
+    """Run 3PG model."""
+    if file_path == "./data/data_sspecies_nothinning.xlsx":
+        fig_name = "r_3PG_trotsiuk_nothinning.png"
+    elif file_path == "./data/data.input.xlsx":
+        fig_name = "r_3PG_trotsiuk.png"
+    elif file_path == "./data/data_semisynthetic.xlsx":
+        fig_name = "r_3PG_ICPdata.png"
+    elif file_path == "./data/data_nothinning.xlsx":
+        fig_name = "r_3PG_trotsiuk_mult_nothinning.png"
+    else:
+        fig_name = None
+
+    initial_state, climate, params, site_data, species_data, n_species = prepare_data(file_path)
+
     final_state, outputs = run_3pg(
         initial_state=initial_state,
         climate=climate,
@@ -145,12 +154,17 @@ def run_threepg_main(file_path, plot_output=True, r_comparison=False):
 
 
 if __name__ == "__main__":
-    # file_path = "./data/data_semisynthetic.xlsx"
-    # file_path = "./data/data.input.xlsx"
-    file_path = "./data/data_sspecies_nothinning.xlsx"
-    # file_path = "./data/data_nothinning.xlsx"
+    # # file_path = "./data/data_semisynthetic.xlsx"
+    # # file_path = "./data/data.input.xlsx"
+    # file_path = "./data/data_sspecies_nothinning.xlsx"
+    # # file_path = "./data/data_nothinning.xlsx"
+
+    raw_file_path = "./data/raw/ICP/595_mm_20260227091917/mm_mem.csv"
+    processor = prepare_icp_weather_data(raw_file_path)
+    df = processor.clean_data()
+
+    plot_id = "50.0013"
+    file_path = os.path.join("./data/", "S_weather_data.xlsx")
+    create_input_data(df, file_path, plot_id)
 
     fig, outputs = run_threepg_main(file_path, plot_output=True, r_comparison=True)
-
-
-# %%

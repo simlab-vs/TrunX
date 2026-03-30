@@ -85,9 +85,9 @@ def plot_combined_3pg_outputs(
         name to save figure
     """
     if fig_name is None:
-        fig_name = "3PG_combined_comparison.png"
+        fig_name = ""
 
-    # Define variables to plot (matching your R code)
+    # Define variables to plot
     i_var = ["dbh", "lai", "gpp", "biom_stem", "biom_foliage", "biom_root"]
     i_lab = [
         "DBH (cm)",
