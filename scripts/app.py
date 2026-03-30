@@ -1,12 +1,11 @@
-import pandas as pd
 import polars as pl
 import streamlit as st
 from support_utils import (
     load_prepare_data,
 )
 
-from trunx.gp3.PG3_model_impl import run_threepg_main
-from trunx.plot_utils import plot_combined_3pg_outputs_obv, plot_geographic_location_species
+from trunx.gp3.PG3_model_impl import run_threepg_main, run_threepg_with_icp
+from trunx.plot_utils import plot_geographic_location_species
 
 st.set_page_config(page_title="ICP Forests EDA", layout="wide")
 
@@ -26,11 +25,10 @@ old_df, new_df = load_prepare_data()
 
 def get_DBH_data(tdf, plot_id):
     """Return DBH data for plotting."""
-    filtered_df = tdf.filter(pl.col("specie").is_in(["Fagus sylvatica"]))
-    df_growth = filtered_df.filter(pl.col("plot_id") == plot_id).to_pandas()
+    df_growth = tdf.filter(pl.col("plot_id") == plot_id).to_pandas()
 
-    avg_diameter = df_growth.groupby("period_end")["diameter_end"].mean().reset_index()
-    return df_growth, avg_diameter
+    avg_diameter = df_growth.groupby(["specie", "period_end"])["diameter_end"].mean().reset_index()
+    return avg_diameter
 
 
 if page == "About":
@@ -99,26 +97,31 @@ if page == "3PG model":
             "Implementation using Trotsiuk eg. weather data \
             for beech (single species + no thinning)"
         )
+        result = run_threepg_main(file_path, plot_output=True, r_comparison=True)
+
     elif file_choice == "ICP data":
-        file_path = "./data/data_semisynthetic.xlsx"
-        st.subheader("Implementation using ICP weather data for beech (Plot id: 50.0013, CH)")
+        plot_id_choice = st.selectbox(
+            "Select Plot ID", options=["50.0013", "50.0015"], help="Choose the plot ID to analyze"
+        )
+        st.subheader(f"Implementation using ICP weather data (Plot id: {plot_id_choice})")
+        result = run_threepg_with_icp(plot_id=plot_id_choice, plot_output=True, r_comparison=True)
     else:
         st.subheader("Implementation using Trotsiuk eg. weather data for beech")
+
         file_path = "./data/data.input.xlsx"
 
-    fig, outputs = run_threepg_main(file_path, plot_output=False, r_comparison=True)
+        result = run_threepg_main(file_path, plot_output=True, r_comparison=True)
 
-    observed_data = None
-    if file_choice == "ICP data":
-        observed_data = get_DBH_data(
-            new_df, plot_id="50.0013"
-        )  # Your function that returns (df_growth, avg_diameter)
-
-    comp_df = pd.read_csv("./data/r_python.comparison.csv")
-    fig = plot_combined_3pg_outputs_obv(comp_df, observed_data=observed_data)
-
-    st.pyplot(fig)
-
-    if observed_data is not None:
-        df_growth, avg_diameter = observed_data
-        st.dataframe(avg_diameter.head())
+    # Handle None case
+    if result is None:
+        st.error("Model returned None. Please check the weather data and model configuration.")
+    elif isinstance(result, tuple) and len(result) == 2:
+        figures, outputs = result
+        if figures:
+            for _i, fig in enumerate(figures):
+                if fig is not None:
+                    st.pyplot(fig)
+        else:
+            st.warning("No figures were generated.")
+    else:
+        st.error(f"Unexpected return value: {type(result)}")
