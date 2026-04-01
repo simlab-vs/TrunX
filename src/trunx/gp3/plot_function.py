@@ -37,13 +37,13 @@ def plot_outputs(outputs, start_month, fig_name: str | None = None):
 
     # Bottom row
     axes[1, 0].plot(months, outputs["WS"])
-    axes[1, 0].set_ylabel(r"Stem biomass ($\mathrm{kg\ ha^{-1}}$)")
+    axes[1, 0].set_ylabel(r"Stem biomass ($\mathrm{t DM\ ha^{-1}}$)")
 
     axes[1, 1].plot(months, outputs["WF"])
-    axes[1, 1].set_ylabel(r"Foliage biomass ($\mathrm{kg\ ha^{-1}}$)")
+    axes[1, 1].set_ylabel(r"Foliage biomass ($\mathrm{t DM\ ha^{-1}}$)")
 
     axes[1, 2].plot(months, outputs["WR"])
-    axes[1, 2].set_ylabel(r"Root biomass ($\mathrm{kg\ ha^{-1}}$)")
+    axes[1, 2].set_ylabel(r"Root biomass ($\mathrm{t DM\ ha^{-1}}$)")
 
     tick_indices = [
         i for i, m in enumerate(all_months) if m.astype("datetime64[M]").astype(int) % 12 == 0
@@ -93,9 +93,9 @@ def plot_combined_3pg_outputs(
         "DBH (cm)",
         "LAI",
         r"GPP (mol C m$^{-2}$)",
-        r"Stem biomass (kg ha$^{-1}$)",
-        r"Foliage biomass (kg ha$^{-1}$)",
-        r"Root biomass (kg ha$^{-1}$)",
+        r"Stem biomass (t DM ha$^{-1}$)",
+        r"Foliage biomass (t DM ha$^{-1}$)",
+        r"Root biomass (t DM ha$^{-1}$)",
     ]
 
     # Map R variable names to original output keys
@@ -375,9 +375,9 @@ def plot_combined_3pg_outputs_per_species(
         "DBH (cm)",
         "LAI",
         r"GPP (mol C m$^{-2}$)",
-        r"Stem biomass (kg ha$^{-1}$)",
-        r"Foliage biomass (kg ha$^{-1}$)",
-        r"Root biomass (kg ha$^{-1}$)",
+        r"Stem biomass (t DM ha$^{-1}$)",
+        r"Foliage biomass (t DM ha$^{-1}$)",
+        r"Root biomass (t DM ha$^{-1}$)",
     ]
 
     # Map R variable names to original output keys
@@ -516,19 +516,19 @@ def plot_combined_3pg_outputs_obv(
                 "has_observed": False,
             },
             "WS": {
-                "label": "Stem Biomass (kg ha⁻¹)",
+                "label": "Stem Biomass (t DM ha⁻¹)",
                 "python_col": "WS",
                 "r_col": "r_WS",
                 "has_observed": False,
             },
             "WF": {
-                "label": "Foliage Biomass (kg ha⁻¹)",
+                "label": "Foliage Biomass (t DM ha⁻¹)",
                 "python_col": "WF",
                 "r_col": "r_WF",
                 "has_observed": False,
             },
             "WR": {
-                "label": "Root Biomass (kg ha⁻¹)",
+                "label": "Root Biomass (t DM ha⁻¹)",
                 "python_col": "WR",
                 "r_col": "r_WR",
                 "has_observed": False,
@@ -636,7 +636,7 @@ def plot_combined_3pg_outputs_obv(
                         obs_indices,
                         obs_values,
                         color=species_colors[species],
-                        s=80,
+                        s=50,
                         marker="s",
                         zorder=5,
                         label="Observed",

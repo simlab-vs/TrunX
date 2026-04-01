@@ -146,6 +146,15 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
     if "d13catm" not in climate.columns:
         climate = climate.with_columns(pl.lit(-7.1).alias("d13catm"))
 
+    min_date = climate.select("date").min().item()
+    max_date = climate.select("date").max().item()
+
+    months = (max_date.year - min_date.year) * 12 + (max_date.month - min_date.month) + 1
+    start_month = min_date.month
+    n_years = (months + 11) // 12
+    rotated = jnp.roll(days_in_month, -(start_month - 1))
+    n_days = jnp.tile(rotated, n_years)[:months]
+
     climate = climate.select(
         [
             "year",
@@ -178,7 +187,8 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         precip=jnp.array(climate["prcp"].to_numpy()),
         solar_rad=jnp.array(climate["srad"].to_numpy()),
         frost_days=jnp.array(climate["frost_days"].to_numpy()),
-        n_days=jnp.tile(jnp.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]), n_years),
+        # n_days=jnp.tile(jnp.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]), n_years),
+        n_days=n_days,
         VPD=jnp.array(climate["vpd_day"].to_numpy()),
         co2=jnp.array(climate["co2"].to_numpy()),
         d13catm=jnp.array(climate["d13catm"].to_numpy()),

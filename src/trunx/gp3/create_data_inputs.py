@@ -2,10 +2,11 @@
 
 import os
 
+import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
-from trunx.config import icp_raw_data_folder
+from trunx.config import clean_data_folder, icp_raw_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 
 
@@ -245,7 +246,7 @@ def create_site_data(icp_df, weather_df):
     """Create site data input for 3PG model."""
     site_df = pl.read_excel("./data/data.input.xlsx", sheet_name="site")
 
-    latitude_value = icp_df["Lat"][0]  # or use .mean(), .first(), etc.
+    latitude_value = icp_df["Lat"][0]
     altitude_value = icp_df["plot_altitude"][0]
 
     # Add as constant columns
@@ -264,6 +265,128 @@ def create_site_data(icp_df, weather_df):
     return site_df
 
 
+def update_species_data(icp_df, species_df, input_params_df):
+    """Create species data for 3PG model for specific site."""
+    avg_diameter = icp_df.group_by(["specie", "period_end"]).agg(
+        pl.col("diameter_end").mean().alias("DBH")
+    )
+
+    avg_diameter = avg_diameter.with_columns(pl.col("period_end").dt.year().alias("year"))
+    avg_diameter = avg_diameter.filter(
+        pl.col("specie").is_in(species_df.select("species").to_series().to_list())
+    )
+
+    common_start = (
+        avg_diameter.group_by("specie")
+        .agg([pl.col("year").min().alias("min_year")])
+        .select([pl.col("min_year").max().alias("start_year")])
+        .sort(["start_year"])
+    )
+
+    start_year = common_start["start_year"].item()
+
+    avg_diameter = avg_diameter.filter(pl.col("year") == start_year)
+
+    num_trees = (
+        icp_df.filter(pl.col("specie").is_in(species_df.select("species").to_series().to_list()))
+        .group_by(["specie", "period_end"])
+        .agg(pl.len().alias("num_trees"))
+        .with_columns(pl.col("period_end").dt.year().alias("year"))
+        .filter(pl.col("year") == start_year)
+        .rename({"specie": "species"})
+    )
+
+    species_df = (
+        species_df.join(num_trees, on=["species"], how="inner")
+        .select(
+            [
+                "species",
+                "planted",
+                "fertility",
+                "num_trees",
+                "biom_stem",
+                "biom_root",
+                "biom_foliage",
+            ]
+        )
+        .rename({"num_trees": "stems_n"})
+    )
+
+    sp_inp_params = input_params_df.filter(
+        pl.col("parameter").is_in(["aWS", "nWS", "pFS2", "pFS20", "pRn", "pRx"])
+    )
+
+    params_lookup = {}
+    for species in sp_inp_params.columns:
+        if species != "parameter":
+            aWS = sp_inp_params.filter(pl.col("parameter") == "aWS").select(species).item()
+            nWS = sp_inp_params.filter(pl.col("parameter") == "nWS").select(species).item()
+            pFS2 = sp_inp_params.filter(pl.col("parameter") == "pFS2").select(species).item()
+            pFS20 = sp_inp_params.filter(pl.col("parameter") == "pFS20").select(species).item()
+            pRn = sp_inp_params.filter(pl.col("parameter") == "pRn").select(species).item()
+            pRx = sp_inp_params.filter(pl.col("parameter") == "pRx").select(species).item()
+
+            params_lookup[species] = {
+                "aWS": aWS,
+                "nWS": nWS,
+                "pFS2": pFS2,
+                "pFS20": pFS20,
+                "pRn": pRn,
+                "pRx": pRx,
+            }
+
+    # Create a lookup for DBH values
+    dbh_lookup = {}
+    for row in avg_diameter.iter_rows():
+        species = row[0]
+        dbh = row[2]
+        dbh_lookup[species] = dbh
+
+    # Update biom_stem for each species in species_df
+    for species in species_df["species"].unique().to_list():
+        if species in params_lookup and species in dbh_lookup:
+            aWS = params_lookup[species]["aWS"]
+            nWS = params_lookup[species]["nWS"]
+            dbh = dbh_lookup[species]
+            pFS2 = params_lookup[species]["pFS2"]
+            pFS20 = params_lookup[species]["pFS20"]
+            pRn = params_lookup[species]["pRn"]
+            pRx = params_lookup[species]["pRx"]
+            stems_n = species_df.filter(pl.col("species") == species).select("stems_n").item()
+
+            calculated_biom_stem = (aWS * (dbh**nWS) * stems_n) / 1000.0
+            pfsPower = jnp.log(pFS20 / (pFS2 + 1e-8)) / jnp.log(10.0)
+            pfsConst = pFS2 / 2.0**pfsPower
+            pFS = pfsConst * (dbh**pfsPower)
+            calculated_biom_foliage = calculated_biom_stem * pFS
+            pRS = pRn + (pRx - pRn) * 0.5  # Assuming water stress factor of 0.5 for simplicity,
+            # this can be adjusted based on actual conditions
+            calculated_biom_root = (calculated_biom_stem + calculated_biom_foliage) * pRS
+
+            species_df = (
+                species_df.with_columns(
+                    pl.when(pl.col("species") == species)
+                    .then(pl.lit(calculated_biom_stem))
+                    .otherwise(pl.col("biom_stem"))
+                    .alias("biom_stem")
+                )
+                .with_columns(
+                    pl.when(pl.col("species") == species)
+                    .then(pl.lit(calculated_biom_foliage))
+                    .otherwise(pl.col("biom_foliage"))
+                    .alias("biom_foliage")
+                )
+                .with_columns(
+                    pl.when(pl.col("species") == species)
+                    .then(pl.lit(calculated_biom_root))
+                    .otherwise(pl.col("biom_root"))
+                    .alias("biom_root")
+                )
+            )
+
+    return species_df, start_year
+
+
 def create_input_data(input_data_file, plot_id):
     """Create input data for 3PG model."""
     # ICP weather data
@@ -272,7 +395,7 @@ def create_input_data(input_data_file, plot_id):
     df = processor.clean_data()
 
     # ICP data
-    icp_df = pl.read_parquet("./data/clean/icp_level2_cleaned.parquet")
+    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
     icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
     icp_df = icp_df.filter(
         pl.col("specie").is_in(
@@ -304,12 +427,30 @@ def create_input_data(input_data_file, plot_id):
     # Parameter data
     input_params_df = create_input_params(icp_df)
 
+    input_species_df, start_year = update_species_data(icp_df, input_species_df, input_params_df)
+
+    weather_df = weather_df.filter(pl.col("year") >= start_year)
+
     # Site data
     input_site_df = create_site_data(icp_df, weather_df)
 
     icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"]))
     observed_data = icp_df.group_by(["specie", "period_end"]).agg(
         pl.col("diameter_end").mean().alias("DBH")
+    )
+
+    observed_data = (
+        observed_data.with_columns(
+            pl.col("period_end").dt.year().alias("year"),
+            pl.col("period_end").dt.month().alias("month"),
+            pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+        )
+        .join(
+            weather_df.with_columns(pl.int_range(0, pl.len()).alias("idx")),
+            on=["month", "year"],
+            how="inner",
+        )
+        .select(["idx", "specie", "period_end", "month_year", "DBH"])
     )
 
     if len(miss_months) == 0:

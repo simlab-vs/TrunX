@@ -179,9 +179,9 @@ if __name__ == "__main__":
     # # file_path = "./data/data.input.xlsx"
     # file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/data_nothinning.xlsx"
-    # fig, outputs = run_threepg_main(file_path, 
-    #                                   observed_data = None, 
-    #                                   plot_output=True, 
+    # fig, outputs = run_threepg_main(file_path,
+    #                                   observed_data = None,
+    #                                   plot_output=True,
     #                                   r_comparison=True
     # )
 

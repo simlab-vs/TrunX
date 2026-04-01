@@ -53,7 +53,6 @@ def model_step(state, climate_month, params, site, species, n_species):
     # Leaf area index
     # Note with WF, we get better fitting.
     LAI, SLA = compute_lai(params, WF_active, age_months)
-    LAI = jnp.clip(LAI, 0.0, 15.0)
 
     lai_total = jnp.sum(LAI)
     LAI_per = jnp.where(lai_total > 0.0, LAI / lai_total, 0.0)
