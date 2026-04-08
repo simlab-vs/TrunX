@@ -47,27 +47,15 @@ def model(
     """
     assert fixed_params is not None
     # Priors for parameters
-    alphaCx = numpyro.sample(
-        "alphaCx",
-        dist.LogNormal(jnp.log(0.05), 0.5),
-    )
-    CoeffCond = numpyro.sample(
-        "CoeffCond",
-        dist.LogNormal(jnp.log(0.05), 0.5),
-    )
-    Y = numpyro.sample(
-        "Y",
-        dist.Normal(0.5, 0.05),
-    )
+    alphaCx = numpyro.sample("alphaCx", dist.LogNormal(jnp.log(0.05), 0.5))
+    CoeffCond = numpyro.sample("CoeffCond", dist.LogNormal(jnp.log(0.05), 0.5))
+    Y = numpyro.sample("Y", dist.Normal(0.47, 0.05))
 
-    gammaF0 = numpyro.sample("gammaF0", dist.LogNormal(jnp.log(0.1), 0.3))
-    gammaF1 = numpyro.sample("gammaF1", dist.LogNormal(jnp.log(0.5), 0.3))
-    tgammaF = numpyro.sample("tgammaF", dist.LogNormal(jnp.log(60.0), 0.5))
+    gammaF0 = numpyro.sample("gammaF0", dist.LogNormal(jnp.log(0.001), 0.3))
+    gammaF1 = numpyro.sample("gammaF1", dist.LogNormal(jnp.log(0.02), 0.3))
+    tgammaF = numpyro.sample("tgammaF", dist.LogNormal(jnp.log(60.0), 0.1))
 
-    tRho = numpyro.sample(
-        "tRho",
-        dist.LogNormal(jnp.log(500.0), 0.2),
-    )
+    tRho = numpyro.sample("tRho", dist.LogNormal(jnp.log(1.0), 0.02))
 
     # Update parameters
     params = fixed_params._replace(
@@ -246,6 +234,7 @@ def plot_results(
     obs_DBH: jnp.ndarray,
     save_path: str | None = None,
     show_plots: bool = True,
+    predict_with_uncert: bool = False,
 ):
     """Plot MCMC results including trace plots, posterior distributions, and predictions."""
     inf_data = az.from_numpyro(mcmc)
@@ -263,123 +252,129 @@ def plot_results(
     summary = az.summary(inf_data, var_names=params)
     print(summary)
 
-    # Get predictions
-    mean_pred, lower_pred, upper_pred, pred_intervals = predict_with_uncertainty(
-        mcmc,
-        climate,
-        site,
-        species,
-        n_species,
-        initial_state,
-        fixed_params,
-        n_predictions=min(500, len(mcmc.get_samples()["Y"])),
-    )
-
-    if pred_intervals is not None:
-        lower_err, upper_err = map(np.asarray, pred_intervals)
-
-    # Determine number of months
-    n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
-    time_months = np.arange(n_months)
-
-    def ensure_species_first(arr):
-        arr = np.asarray(arr)
-        if arr.ndim == 1:
-            return arr[np.newaxis, :]
-        elif arr.shape[0] == n_months:
-            return arr.T
-        return arr
-
-    mean_pred = ensure_species_first(mean_pred)
-    lower_pred = ensure_species_first(lower_pred)
-    upper_pred = ensure_species_first(upper_pred)
-    if pred_intervals is not None:
-        lower_err = ensure_species_first(lower_err)
-        upper_err = ensure_species_first(upper_err)
-
-    n_species_plot = mean_pred.shape[0]
-
-    # Plot predictions with intervals
-    fig, ax = plt.subplots(figsize=(12, 6))
-    cmap = plt.get_cmap("tab10")
-    colors = [cmap(i) for i in range(10)]
-    for s in range(n_species_plot):
-        color = colors[s]
-        ax.fill_between(
-            time_months,
-            lower_pred[s],
-            upper_pred[s],
-            alpha=0.3,
-            color=color,
-            label=f"95% CI Species {s + 1}" if n_species_plot > 1 else "95% CI",
+    if predict_with_uncert:
+        # Get predictions
+        mean_pred, lower_pred, upper_pred, pred_intervals = predict_with_uncertainty(
+            mcmc,
+            climate,
+            site,
+            species,
+            n_species,
+            initial_state,
+            fixed_params,
+            n_predictions=min(500, len(mcmc.get_samples()["Y"])),
         )
+
         if pred_intervals is not None:
-            ax.fill_between(
-                time_months,
-                lower_err[s],
-                upper_err[s],
-                alpha=0.2,
-                color=color,
-                label=f"95% CI + Obs Error Species {s + 1}"
-                if n_species_plot > 1
-                else "95% CI + Obs Error",
-            )
-        ax.plot(
-            time_months,
-            mean_pred[s],
-            color=color,
-            linewidth=2,
-            label=f"Mean Prediction Species {s + 1}" if n_species_plot > 1 else "Mean Prediction",
-        )
+            lower_err, upper_err = map(np.asarray, pred_intervals)
 
-    # Plot observations
-    if obs_times is not None and obs_DBH is not None:
-        obs_times_np = np.asarray(obs_times)
-        obs_DBH_np = np.asarray(obs_DBH)
-        ax.scatter(
-            obs_times_np,
-            obs_DBH_np,
-            color="red",
-            s=50,
-            zorder=5,
-            label="Observations",
-            edgecolors="black",
-            linewidths=1.5,
-        )
+        # Determine number of months
+        n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
+        time_months = np.arange(n_months)
 
-    ax.set_xlabel("Time (months)", fontsize=12)
-    ax.set_ylabel("DBH (cm)", fontsize=12)
-    ax.set_title("3PG Model Predictions with Uncertainty (DBH)", fontsize=14)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+        def ensure_species_first(arr):
+            arr = np.asarray(arr)
+            if arr.ndim == 1:
+                return arr[np.newaxis, :]
+            elif arr.shape[0] == n_months:
+                return arr.T
+            return arr
 
-    plt.tight_layout()
+        mean_pred = ensure_species_first(mean_pred)
+        lower_pred = ensure_species_first(lower_pred)
+        upper_pred = ensure_species_first(upper_pred)
+        if pred_intervals is not None:
+            lower_err = ensure_species_first(lower_err)
+            upper_err = ensure_species_first(upper_err)
 
-    # Residual plots per species
-    if obs_times is not None and len(obs_times) > 0:
-        fig, ax = plt.subplots(figsize=(10, 5))
+        n_species_plot = mean_pred.shape[0]
+
+        # Plot predictions with intervals
+        fig, ax = plt.subplots(figsize=(12, 6))
         cmap = plt.get_cmap("tab10")
         colors = [cmap(i) for i in range(10)]
         for s in range(n_species_plot):
-            pred_at_obs = np.interp(obs_times_np, time_months, mean_pred[s])
-            residuals = obs_DBH_np - pred_at_obs
             color = colors[s]
-            ax.scatter(
-                pred_at_obs,
-                residuals,
-                alpha=0.6,
+            ax.fill_between(
+                time_months,
+                lower_pred[s],
+                upper_pred[s],
+                alpha=0.3,
                 color=color,
-                label=f"Species {s + 1}" if n_species_plot > 1 else "Residuals",
+                label=f"95% CI Species {s + 1}" if n_species_plot > 1 else "95% CI",
+            )
+            if pred_intervals is not None:
+                ax.fill_between(
+                    time_months,
+                    lower_err[s],
+                    upper_err[s],
+                    alpha=0.2,
+                    color=color,
+                    label=f"95% CI + Obs Error Species {s + 1}"
+                    if n_species_plot > 1
+                    else "95% CI + Obs Error",
+                )
+            ax.plot(
+                time_months,
+                mean_pred[s],
+                color=color,
+                linewidth=2,
+                label=f"Mean Prediction Species {s + 1}"
+                if n_species_plot > 1
+                else "Mean Prediction",
             )
 
-        ax.axhline(y=0, color="red", linestyle="--", alpha=0.5)
-        ax.set_xlabel("Predicted DBH (cm)", fontsize=12)
-        ax.set_ylabel("Residuals (cm)", fontsize=12)
-        ax.set_title("Residual Plot", fontsize=14)
+            _, outputs = run_3pg(initial_state, climate, fixed_params, site, species, n_species)
+            ax.plot(time_months, outputs["DBH"], color="black", label="3PG Prediction")
+
+        # Plot observations
+        if obs_times is not None and obs_DBH is not None:
+            obs_times_np = np.asarray(obs_times)
+            obs_DBH_np = np.asarray(obs_DBH)
+            ax.scatter(
+                obs_times_np,
+                obs_DBH_np,
+                color="red",
+                s=50,
+                zorder=5,
+                label="Observations",
+                edgecolors="black",
+                linewidths=1.5,
+            )
+
+        ax.set_xlabel("Time (months)", fontsize=12)
+        ax.set_ylabel("DBH (cm)", fontsize=12)
+        ax.set_title("3PG Model Predictions with Uncertainty (DBH)", fontsize=14)
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
+
+        # Residual plots per species
+        if obs_times is not None and len(obs_times) > 0:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            cmap = plt.get_cmap("tab10")
+            colors = [cmap(i) for i in range(10)]
+            for s in range(n_species_plot):
+                pred_at_obs = np.interp(obs_times_np, time_months, mean_pred[s])
+                residuals = obs_DBH_np - pred_at_obs
+                color = colors[s]
+                ax.scatter(
+                    pred_at_obs,
+                    residuals,
+                    alpha=0.6,
+                    color=color,
+                    label=f"Species {s + 1}" if n_species_plot > 1 else "Residuals",
+                )
+
+            ax.axhline(y=0, color="red", linestyle="--", alpha=0.5)
+            ax.set_xlabel("Predicted DBH (cm)", fontsize=12)
+            ax.set_ylabel("Residuals (cm)", fontsize=12)
+            ax.set_title("Residual Plot", fontsize=14)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+            plt.tight_layout()
     plt.show()
 
 
@@ -398,6 +393,7 @@ def run_full_analysis(
     output_dir: str = "./hmc_results",
     seed: int = 42,
     show_plots: bool = True,
+    predict_with_uncert: bool = False,
 ) -> tuple[MCMC, dict]:
     """
     Run complete HMC analysis with diagnostics and plotting.
@@ -452,18 +448,19 @@ def run_full_analysis(
         params=["alphaCx", "CoeffCond", "Y", "gammaF0", "gammaF1", "tgammaF"],
         # save_path=f"{output_dir}/results",
         show_plots=show_plots,
+        predict_with_uncert=predict_with_uncert,
     )
 
     return mcmc, samples
 
 
-def run_hmc_analysis(file_path: str):
+def run_hmc_analysis(file_path: str, predict_with_uncert: bool = False):
     """Run HMC implementation."""
     initial_state, climate, fixed_params, site_data, species_data, n_species = prepare_data(
         file_path
     )
 
-    # Dummy DBH observations (in cm)
+    # Dummy DBH observations
     obs_times = jnp.array([12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132])
     obs_DBH = jnp.array([14, 14.8, 15.2, 15.9, 15.8, 16.1, 17.3, 17.8, 18.5, 18.8, 19.2])
 
@@ -485,11 +482,12 @@ def run_hmc_analysis(file_path: str):
         num_chains=2,
         output_dir="./hmc_results",
         show_plots=True,
+        predict_with_uncert=predict_with_uncert,
     )
 
     # Print parameter summaries
     print("\nParameter Summary:")
-    for param in ["alphaCx", "CoeffCond", "Y", "gammaF0", "gammaF1", "tgammaF"]:
+    for param in ["alphaCx", "CoeffCond", "Y", "gammaF0", "gammaF1", "tgammaF", "tRho"]:
         if param in samples:
             mean_val = jnp.mean(samples[param])
             std_val = jnp.std(samples[param])
@@ -498,4 +496,4 @@ def run_hmc_analysis(file_path: str):
 
 if __name__ == "__main__":
     file_path = "./data/data_sspecies_nothinning.xlsx"
-    run_hmc_analysis(file_path)
+    run_hmc_analysis(file_path, predict_with_uncert=False)
