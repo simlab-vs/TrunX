@@ -32,6 +32,10 @@ def create_weather_input(df, plot_id):
     prcp_df = plot_df.filter(pl.col("code_variable") == "PR")
 
     srad_df = plot_df.filter(pl.col("code_variable") == "SR")
+    # Convert from W/m² to MJ/m² (1 W/m² = 0.0864 MJ/m²)
+    for col in srad_df.schema:
+        if col.startswith("daily_m"):
+            srad_df = srad_df.with_columns((pl.col(col)* 0.0864).alias(col))
 
     mtemp_df = temp_df.group_by(["month_year"]).agg(
         pl.col("daily_mean").mean().alias("tmp_ave"),
