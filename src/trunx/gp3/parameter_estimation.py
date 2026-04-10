@@ -1,8 +1,5 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
-import json
-import os
-
 import arviz as az
 import jax
 import jax.numpy as jnp
@@ -11,14 +8,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
+import polars as pl
 from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS
 
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
-
-import polars as pl
 
 az.rcParams["plot.backend"] = "matplotlib"
 
@@ -65,15 +61,15 @@ def model(
     gammaF0 = numpyro.sample("gammaF0", dist.Uniform(0.0001, 0.003))
     gammaF1 = numpyro.sample("gammaF1", dist.Uniform(0.0001, 0.040))
     tgammaF = numpyro.sample("tgammaF", dist.Uniform(12.0, 150.0))
-    tRho = numpyro.sample("tRho", dist.Uniform(0.0, 150.0)) 
-        
+    tRho = numpyro.sample("tRho", dist.Uniform(0.0, 150.0))
+
     # Update parameters
     params = fixed_params._replace(
         alphaCx=alphaCx,
         CoeffCond=CoeffCond,
         Y=Y,
         gammaF0=gammaF0,
-        # gammaF1=gammaF1,
+        gammaF1=gammaF1,
         tgammaF=tgammaF,
         tRho=tRho,
     )
@@ -466,8 +462,8 @@ def run_full_analysis(
 
 def run_hmc_analysis(file_path: str, predict_with_uncert: bool = False):
     """Run HMC implementation."""
-    initial_state, climate, fixed_params, site_data, species_data, n_species = prepare_data(
-        file_path
+    initial_state, climate, fixed_params, site_data, species_data, n_species, species_names = (
+        prepare_data(file_path)
     )
 
     # Dummy DBH observations
@@ -508,4 +504,3 @@ if __name__ == "__main__":
     file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/solling_data.xlsx"
     run_hmc_analysis(file_path, predict_with_uncert=True)
-    
