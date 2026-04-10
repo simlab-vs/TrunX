@@ -88,7 +88,7 @@ def prepare_data(file_path):
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
     )
 
-    return initial_state, climate, params, site_data, species_data, n_species
+    return initial_state, climate, params, site_data, species_data, n_species, species_names
 
 
 def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparison=False):
@@ -104,7 +104,15 @@ def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparis
     else:
         fig_name = None
 
-    initial_state, climate, params, site_data, species_data, n_species = prepare_data(file_path)
+    try:
+        observed_data = pd.read_excel(file_path, sheet_name="observed")
+    except Exception as e:
+        print(f"Could not read observed data from {file_path}: {e}")
+        observed_data = None
+
+    initial_state, climate, params, site_data, species_data, n_species, species_names = (
+        prepare_data(file_path)
+    )
 
     final_state, outputs = run_3pg(
         initial_state=initial_state,
@@ -141,11 +149,13 @@ def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparis
         # fig = plot_combined_3pg_outputs(
         #     r_outputs, outputs, climate.start_month, species_data.specie, fig_name
         # )
-        df_comp = create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        df_comp = create_comparison_dataframe(
+            r_outputs, outputs, climate.start_month, species_names
+        )
         fig = plot_combined_3pg_outputs_obv(df_comp, observed_data=observed_data)
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
-        create_comparison_dataframe(r_outputs, outputs, climate.start_month)
+        create_comparison_dataframe(r_outputs, outputs, climate.start_month, species_names)
         fig = None
     elif plot_output:
         fig = plot_outputs(outputs, climate.start_month, fig_name)
@@ -175,10 +185,12 @@ def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
 
 
 if __name__ == "__main__":
-    # # file_path = "./data/data_semisynthetic.xlsx"
-    # # file_path = "./data/data.input.xlsx"
+    # file_path = "./data/data_semisynthetic.xlsx"
+    # file_path = "./data/data.input.xlsx"
     # file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/data_nothinning.xlsx"
+
+    # file_path = "./data/solling_data.xlsx"
     # fig, outputs = run_threepg_main(file_path,
     #                                   observed_data = None,
     #                                   plot_output=True,

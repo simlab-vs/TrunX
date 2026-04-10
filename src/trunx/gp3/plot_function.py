@@ -1,7 +1,7 @@
 """Plot functions to visualize outputs and its comparison with r3PG."""
 
+import datetime as dt
 import os
-from datetime import datetime
 
 import jax
 import jax.numpy as jnp
@@ -191,7 +191,7 @@ def plot_combined_3pg_outputs(
     return fig
 
 
-def create_comparison_dataframe(r_df, outputs, start_month):
+def create_comparison_dataframe(r_df, outputs, start_month, species_list):
     """
     Create a polars DataFrame combining R 3-PG outputs and python implementation results.
 
@@ -209,13 +209,12 @@ def create_comparison_dataframe(r_df, outputs, start_month):
     pl.DataFrame
         Combined DataFrame of R and Python outputs.
     """
-    species_list = r_df.select("species").unique().to_series().to_list()
-    n_species = len(species_list)
     # Generate dates
     num_months = outputs["WS"].shape[0]
     dates = [start_month + np.timedelta64(i, "M") for i in range(num_months)]
     dates = pd.to_datetime(dates).to_list()
-    dates = [d.date() for d in dates]
+    dates = [d + pd.offsets.MonthEnd(0) for d in dates]
+    # dates = [d.date() for d in dates]
 
     r_outputs = r_df.filter(
         pl.col("variable").is_in(
@@ -279,15 +278,15 @@ def create_comparison_dataframe(r_df, outputs, start_month):
         "f_transp_scale": "r_f_transp_scale",
     }
     r_outputs = r_outputs.rename(rename_dict)
-
-    dates_expanded = []
-    for date in dates:
-        for _ in range(n_species):
-            dates_expanded.append(date)
-
-    # r_outputs = r_outputs.with_columns(pl.Series("Dates", dates, dtype=pl.Date))
-    r_outputs = r_outputs.with_columns(pl.Series("Dates", dates_expanded, dtype=pl.Date))
-    r_outputs = r_outputs.drop("date")
+    r_outputs = r_outputs.with_columns(
+        pl.col("date")
+        .map_elements(
+            lambda x: dt.datetime(1970, 1, 1) + dt.timedelta(days=x), return_dtype=pl.Datetime
+        )
+        .alias("Dates")
+    ).with_columns(
+        pl.col("Dates").dt.year().alias("year"), pl.col("Dates").dt.month().alias("month")
+    )
 
     p_records = []
     for var in outputs:
@@ -343,7 +342,7 @@ def create_comparison_dataframe(r_df, outputs, start_month):
     )
 
     df = p_outputs.join(r_outputs, on=["Dates", "species"], how="inner")
-
+    df = df.with_columns(pl.col("Dates").dt.strftime("%Y-%m-%d").alias("Dates"))
     df.write_csv("./data/r_python.comparison.csv")
 
     return df.to_pandas()
@@ -473,201 +472,99 @@ def plot_combined_3pg_outputs_per_species(
     return figures if figures else []
 
 
-def plot_combined_3pg_outputs_obv(
-    df, metrics_to_plot=None, observed_data=None, show_r: bool = True, show_python: bool = True
-):
-    """
-    Visualize R, and python 3PG implementation in the same plot, with observed data.
-
-    Parameters
-    ----------
-    df: pd.DataFrame
-        DataFrame with columns: 'Dates', 'species', and both Python and R metrics
-        Python columns: 'DBH', 'LAI', 'GPP', 'WS', 'WF', 'WR', etc.
-        R columns: 'r_DBH', 'r_LAI', 'r_GPP', 'r_WS', 'r_WF', 'r_WR', etc.
-    metrics_to_plot: dict, optional
-        Dictionary specifying which metrics to plot
-    observed_data:
-        DataFrame with observed data for certain metrics (e.g., DBH)
-    show_r: bool
-        whether to show R outputs
-    show_python: bool
-        whether to show Python outputs
-    """
-    # Convert dates and get basic info
+def plot_combined_3pg_outputs_obv(df, metrics_to_plot=None, observed_data=None):
+    """Visualize R and Python 3PG implementations with observed data."""
+    # Prepare data
     df["Dates"] = pd.to_datetime(df["Dates"])
+    if observed_data is not None and "period_end" in observed_data.columns:
+        observed_data["period_end"] = pd.to_datetime(observed_data["period_end"])
+
+    if observed_data is not None and "date" in observed_data.columns:
+        observed_data["date"] = pd.to_datetime(observed_data["date"])
+
     species_list = df["species"].unique()
-    start_year = df["Dates"].min().year
 
-    # Default metrics if not specified
-    if metrics_to_plot is None:
-        metrics_to_plot = {
-            "DBH": {
-                "label": "DBH (cm)",
-                "python_col": "DBH",
-                "r_col": "r_DBH",
-                "has_observed": True,
-            },
-            "LAI": {"label": "LAI", "python_col": "LAI", "r_col": "r_LAI", "has_observed": False},
-            "GPP": {
-                "label": "GPP (mol C m⁻²)",
-                "python_col": "GPP",
-                "r_col": "r_GPP",
-                "has_observed": False,
-            },
-            "WS": {
-                "label": "Stem Biomass (t DM ha⁻¹)",
-                "python_col": "WS",
-                "r_col": "r_WS",
-                "has_observed": False,
-            },
-            "WF": {
-                "label": "Foliage Biomass (t DM ha⁻¹)",
-                "python_col": "WF",
-                "r_col": "r_WF",
-                "has_observed": False,
-            },
-            "WR": {
-                "label": "Root Biomass (t DM ha⁻¹)",
-                "python_col": "WR",
-                "r_col": "r_WR",
-                "has_observed": False,
-            },
-        }
+    metrics_to_plot = {
+        "DBH": {"label": "DBH (cm)", "python_col": "DBH", "r_col": "r_DBH"},
+        "LAI": {"label": "LAI", "python_col": "LAI", "r_col": "r_LAI"},
+        "GPP": {"label": "GPP (mol C m⁻²)", "python_col": "GPP", "r_col": "r_GPP"},
+        "WS": {"label": "Stem Biomass (t DM ha⁻¹)", "python_col": "WS", "r_col": "r_WS"},
+        "WF": {"label": "Foliage Biomass (t DM ha⁻¹)", "python_col": "WF", "r_col": "r_WF"},
+        "WR": {"label": "Root Biomass (t DM ha⁻¹)", "python_col": "WR", "r_col": "r_WR"},
+    }
 
+    # Setup subplots
     n_metrics = len(metrics_to_plot)
     n_cols = min(3, n_metrics)
     n_rows = (n_metrics + n_cols - 1) // n_cols
 
-    dates_sorted = sorted(df["Dates"].unique())
-    num_months = len(dates_sorted)
-    months = np.arange(num_months)
-
-    all_months = [
-        pd.Timestamp(f"{start_year}-01-01") + pd.DateOffset(months=i) for i in range(num_months)
-    ]
-    tick_indices = [i for i, m in enumerate(all_months) if m.month == 1]
-    tick_labels = [str(all_months[i].year) for i in tick_indices]
-
-    cmap = plt.cm.get_cmap("Set2")
-    species_colors = {
-        species: cmap(i / max(1, len(species_list) - 1)) for i, species in enumerate(species_list)
-    }
-
     figures = []
     for species in species_list:
-        fig, axes = plt.subplots(
-            n_rows, n_cols, figsize=(min(15, 5 * n_cols), min(10, 4 * n_rows))
-        )
-        if n_metrics == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 10))
+        axes = axes.flatten() if n_metrics > 1 else [axes]
 
         species_data = df[df["species"] == species].sort_values("Dates")
-        for idx, (_metric_name, config) in enumerate(metrics_to_plot.items()):
+
+        for idx, (_metric, config) in enumerate(metrics_to_plot.items()):
             if idx >= len(axes):
                 break
 
-            ax = axes[idx]
+            # Plot Python
+            if config["python_col"] in df.columns:
+                axes[idx].plot(
+                    species_data["Dates"], species_data[config["python_col"]], "-", label="Python"
+                )
 
-            if show_python and config["python_col"] in df.columns:
-                values = [
-                    species_data[species_data["Dates"] == date][config["python_col"]].iloc[0]
-                    if len(species_data[species_data["Dates"] == date]) > 0
-                    else np.nan
-                    for date in dates_sorted
-                ]
+            # Plot R
+            if config["r_col"] in df.columns:
+                axes[idx].plot(
+                    species_data["Dates"],
+                    species_data[config["r_col"]],
+                    "--",
+                    label="R",
+                    alpha=0.7,
+                )
 
-                if not all(np.isnan(v) for v in values):
-                    ax.plot(
-                        months,
-                        values,
-                        "-",
-                        label=f"Python - {species}",
-                        color=species_colors[species],
-                        linewidth=2,
-                        alpha=0.8,
-                        marker="o",
-                        markersize=3,
-                        markevery=max(1, len(months) // 20),
-                    )
+            # Plot observed data 
+            if (
+                observed_data is not None
+                and config["python_col"] in observed_data.columns
+                and "specie" in observed_data.columns
+            ):
+                obs = observed_data[observed_data["specie"] == species]
+                axes[idx].scatter(
+                    obs["period_end"],
+                    obs[config["python_col"]],
+                    s=50,
+                    marker="s",
+                    label="Observed",
+                )
+                axes[idx].plot(obs["period_end"], obs[config["python_col"]], "-", alpha=0.6)
 
-            if show_r and config["r_col"] in df.columns:
-                values = [
-                    species_data[species_data["Dates"] == date][config["r_col"]].iloc[0]
-                    if len(species_data[species_data["Dates"] == date]) > 0
-                    else np.nan
-                    for date in dates_sorted
-                ]
+            if (
+                observed_data is not None
+                and config["python_col"] in observed_data.columns
+                and "date" in observed_data.columns
+            ):
+                axes[idx].scatter(
+                    observed_data["date"],
+                    observed_data[config["python_col"]],
+                    s=50,
+                    marker="s",
+                    label="Observed",
+                )
 
-                if not all(np.isnan(v) for v in values):
-                    ax.plot(
-                        months,
-                        values,
-                        "--",
-                        label=f"R - {species}",
-                        color=species_colors[species],
-                        linewidth=1.5,
-                        alpha=0.7,
-                        marker="s",
-                        markersize=3,
-                        markevery=max(1, len(months) // 20),
-                    )
-
-            if config.get("has_observed", False) and observed_data is not None:
-                avg_diameter = observed_data[observed_data["specie"] == species]
-                if avg_diameter.empty:
-                    continue
-
-                model_years = np.array([start_year + i // 12 for i in range(num_months)])
-
-                obs_indices = []
-                obs_values = []
-                for year, dbh in zip(avg_diameter["period_end"], avg_diameter["DBH"], strict=True):
-                    year_val = year.year if hasattr(year, "year") else int(year)
-                    diff = np.abs(model_years - year_val)
-                    closest_idx = np.argmin(diff)
-                    if diff[closest_idx] < 0.5:
-                        obs_indices.append(closest_idx)
-                        obs_values.append(dbh)
-
-                if obs_indices:
-                    ax.scatter(
-                        obs_indices,
-                        obs_values,
-                        color=species_colors[species],
-                        s=50,
-                        marker="s",
-                        zorder=5,
-                        label="Observed",
-                        alpha=0.9,
-                    )
-                    ax.plot(
-                        obs_indices,
-                        obs_values,
-                        "-",
-                        color=species_colors[species],
-                        linewidth=2,
-                        alpha=0.6,
-                    )
-
-            ax.set_ylabel(config["label"], fontsize=11)
-            ax.set_title(config["label"].split("(")[0].strip(), fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.3)
-
+            axes[idx].set_ylabel(config["label"])
+            axes[idx].set_title(config["label"].split("(")[0].strip())
+            axes[idx].grid(True, alpha=0.3)
             if idx == 0:
-                ax.legend(fontsize="small")
+                axes[idx].legend()
 
+        # Clean up unused subplots
         for idx in range(n_metrics, len(axes)):
             axes[idx].set_visible(False)
 
-        for ax in axes[:n_metrics]:
-            ax.set_xticks(tick_indices)
-            ax.set_xticklabels(tick_labels, rotation=45, ha="right")
-            ax.set_xlabel("Year", fontsize=10)
-            # ax.set_xlim(0, num_months - 1)
-
-        plt.suptitle("3-PG Model Outputs: R3PG vs Python3PG", fontsize=14, fontweight="bold")
+        plt.suptitle(f"3-PG Model Outputs: {species}", fontsize=14, fontweight="bold")
         plt.tight_layout()
         figures.append(fig)
 
