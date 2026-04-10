@@ -18,6 +18,8 @@ from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
+import polars as pl
+
 az.rcParams["plot.backend"] = "matplotlib"
 
 
@@ -47,23 +49,31 @@ def model(
     """
     assert fixed_params is not None
     # Priors for parameters
-    alphaCx = numpyro.sample("alphaCx", dist.LogNormal(jnp.log(0.05), 0.5))
-    CoeffCond = numpyro.sample("CoeffCond", dist.LogNormal(jnp.log(0.05), 0.5))
-    Y = numpyro.sample("Y", dist.Normal(0.47, 0.05))
+    # alphaCx = numpyro.sample("alphaCx", dist.LogNormal(jnp.log(0.05), 0.5))
+    # CoeffCond = numpyro.sample("CoeffCond", dist.LogNormal(jnp.log(0.05), 0.5))
+    # Y = numpyro.sample("Y", dist.Normal(0.47, 0.05))
 
-    gammaF0 = numpyro.sample("gammaF0", dist.LogNormal(jnp.log(0.001), 0.3))
-    gammaF1 = numpyro.sample("gammaF1", dist.LogNormal(jnp.log(0.02), 0.3))
-    tgammaF = numpyro.sample("tgammaF", dist.LogNormal(jnp.log(60.0), 0.1))
+    # gammaF0 = numpyro.sample("gammaF0", dist.LogNormal(jnp.log(0.001), 0.3))
+    # gammaF1 = numpyro.sample("gammaF1", dist.LogNormal(jnp.log(0.02), 0.3))
+    # tgammaF = numpyro.sample("tgammaF", dist.LogNormal(jnp.log(60.0), 0.1))
 
-    tRho = numpyro.sample("tRho", dist.LogNormal(jnp.log(1.0), 0.02))
+    # tRho = numpyro.sample("tRho", dist.LogNormal(jnp.log(1.0), 0.02))
 
+    alphaCx = numpyro.sample("alphaCx", dist.Uniform(0.020, 0.090))
+    CoeffCond = numpyro.sample("CoeffCond", dist.Uniform(0.0001, 0.070))
+    Y = numpyro.sample("Y", dist.Uniform(0.440, 0.510))
+    gammaF0 = numpyro.sample("gammaF0", dist.Uniform(0.0001, 0.003))
+    gammaF1 = numpyro.sample("gammaF1", dist.Uniform(0.0001, 0.040))
+    tgammaF = numpyro.sample("tgammaF", dist.Uniform(12.0, 150.0))
+    tRho = numpyro.sample("tRho", dist.Uniform(0.0, 150.0)) 
+        
     # Update parameters
     params = fixed_params._replace(
         alphaCx=alphaCx,
         CoeffCond=CoeffCond,
         Y=Y,
         gammaF0=gammaF0,
-        gammaF1=gammaF1,
+        # gammaF1=gammaF1,
         tgammaF=tgammaF,
         tRho=tRho,
     )
@@ -465,7 +475,7 @@ def run_hmc_analysis(file_path: str, predict_with_uncert: bool = False):
     obs_DBH = jnp.array([14, 14.8, 15.2, 15.9, 15.8, 16.1, 17.3, 17.8, 18.5, 18.8, 19.2])
 
     # obs_times = jnp.asarray(pl.read_excel(file_path, sheet_name="observed")["idx"])
-    # obs_DBH = jnp.asarray(pl.read_excel(file_path, sheet_name="observed")["DBH"])
+    # obs_DBH = jnp.asarray(pl.read_excel(file_path, sheet_name="observed")["dbh"])
 
     # Run analysis
     mcmc, samples = run_full_analysis(
@@ -496,4 +506,6 @@ def run_hmc_analysis(file_path: str, predict_with_uncert: bool = False):
 
 if __name__ == "__main__":
     file_path = "./data/data_sspecies_nothinning.xlsx"
-    run_hmc_analysis(file_path, predict_with_uncert=False)
+    # file_path = "./data/solling_data.xlsx"
+    run_hmc_analysis(file_path, predict_with_uncert=True)
+    

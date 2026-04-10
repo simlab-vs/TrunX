@@ -290,3 +290,4 @@ if __name__ == "__main__":
     print(df_cleaned.head())
     print(monthly_agg.head())
     print(coverage.head())
+    
