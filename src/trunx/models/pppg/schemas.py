@@ -5,6 +5,11 @@ Documentation can be found at [https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_
 
 from pydantic import BaseModel, ConfigDict, Field
 
+type SurfaceBiomass = float  # [t / ha]
+type SurfaceMassRate = float  # [t / month * ha]
+type EnergyFlow = float  # [MJ / day * m2]
+type MassPerEnergy = float  # [g / MJ]
+
 
 class Params(BaseModel):
     """Class for immutable model parameters."""
@@ -16,9 +21,9 @@ class StandInitializationData(Params):
     """Stand initialization data."""
 
     population: float = Field(gt=0.0, description="initial population (stocking) [trees/ha]")
+    foliage_biomass: float = Field(gt=0.0, description="initial foliage biomass [t/ha]")
     stem_biomass: float = Field(gt=0.0, description="initial stem biomass in [t/ha]")
     root_biomass: float = Field(gt=0.0, description="initial root biomass [t/ha]")
-    foliage_biomass: float = Field(gt=0.0, description="initial foliage biomass [t/ha]")
     age: float = Field(gt=0.0, description="initial stand age [months]")
 
 
@@ -34,10 +39,6 @@ class SiteFactors(Params):
         description="site fertilitiy rating, from concrete (0), to non-limited by nutrients (1)",
     )
     max_asw: float = Field(gt=0.0, description="maximum plant-available soil water [mm]")
-
-
-class SpeciesParameters(Params):
-    """Species-specific parameters."""
 
 
 class WeatherData(Params):
@@ -60,23 +61,23 @@ class WeatherData(Params):
 class AllocationRatios(Params):
     """Allocation ratios of the net primary production to the different biomass pools."""
 
-    foliage_allocation_ratio: float = Field(ge=0.0, le=0.0, description="foliage allocation ratio")
-    stem_allocation_ratio: float = Field(ge=0.0, le=0.0, description="stem allocation ratio")
-    roots_allocation_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")
+    foliage_ratio: float = Field(ge=0.0, le=0.0, description="foliage allocation ratio")
+    stem_ratio: float = Field(ge=0.0, le=0.0, description="stem allocation ratio")
+    roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")
+
+
+class SpeciesParameters(Params):
+    """Species-specific parameters."""
 
 
 class TurnoverRates(Params):
     """Monthly turnover rates (loss) for the different biomass pools."""
 
-    foliage_turnover_rate: float = Field(
+    foliage_rate: float = Field(
         ge=0.0, le=1.0, description="monthly foliage turnover rate [1/month]"
     )
-    stem_turnover_rate: float = Field(
-        ge=0.0, le=1.0, description="monthly stem turnover rate [1/month]"
-    )
-    roots_turnover_rate: float = Field(
-        ge=0.0, le=1.0, description="monthly roots turnover rate [1/month]"
-    )
-    stem_number_turnover_rate: float = Field(
+    stem_rate: float = Field(ge=0.0, le=1.0, description="monthly stem turnover rate [1/month]")
+    roots_rate: float = Field(ge=0.0, le=1.0, description="monthly roots turnover rate [1/month]")
+    stem_number_rate: float = Field(
         ge=0.0, le=1.0, description="monthly stem number turnover rate (mortality) [1/month]"
     )

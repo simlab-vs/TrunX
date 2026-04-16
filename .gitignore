@@ -7,7 +7,7 @@ __pycache__/
 docs/ 
 data/
 containers/
-models/
+models/*
 
 # secrets
 .env
