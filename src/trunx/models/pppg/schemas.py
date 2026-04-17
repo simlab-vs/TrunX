@@ -67,7 +67,55 @@ class AllocationRatios(Params):
 
 
 class SpeciesParameters(Params):
-    """Species-specific parameters."""
+    """Species-specific parameters for the 3PG model."""
+
+    # Allocation
+    min_root_ratio: float = Field(
+        gt=0.0, le=1.0, description="minimum fraction of NPP allocated to roots"
+    )
+    max_root_ratio: float = Field(
+        gt=0.0, le=1.0, description="maximum fraction of NPP allocated to roots"
+    )
+    foliage_stem_ratio: float = Field(gt=0.0, description="ratio of foliage to stem allocation")
+    fertility_allocation_param: float = Field(
+        ge=0.0, le=1.0, description="modifier of root allocation response to fertility"
+    )
+
+    # Turnover
+    root_turnover_rate: float = Field(
+        gt=0.0, le=1.0, description="monthly root turnover rate [1/month]"
+    )
+    litterfall_init: float = Field(
+        gt=0.0, description="foliage litterfall rate at age 0 [1/month]"
+    )
+    litterfall_mature: float = Field(
+        gt=0.0, description="foliage litterfall rate at maturity [1/month]"
+    )
+    litterfall_age: float = Field(
+        gt=0.0,
+        description="age at which litterfall rate reaches its mean value [months]",
+    )
+
+    # Temperature response
+    min_temp: float = Field(description="minimum temperature for growth [°C]")
+    opt_temp: float = Field(description="optimum temperature for growth [°C]")
+    max_temp: float = Field(description="maximum temperature for growth [°C]")
+
+    # Other environmental
+    frost_loss_coeff: float = Field(ge=0.0, description="growth days lost per frost day")
+    vapour_pressure_coeff: float = Field(
+        ge=0.0, description="coefficient for VPD effect on growth [1/kPa]"
+    )
+    max_age: float = Field(gt=0.0, description="maximum stand age [months]")
+
+    # Light and allometry
+    canopy_quantum_efficiency: float = Field(
+        gt=0.0, description="canopy quantum efficiency [mol/mol]"
+    )
+    light_extinction_coeff: float = Field(
+        gt=0.0, description="light extinction coefficient for Beer's law"
+    )
+    specific_leaf_area: float = Field(gt=0.0, description="specific leaf area [m2/kg]")
 
 
 class TurnoverRates(Params):
