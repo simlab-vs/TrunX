@@ -14,6 +14,7 @@ from typing import Self
 import numpy as np
 
 type DayRate = float  # daily rates [1 / d]
+type SpecificArea = float  # [m2 / kg]
 
 
 class PoolsQuantity:
@@ -48,6 +49,17 @@ class AllocationRatios(PoolsQuantity):
     to each of the biomass pools.
 
     Reference: Landsberg and Sands (2011): Eqs (9.11) and (9.12)
+
+    Parameters
+    ----------
+    min_root_ratio: float
+    max_root_ratio: float
+    foliage_stem_ratio: float
+    physiological_modifier: float
+    fertility_allocation_param: float
+        Determines the value of the site limitation at 0 fertility.
+        Also called m_0 in the litterature.
+    fertility_rating: float
 
     """
 
@@ -118,6 +130,35 @@ def litterfall_rate(
     c = litterfall_init + (litterfall_mature - litterfall_init) * b
 
     return a / c
+
+
+def compute_specific_leaf_area(
+    age,
+    specific_area_init: SpecificArea,
+    specific_area_mature: SpecificArea,
+    specific_area_age: float,
+) -> SpecificArea:
+    """Compute the age-dependent specific leaf area.
+
+    References
+    ----------
+      - Landsberg and Sands (2002): Eq (A.15)
+
+    Parameters
+    ----------
+    age: float
+        Current age of the stand
+    specific_area_init: SpecificArea
+        Species specific specific area at age 0
+    specific_area_mature: DayRate
+        Species specific specific area at maturity
+    speficif_area_age: float
+        Species specific parameter defining age at which
+        specific leaf area reaches its mean value
+    """
+    return specific_area_mature + (specific_area_init - specific_area_mature) * np.exp(
+        -np.log(2) * (age / specific_area_age) ** 2
+    )
 
 
 class Biomass(PoolsQuantity):

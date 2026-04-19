@@ -4,6 +4,7 @@ Documentation can be found at [https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_
 """
 
 from pydantic import BaseModel, ConfigDict, Field
+from seaborn import despine
 
 type SurfaceBiomass = float  # [t / ha]
 type SurfaceMassRate = float  # [t / month * ha]
@@ -76,7 +77,6 @@ class SpeciesParameters(Params):
     max_root_ratio: float = Field(
         gt=0.0, le=1.0, description="maximum fraction of NPP allocated to roots"
     )
-    foliage_stem_ratio: float = Field(gt=0.0, description="ratio of foliage to stem allocation")
     fertility_allocation_param: float = Field(
         ge=0.0, le=1.0, description="modifier of root allocation response to fertility"
     )
@@ -103,8 +103,8 @@ class SpeciesParameters(Params):
 
     # Other environmental
     frost_loss_coeff: float = Field(ge=0.0, description="growth days lost per frost day")
-    vapour_pressure_coeff: float = Field(
-        ge=0.0, description="coefficient for VPD effect on growth [1/kPa]"
+    vapour_pressure_coefficient: float = Field(
+        ge=0.0, description="coefficient for VPD effect on growth [1/mbar]"
     )
     max_age: float = Field(gt=0.0, description="maximum stand age [months]")
 
@@ -115,7 +115,20 @@ class SpeciesParameters(Params):
     light_extinction_coeff: float = Field(
         gt=0.0, description="light extinction coefficient for Beer's law"
     )
-    specific_leaf_area: float = Field(gt=0.0, description="specific leaf area [m2/kg]")
+
+    dbh_allometric_param: tuple[float, float] = (
+        Field(description="parameters for the dbh to stem mass allometric equation (power)"),
+        Field(description="parameters for the dbh to stem mass allometric equation (scaling)"),
+    )
+    fs_ratio_2: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=2")
+    fs_ratio_20: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=2")
+    specific_area_init: float = Field(gt=0.0, description="specific leaf area at age 0 [m2 / kg]")
+    specific_area_mature: float = Field(
+        gt=0.0, description="specific leaf area for mature stands [m2 / kg]"
+    )
+    specific_area_age: float = Field(
+        gt=0.0, description="age at which specific leaf area reaches its mean value [month]"
+    )
 
 
 class TurnoverRates(Params):

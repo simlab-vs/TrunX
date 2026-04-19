@@ -71,19 +71,19 @@ def frost_modifier(n_frost_days: float, frost_loss_coefficient) -> float:
     return 1 - frost_loss_coefficient * n_frost_days / 30.0
 
 
-def vapour_modifier(vapour_deficit: float, vapour_coefficient: float) -> float:
+def vapour_modifier(vapour_deficit: float, vapour_pressure_coefficient: float) -> float:
     """Compute the vapour pressure deficit (VPD) modifier.
 
     Parameters
     ----------
     vapour_deficit: float
-        Average day-time vapour pressure deficit [kPa]
+        Average day-time vapour pressure deficit [mbar]
     vapour_coefficient: float
         Species specific coefficient for the effect of vapour pressure
-        deficit.
+        deficit [1 / mbar].
 
     """
-    return np.exp(-vapour_coefficient * vapour_deficit)
+    return np.exp(-vapour_pressure_coefficient * vapour_deficit)
 
 
 def soil_modifier(available_water: float, soil_modifier_shape) -> float:
