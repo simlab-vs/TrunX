@@ -486,7 +486,7 @@ def run_hmc_analysis(file_path: str, predict_with_uncert: bool = False):
         num_warmup=200,
         num_samples=200,
         num_chains=2,
-        output_dir="./hmc_results",
+        output_dir="./data/hmc_results",
         show_plots=True,
         predict_with_uncert=predict_with_uncert,
     )

@@ -43,10 +43,13 @@ def prepare_data(file_path):
     d_species = pl.read_excel(file_path, sheet_name="species")
     species_data = prepare_species(d_species)
 
+    print(species_data.specie)
+
     params_df = pl.read_excel(file_path, sheet_name="parameters")
 
     param_names = params_df["parameter"].to_list()
-    species_names = [col for col in params_df.columns if col != "parameter"]
+    # species_names = [col for col in params_df.columns if col != "parameter"]
+    species_names = species_data.specie
     values_matrix = params_df[species_names].to_numpy()
 
     params_dict = {}
@@ -187,15 +190,15 @@ def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
 if __name__ == "__main__":
     # file_path = "./data/data_semisynthetic.xlsx"
     # file_path = "./data/data.input.xlsx"
-    # file_path = "./data/data_sspecies_nothinning.xlsx"
+    file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/data_nothinning.xlsx"
+    # file_path = "./data/S_weather_data.xlsx"
 
     # file_path = "./data/solling_data.xlsx"
-    # fig, outputs = run_threepg_main(file_path,
-    #                                   observed_data = None,
-    #                                   plot_output=True,
-    #                                   r_comparison=True
-    # )
+    # file_path = "./data//davos_data.xlsx"
+    fig, outputs = run_threepg_main(
+        file_path, observed_data=None, plot_output=True, r_comparison=True
+    )
 
-    plot_id = "50.0013"
-    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    # plot_id = "50.0013"
+    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

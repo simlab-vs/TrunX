@@ -35,7 +35,7 @@ def create_weather_input(df, plot_id):
     # Convert from W/m² to MJ/m² (1 W/m² = 0.0864 MJ/m²)
     for col in srad_df.schema:
         if col.startswith("daily_m"):
-            srad_df = srad_df.with_columns((pl.col(col)* 0.0864).alias(col))
+            srad_df = srad_df.with_columns((pl.col(col) * 0.0864).alias(col))
 
     mtemp_df = temp_df.group_by(["month_year"]).agg(
         pl.col("daily_mean").mean().alias("tmp_ave"),
@@ -259,11 +259,11 @@ def create_site_data(icp_df, weather_df):
     )
 
     min_year = weather_df["year"].min()
-    min_month = weather_df["month"].min()
+    min_month = weather_df.filter(pl.col("year") == min_year).select("month").min().item()
     site_df = site_df.with_columns([pl.lit(f"{min_year}-{min_month:02d}").alias("from")])
 
     max_year = weather_df["year"].max()
-    max_month = weather_df["month"].max()
+    max_month = weather_df.filter(pl.col("year") == max_year).select("month").max().item()
     site_df = site_df.with_columns([pl.lit(f"{max_year}-{max_month:02d}").alias("to")])
 
     return site_df
@@ -274,7 +274,6 @@ def update_species_data(icp_df, species_df, input_params_df):
     avg_diameter = icp_df.group_by(["specie", "period_end"]).agg(
         pl.col("diameter_end").mean().alias("DBH")
     )
-
     avg_diameter = avg_diameter.with_columns(pl.col("period_end").dt.year().alias("year"))
     avg_diameter = avg_diameter.filter(
         pl.col("specie").is_in(species_df.select("species").to_series().to_list())
@@ -472,3 +471,15 @@ def create_input_data(input_data_file, plot_id):
         print(summary_wdf)
 
     return miss_months, observed_data.to_pandas()
+
+
+if __name__ == "__main__":
+    file_path = os.path.join("./data/", "S_weather_data.xlsx")
+    # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    # processor = prepare_icp_weather_data(raw_file_path)
+    # df = processor.clean_data()
+
+    # miss_months, weather_df = create_weather_input(df, plot_id="50.0018")
+    # print(weather_df.head())
+
+    create_input_data(file_path, plot_id="50.0018")

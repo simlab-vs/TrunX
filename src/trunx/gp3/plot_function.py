@@ -243,6 +243,9 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
                 "npp_fract_root",
                 "gammaF",
                 "f_transp_scale",
+                "stems_n",
+                "mort_stress",
+                "mort_thinn",
             ]
         )
     )
@@ -276,6 +279,9 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
         "npp_fract_root": "r_eta_R",
         "gammaF": "r_gammaF",
         "f_transp_scale": "r_f_transp_scale",
+        "stems_n": "r_stems_n",
+        "mort_stress": "r_mort_stress",
+        "mort_thinn": "r_mort_thinn",
     }
     r_outputs = r_outputs.rename(rename_dict)
     r_outputs = r_outputs.with_columns(
@@ -338,6 +344,9 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
             "eta_F",
             "gammaF",
             "f_transp_scale",
+            "stems_n",
+            "mort_stress",
+            "mort_thinn",
         ]
     )
 
@@ -525,7 +534,7 @@ def plot_combined_3pg_outputs_obv(df, metrics_to_plot=None, observed_data=None):
                     alpha=0.7,
                 )
 
-            # Plot observed data 
+            # Plot observed data
             if (
                 observed_data is not None
                 and config["python_col"] in observed_data.columns

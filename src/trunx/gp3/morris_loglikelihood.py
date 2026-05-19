@@ -226,12 +226,24 @@ class MorrisSensitivityOnPosterior:
         component_names = self.output_vars + ["total"]
         component_values = {name: np.zeros(self.param_values.shape[0]) for name in component_names}
 
+        invalid_samples = {name: [] for name in component_names}
         for i in range(self.param_values.shape[0]):
             if i % 100 == 0:
                 print(f"  {i}/{self.param_values.shape[0]}")
-            posterior_components = self._log_posterior_components(self.param_values[i])
-            for name in component_names:
-                component_values[name][i] = posterior_components.get(name, -np.inf)
+
+            try:
+                posterior_components = self._log_posterior_components(self.param_values[i])
+                for name in component_names:
+                    value = posterior_components.get(name, -np.inf)
+                    component_values[name][i] = value
+
+                    if not np.isfinite(value):
+                        invalid_samples[name].append(i)
+            except Exception as e:
+                print(f"Error evaluating sample {i}: {e}")
+                for name in component_names:
+                    component_values[name][i] = -np.inf
+                    invalid_samples[name].append(i)
 
         # Store all outputs for later use
         self.all_outputs = component_values
@@ -248,30 +260,46 @@ class MorrisSensitivityOnPosterior:
         self.results = {}
         for component_name in component_names:
             values = component_values[component_name]
-            valid_mask = ~np.isinf(values)
+            # valid_mask = ~np.isinf(values)
+            invalid_indices = invalid_samples[component_name]
 
-            if not np.any(valid_mask):
-                print(f"  No valid values for {component_name}, skipping")
+            if len(invalid_indices) == len(values):
+                print(f"\nWARNING: All values for {component_name} are invalid, skipping analysis")
                 continue
 
-            if np.all(values[valid_mask] == values[valid_mask][0]):
-                print(f"  Constant output for {component_name}, skipping")
-                continue
+            if len(invalid_indices) > 0:
+                print(f" Handling {len(invalid_indices)} invalid samples for {component_name}...")
 
-            n_invalid = np.sum(~valid_mask)
-            if n_invalid > 0:
-                print(f"  Removing {n_invalid} invalid samples from analysis")
-                param_values_valid = self.param_values[valid_mask]
-                values_valid = values[valid_mask]
+                values_clean = values.copy()
+                for idx in invalid_indices:
+                    # Find nearest valid index within same trajectory
+                    trajectory_size = len(self.all_param_names) + 1
+                    start_idx = (idx // trajectory_size) * trajectory_size
+                    end_idx = min(start_idx + trajectory_size, len(values))
+
+                    # Look for valid values in the same trajectory
+                    valid_in_trajectory = []
+                    for j in range(start_idx, end_idx):
+                        if j not in invalid_indices and np.isfinite(values[j]):
+                            valid_in_trajectory.append(values[j])
+
+                    if valid_in_trajectory:
+                        # Take mean of valid values in the same trajectory
+                        values_clean[idx] = np.mean(valid_in_trajectory)
+                    else:
+                        # Global mean of valid values
+                        all_valid = values[~np.isnan(values) & np.isfinite(values)]
+                        values_clean[idx] = np.mean(all_valid) if len(all_valid) > 0 else 0.0
+
+                values_to_analyze = values_clean
             else:
-                param_values_valid = self.param_values
-                values_valid = values
+                values_to_analyze = values
 
             # Run Morris analysis
             morris_result = morris_analyze.analyze(
                 problem,
-                param_values_valid,
-                values_valid,
+                self.param_values,
+                values_to_analyze,
                 num_levels=self.n_levels,
                 conf_level=0.95,
                 print_to_console=False,
@@ -284,8 +312,9 @@ class MorrisSensitivityOnPosterior:
                 "sigma": morris_result["sigma"],
                 "mu_star_conf": morris_result["mu_star_conf"],
                 "names": self.all_param_names,
-                "n_valid": np.sum(valid_mask),
+                "n_valid": len(values) - len(invalid_indices),
                 "n_total": len(values),
+                "n_invalid": len(invalid_indices),
             }
 
         return self.results
@@ -471,18 +500,13 @@ if __name__ == "__main__":
             param_best[row["param_name"]] = row["default"]
 
     calib_params = list(param_bounds.keys())
-    
+
     # Run analysis for multiple output variables
     analyzer = run_morris_analysis(
         file_path=file_path,
         observed_data=observed_df,
         calib_params=calib_params,
-        output_vars=[
-            "WS",
-            "DBH", 
-            "WF", 
-            "WR"
-        ],
+        output_vars=["WS", "DBH", "WF", "WR"],
         params_bounds=param_bounds,
         param_best=param_best,
         n_trajectories=100,
@@ -497,5 +521,3 @@ if __name__ == "__main__":
         export_csv=True,
         save_dir=os.path.join("./data/", "morris_analysis_results"),
     )
-    
-    

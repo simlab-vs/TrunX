@@ -355,7 +355,11 @@ if __name__ == "__main__":
     # Run analysis on model outputs
     analyzer = run_morris_analysis(
         file_path=file_path,
-        calib_params=["alphaCx", "CoeffCond", "Y",],
+        calib_params=[
+            "alphaCx",
+            "CoeffCond",
+            "Y",
+        ],
         output_vars=["WS", "DBH"],
         param_bounds=param_bounds,
         param_best=param_best,

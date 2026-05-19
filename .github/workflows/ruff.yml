@@ -16,8 +16,8 @@ jobs:
             .venv
           key: uv-main-${{ hashFiles('uv.lock') }}
           restore-keys: |
-            uv-main-  
-      - name: Run ruff checks and format 
+            uv-main-
+      - name: Run ruff checks and format
         uses: astral-sh/ruff-action@v3
       - name: Save uv caches
         if: steps.cache-restore.outputs.cache-hit != 'true'

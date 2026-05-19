@@ -7,7 +7,8 @@ import jax.numpy as jnp
 from jax import debug, lax
 
 from trunx.gp3.helper_function import (
-    apply_self_thinning,
+    apply_self_thinning_with_mortality_factors,
+    apply_stress_mortality,
     calculate_base_conductance,
     calculate_day_length,
     compute_allocation_fraction,
@@ -55,6 +56,7 @@ def model_step(state, climate_month, params, site, species, n_species):
     LAI, SLA = compute_lai(params, WF_active, age_months)
 
     lai_total = jnp.sum(LAI)
+    lai_total = jnp.where(lai_total > 0.0, lai_total, 1.0)
     LAI_per = jnp.where(lai_total > 0.0, LAI / lai_total, 0.0)
 
     # Light interception (Beer's Law)
@@ -64,7 +66,7 @@ def model_step(state, climate_month, params, site, species, n_species):
 
     # Growth modifiers
     fT = f_temperature(params, T_avg)
-    fF = f_frost(params, frost_days)
+    fF = f_frost(params, frost_days, n_days)
     fN = f_nutrition(species, params)
     fD = f_vpd(VPD, params.CoeffCond)
     fSW = f_soil_water(ASW, site, params)
@@ -138,7 +140,8 @@ def model_step(state, climate_month, params, site, species, n_species):
 
     biom_loss_foliage = jnp.where(
         dormant & first_dormant,
-        WF_debt,  # should be WF_debt_new
+        # WF_debt,  # should be WF_debt_new
+        WF_debt_new,
         jnp.where(growing, gammaF * WF_active, 0.0),
     )
 
@@ -159,14 +162,39 @@ def model_step(state, climate_month, params, site, species, n_species):
     WS_new = WS + biom_incr_stem
     WS_new = jnp.clip(WS_new, 0.0, None)
 
-    # Self-thinning (only in growing season)
-    WS_thinned, N_thinned = apply_self_thinning(params, WS_new, N)
-    WS_new = jnp.where(~dormant, WS_thinned, WS_new)
-    N_new = jnp.where(~dormant, N_thinned, N)
+    mort_stress = jnp.zeros_like(N)
+
+    # Stress mortality is disabled to match current R comparison settings
+    # (Trunx_comp.R uses enable_stress_mortality = 0)
+    apply_stress_mortality_enabled = False
+    if apply_stress_mortality_enabled:
+        WS_stress, WF_stress, WR_stress, N_stress, mort_stress = apply_stress_mortality(
+            params, age_months, WS_new, WF_new, WR_new, N, dormant
+        )
+        WS_new = WS_stress
+        WF_new = WF_stress
+        WR_new = WR_stress
+        N_new = N_stress
+    else:
+        N_new = N
+
+    # Self-thinning with R/Fortran logic (iterative solver + mortality factors)
+    # Built-in dormancy gating: only thins in growing season
+    WS_thinned, WF_thinned, WR_thinned, N_thinned, mort_count = (
+        apply_self_thinning_with_mortality_factors(params, WS_new, WF_new, WR_new, N_new, dormant)
+    )
+
+    WS_new = WS_thinned
+    WF_new = WF_thinned
+    WR_new = WR_thinned
+    N_new = N_thinned
+
+    # Recalculate DBH after all biomass events (matches R/Fortran behavior)
+    DBH_updated = compute_dbh(params, WS_new, N_new)
 
     # Recalculate LAI after all updates
-    # LAI, SLA = compute_lai(params, WF_new, age_months + 1)
-    # LAI = jnp.clip(LAI, 0.0, 15.0)
+    LAI, SLA = compute_lai(params, WF_new, age_months + 1)
+    LAI = jnp.clip(LAI, 0.0, 15.0)
 
     new_state = State(
         WF=WF_new,
@@ -184,7 +212,7 @@ def model_step(state, climate_month, params, site, species, n_species):
         NPP=NPP,
         LAI=LAI,
         APAR=APAR,
-        DBH=DBH,
+        DBH=DBH_updated,
         fT=fT,
         fD=fD,
         fSW=fSW,
@@ -207,7 +235,10 @@ def model_step(state, climate_month, params, site, species, n_species):
         gammaF=gammaF,
         f_transp_scale=f_transp_scale,
         conduct_canopy=conduct_canopy,
-        f_cg=gC,
+        f_cg=fcg,
+        mort_stress=mort_stress,
+        mort_thinn=mort_count,
+        stems_n=N_new,
         Volume=WS_new * 0.85 / (params.tRho + 1e-8),
     )
 

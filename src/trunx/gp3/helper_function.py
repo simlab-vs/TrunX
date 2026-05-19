@@ -45,26 +45,26 @@ def f_temperature(params, T_avg: Array) -> Array:
     return jnp.clip(a * (b**power), 0.0, 1.0)
 
 
-def f_frost(params, frost_days: Array):
+def f_frost(params, frost_days: Array, days_in_month: Array) -> Array:
     """
     Calculate the frost response function (fF) for forest growth.
 
     The function is defined as:
-        fF = 1 - kF * frost_days/30
+        fF = 1 - kF * frost_days / days_in_month
 
     Parameters
     ----------
-    frost_days : int
+    frost_days : Array
         Number of frost days in a month.
-    frost_threshold : Array
-        Threshold for the number of frost days that significantly affects growth.
+    days_in_month : Array
+        Number of days in the current month.
 
     Returns
     -------
     Array
         Frost response function value (fF).
     """
-    return jnp.clip(1.0 - params.kF * frost_days / 30.0, 0.0, 1.0)
+    return jnp.clip(1.0 - params.kF * frost_days / (days_in_month + 1e-8), 0.0, 1.0)
 
 
 def f_vpd(VPD: Array, CoeffCond: Array) -> Array:
@@ -339,6 +339,106 @@ def compute_litterfall_rate(
         -jnp.log(2.0) * (age_months / (tgammaF + 1e-8)) ** 2
     )
     return gammaF
+
+
+def _solve_mortality_newton(
+    stems_n_ha: Array,
+    stem_biomass_stand: Array,
+    mS: Array,
+    wSx1000: Array,
+    thinPower: Array,
+    max_iterations: int = 5,
+    accuracy: float = 1e-3,
+) -> Array:
+    """Solve self-thinning mortality using Newton-Raphson iteration."""
+    n = stems_n_ha / 1000.0
+    x1 = 1000.0 * mS * stem_biomass_stand / jnp.maximum(stems_n_ha, 1e-8)
+    converged = jnp.zeros_like(n, dtype=bool)
+
+    for _ in range(max_iterations):
+        active = (~converged) & (n > 0.0)
+        x2 = wSx1000 * jnp.power(jnp.maximum(n, 1e-8), 1.0 - thinPower)
+        fN = x2 - x1 * n - (1.0 - mS) * stem_biomass_stand
+        dfN = (1.0 - thinPower) * x2 / jnp.maximum(n, 1e-8) - x1
+        safe_dfN = jnp.where(jnp.abs(dfN) < 1e-8, jnp.where(dfN >= 0.0, 1e-8, -1e-8), dfN)
+        dN = jnp.where(active, -fN / safe_dfN, 0.0)
+        n = n + dN
+        n = jnp.where(n <= 0.0, 1e-8, n)
+        converged = converged | (~active) | (jnp.abs(dN) <= accuracy)
+
+    mort_n = stems_n_ha - 1000.0 * n
+    return jnp.maximum(mort_n, 0.0)
+
+
+def apply_self_thinning_with_mortality_factors(
+    params,
+    WS: Array,
+    WF: Array,
+    WR: Array,
+    N: Array,
+    dormant: Array,
+) -> tuple[Array, Array, Array, Array, Array]:
+    """Apply self-thinning with mortality factors for stem, foliage, and roots."""
+    thinPower = jnp.where(params.thinPower is None, jnp.asarray(1.5), params.thinPower)
+
+    biom_tree = (WS * 1000.0) / jnp.maximum(N, 1e-8)
+    wSmax_per_tree = params.wSx1000 * jnp.power(1000.0 / jnp.maximum(N, 1e-8), thinPower)
+    should_thin = (biom_tree > wSmax_per_tree) & ~dormant
+
+    mort_count = _solve_mortality_newton(
+        stems_n_ha=N,
+        stem_biomass_stand=WS,
+        mS=params.mS,
+        wSx1000=params.wSx1000,
+        thinPower=thinPower,
+    )
+    mort_count = jnp.where(should_thin, mort_count, 0.0)
+    mort_count = jnp.clip(mort_count, 0.0, N)
+
+    N_new = jnp.maximum(N - mort_count, 1.0)
+
+    WF_loss = params.mF * mort_count * (WF / jnp.maximum(N, 1e-8))
+    WR_loss = params.mR * mort_count * (WR / jnp.maximum(N, 1e-8))
+    WS_loss = params.mS * mort_count * (WS / jnp.maximum(N, 1e-8))
+
+    WF_new = jnp.maximum(WF - WF_loss, 0.0)
+    WR_new = jnp.maximum(WR - WR_loss, 0.0)
+    WS_new = jnp.maximum(WS - WS_loss, 0.0)
+
+    return WS_new, WF_new, WR_new, N_new, mort_count
+
+
+def apply_stress_mortality(
+    params,
+    age_months: Array,
+    WS: Array,
+    WF: Array,
+    WR: Array,
+    N: Array,
+    dormant: Array,
+) -> tuple[Array, Array, Array, Array, Array]:
+    """Apply age-dependent stress mortality and update biomass pools."""
+    eps = 1e-8
+    age_years = jnp.maximum(age_months, 0.0) / 12.0
+
+    gammaN = params.gammaN1 + (params.gammaN0 - params.gammaN1) * jnp.exp(
+        -jnp.log(2.0) * jnp.power(age_years / (params.tgammaN + eps), params.ngammaN)
+    )
+
+    active = (~dormant) & (gammaN > 0.0)
+    mort_stress_raw = gammaN * N / 12.0 / 100.0
+    mort_stress = jnp.where(active, jnp.minimum(mort_stress_raw, N), 0.0)
+
+    WF_loss = params.mF * mort_stress * (WF / jnp.maximum(N, eps))
+    WR_loss = params.mR * mort_stress * (WR / jnp.maximum(N, eps))
+    WS_loss = params.mS * mort_stress * (WS / jnp.maximum(N, eps))
+
+    WF_new = jnp.maximum(WF - WF_loss, 0.0)
+    WR_new = jnp.maximum(WR - WR_loss, 0.0)
+    WS_new = jnp.maximum(WS - WS_loss, 0.0)
+    N_new = jnp.maximum(N - mort_stress, 0.0)
+
+    return WS_new, WF_new, WR_new, N_new, mort_stress
 
 
 def apply_self_thinning(
@@ -850,13 +950,11 @@ def f_temperature_gc(
     eps = 1e-8
     T_mid = (T_avg + T_max) / 2.0
 
-    invalid = (T_mid <= params.Tmin) | (T_mid >= params.Tmax)
-
-    a = (T_mid - params.Tmin) / (params.Topt - params.Tmin + eps)
-    b = (params.Tmax - T_mid) / (params.Tmax - params.Topt + eps)
+    a = jnp.clip((T_mid - params.Tmin) / (params.Topt - params.Tmin + eps), 0.0, None)
+    b = jnp.clip((params.Tmax - T_mid) / (params.Tmax - params.Topt + eps), 0.0, None)
     power = (params.Tmax - params.Topt) / (params.Topt - params.Tmin + eps)
 
-    f_tmp_gc = jnp.where(invalid, 0.0, a * (b**power))
+    f_tmp_gc = a * (b**power)
     return jnp.clip(f_tmp_gc, 0.0, 1.0)
 
 
