@@ -190,15 +190,15 @@ def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
 if __name__ == "__main__":
     # file_path = "./data/data_semisynthetic.xlsx"
     # file_path = "./data/data.input.xlsx"
-    file_path = "./data/data_sspecies_nothinning.xlsx"
+    # file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/data_nothinning.xlsx"
     # file_path = "./data/S_weather_data.xlsx"
 
     # file_path = "./data/solling_data.xlsx"
     # file_path = "./data//davos_data.xlsx"
-    fig, outputs = run_threepg_main(
-        file_path, observed_data=None, plot_output=True, r_comparison=True
-    )
+    # fig, outputs = run_threepg_main(
+    #     file_path, observed_data=None, plot_output=True, r_comparison=True
+    # )
 
-    # plot_id = "50.0013"
-    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    plot_id = "50.0001"
+    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
