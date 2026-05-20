@@ -166,7 +166,7 @@ def model_step(state, climate_month, params, site, species, n_species):
 
     # Stress mortality is disabled to match current R comparison settings
     # (Trunx_comp.R uses enable_stress_mortality = 0)
-    apply_stress_mortality_enabled = False
+    apply_stress_mortality_enabled = True
     if apply_stress_mortality_enabled:
         WS_stress, WF_stress, WR_stress, N_stress, mort_stress = apply_stress_mortality(
             params, age_months, WS_new, WF_new, WR_new, N, dormant
