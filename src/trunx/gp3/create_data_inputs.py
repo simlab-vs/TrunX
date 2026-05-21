@@ -1,5 +1,6 @@
 """Create data input for 3PG model using ICP data."""
 
+import logging
 import os
 
 import jax.numpy as jnp
@@ -8,6 +9,8 @@ import polars as pl
 
 from trunx.config import clean_data_folder, icp_raw_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+
+logger = logging.getLogger(__name__)
 
 
 def dms_to_decimal(dms):
@@ -47,6 +50,22 @@ def create_weather_input(df, plot_id):
     mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))
 
     msrad_df = srad_df.group_by("month_year").agg(pl.col("daily_mean").mean().alias("srad"))
+
+    empty_dfs = [
+        name
+        for name, df in [
+            ("temperature", mtemp_df),
+            ("precipitation", mprcp_df),
+            ("solar radiation", msrad_df),
+        ]
+        if df.height == 0
+    ]
+
+    if empty_dfs:
+        raise ValueError(
+            f"Empty DataFrame(s) for plot_id {plot_id}: {', '.join(empty_dfs)}. "
+            "Please check the input data."
+        )
 
     weather_df = mtemp_df.join(mprcp_df, on="month_year").join(msrad_df, on="month_year")
 
@@ -236,6 +255,7 @@ def create_input_params(icp_df):
 def create_species_data(icp_df):
     """Create species data input for 3PG model."""
     species_df = pl.read_excel("./data/data.input.xlsx", sheet_name="species")
+
     print(
         "\n Species found in this location: ",
         icp_df.select("specie").unique().to_series().to_list(),
@@ -243,6 +263,7 @@ def create_species_data(icp_df):
     species_df = species_df.filter(
         pl.col("species").is_in(icp_df.select("specie").unique().to_series().to_list())
     )
+
     return species_df
 
 
@@ -421,14 +442,18 @@ def create_input_data(input_data_file, plot_id):
         .alias("Lon"),
     )
 
+    logging.info("Pre-processed ICP data for plot_id: %s", plot_id)
     # Weather data
     miss_months, weather_df = create_weather_input(df, plot_id=plot_id)
+    logging.info("Pre-processed weather data for plot_id: %s", plot_id)
 
     # Species data
     input_species_df = create_species_data(icp_df)
+    logging.info("Created species data for plot_id: %s", plot_id)
 
     # Parameter data
     input_params_df = create_input_params(icp_df)
+    logging.info("Created parameter data for plot_id: %s", plot_id)
 
     input_species_df, start_year = update_species_data(icp_df, input_species_df, input_params_df)
 
@@ -438,12 +463,14 @@ def create_input_data(input_data_file, plot_id):
     input_site_df = create_site_data(icp_df, weather_df)
 
     icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"]))
-    observed_data = icp_df.group_by(["specie", "period_end"]).agg(
-        pl.col("diameter_end").mean().alias("DBH")
+    full_observed_data = (
+        icp_df.group_by(["specie", "period_end"])
+        .agg(pl.col("diameter_end").mean().alias("DBH"))
+        .sort("period_end")
     )
 
     observed_data = (
-        observed_data.with_columns(
+        full_observed_data.with_columns(
             pl.col("period_end").dt.year().alias("year"),
             pl.col("period_end").dt.month().alias("month"),
             pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
@@ -465,6 +492,9 @@ def create_input_data(input_data_file, plot_id):
             pd.DataFrame().to_excel(writer, sheet_name="thinning", index=False)
             pd.DataFrame().to_excel(writer, sheet_name="sizeDist", index=False)
             observed_data.to_pandas().to_excel(writer, sheet_name="observed", index=False)
+            full_observed_data.to_pandas().to_excel(
+                writer, sheet_name="full_observed", index=False
+            )
     else:
         print("The weather data is not complete and need processing to fill missing data.")
         summary_wdf = weather_summary(weather_df)

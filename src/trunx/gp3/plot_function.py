@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from trunx.gp3.create_data_inputs import create_weather_input
+
 
 def plot_outputs(outputs, start_month, fig_name: str | None = None):
     """Visualize key 3-PG state variables over time."""
@@ -481,7 +483,9 @@ def plot_combined_3pg_outputs_per_species(
     return figures if figures else []
 
 
-def plot_combined_3pg_outputs_obv(df, metrics_to_plot=None, observed_data=None):
+def plot_combined_3pg_outputs_obv(
+    df, metrics_to_plot=None, observed_data=None, fig_name=None, plot_id=""
+):
     """Visualize R and Python 3PG implementations with observed data."""
     # Prepare data
     df["Dates"] = pd.to_datetime(df["Dates"])
@@ -491,6 +495,7 @@ def plot_combined_3pg_outputs_obv(df, metrics_to_plot=None, observed_data=None):
     if observed_data is not None and "date" in observed_data.columns:
         observed_data["date"] = pd.to_datetime(observed_data["date"])
 
+    print(observed_data)
     species_list = df["species"].unique()
 
     metrics_to_plot = {
@@ -569,14 +574,101 @@ def plot_combined_3pg_outputs_obv(df, metrics_to_plot=None, observed_data=None):
             if idx == 0:
                 axes[idx].legend()
 
-        # Clean up unused subplots
-        for idx in range(n_metrics, len(axes)):
-            axes[idx].set_visible(False)
-
         plt.suptitle(f"3-PG Model Outputs: {species}", fontsize=14, fontweight="bold")
         plt.tight_layout()
+        plt.savefig(
+            os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png") if fig_name else None
+        )
         figures.append(fig)
 
     plt.show()
 
     return figures
+
+
+def plot_weather_data(clean_wdf, plot_id):
+    """Visualize weather data with missing value periods highlighted."""
+    _miss_months, weather_df = create_weather_input(clean_wdf, plot_id=plot_id)
+
+    weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
+    min_date = weather_pl.select(pl.col("date").min()).item()
+    max_date = weather_pl.select(pl.col("date").max()).item()
+    all_months = pl.date_range(start=min_date, end=max_date, interval="1mo", eager=True)
+
+    weather_labels = {
+        "tmp_min": "Minimum temperature (°C)",
+        "tmp_max": "Maximum temperature(°C)",
+        "tmp_ave": "Average temperature (°C)",
+        "prcp": "Precipitation (mm)",
+        "srad": "Solar Radiation (MJ/m²)",
+        "frost_days": "Days/Month",
+    }
+
+    weather_all_months = pl.DataFrame({"date": pl.Series(all_months)}).join(
+        weather_pl, on="date", how="left"
+    )
+
+    weather_pd = weather_all_months.to_pandas()
+    weather_pd["date"] = pd.to_datetime(weather_pd["date"])
+    weather_metrics = [col for col in weather_pd.columns if col not in ["date", "year", "month"]]
+
+    _fig, axes = plt.subplots(len(weather_metrics), 1, figsize=(14, len(weather_metrics) * 6))
+
+    for idx, metric in enumerate(weather_metrics):
+        ax = axes[idx]
+        # Identify missing value periods
+        weather_pd["is_missing"] = weather_pd[metric].isna()
+
+        # Find contiguous missing periods
+        missing_periods = []
+        in_missing = False
+        start_idx = None
+
+        for i, missing in enumerate(weather_pd["is_missing"]):
+            if missing and not in_missing:
+                start_idx = i
+                in_missing = True
+            elif not missing and in_missing:
+                missing_periods.append((start_idx, i - 1))
+                in_missing = False
+        if in_missing:
+            missing_periods.append((start_idx, len(weather_pd) - 1))
+
+        # Create plot
+
+        # Plot the line
+        ax.plot(
+            weather_pd["date"], weather_pd[metric], "b-", linewidth=2, label=weather_labels[metric]
+        )
+
+        # Highlight missing periods in red
+        for start, end in missing_periods:
+            ax.axvspan(
+                weather_pd["date"].iloc[start],
+                weather_pd["date"].iloc[end],
+                alpha=0.3,
+                color="red",
+                label="Missing Data" if start == missing_periods[0][0] else "",
+            )
+
+        # Also mark missing points as red circles
+        missing_data = weather_pd[weather_pd["is_missing"]]
+        ax.scatter(
+            missing_data["date"],
+            [ax.get_ylim()[0]] * len(missing_data),
+            color="red",
+            s=30,
+            marker="v",
+            label="Missing Points",
+            zorder=5,
+        )
+
+        ax.set_xlabel("Date")
+        ax.set_ylabel(weather_labels[metric])
+        ax.set_title("Time Series - Red Regions Indicate Missing Data")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
