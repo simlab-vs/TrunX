@@ -25,6 +25,7 @@ dependencies = [
     "salib>=1.5.2",
     "nbstripout>=0.9.1",
     "marimo>=0.23.6",
+    "rasterio>=1.5.0",
 ]
 
 # Set curent project as a package, with src/ folder.
