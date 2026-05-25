@@ -37,6 +37,7 @@ class GradientDescentConfig:
     fit_params: list[str]  # List of parameter names to optimize
     file_path: str = "./data/solling_data.xlsx"
     observed_sheet: str = "observed"
+    param_bounds_sheet: str = "param_bound"
     species_index: int = 0  # Index of the species to fit parameters for
     optimizer_name: str = "adam"
     learning_rate: float = 1e-3
@@ -132,9 +133,31 @@ def build_optimizer(config: GradientDescentConfig) -> optax.GradientTransformati
     )
 
 
+def load_param_bounds(file_path: str, sheet_name: str) -> dict[str, tuple[float, float]]:
+    """Load parameter bounds from Excel sheet.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to Excel workbook.
+    sheet_name : str
+        Sheet with columns param_name, min, max.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Mapping of parameter name to (lower, upper) bounds.
+    """
+    df = pd.read_excel(file_path, sheet_name=sheet_name)
+    return {
+        str(row["param_name"]): (float(row["min"]), float(row["max"])) for _, row in df.iterrows()
+    }
+
+
 def fit_with_gradient_descent(config: GradientDescentConfig):
     """Fit 3PG model parameter using gradient descent."""
     observed_data = pd.read_excel(config.file_path, sheet_name=config.observed_sheet)
+    param_bounds = load_param_bounds(config.file_path, config.param_bounds_sheet)
 
     # Prepare data and initial state
     initial_state, climate, params, site_data, species_data, n_species, species_names = (
@@ -187,12 +210,23 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
     optimizer = build_optimizer(config)
     opt_state = optimizer.init(param_values)
 
+    # Build lower/upper bound arrays aligned with fit_params order
+    lower_bounds = jnp.asarray(
+        [param_bounds.get(p, (-jnp.inf, jnp.inf))[0] for p in config.fit_params],
+        dtype=jnp.float32,
+    )
+    upper_bounds = jnp.asarray(
+        [param_bounds.get(p, (-jnp.inf, jnp.inf))[1] for p in config.fit_params],
+        dtype=jnp.float32,
+    )
+
     loss_history: list[float] = []
     param_history: list[dict[str, float]] = []
     for step in range(config.n_steps):
         loss_value, grads = value_and_grad_fn(param_values)
         updates, opt_state = optimizer.update(grads, opt_state)
-        param_values = optax.apply_updates(param_values, updates)
+        param_values = jnp.asarray(optax.apply_updates(param_values, updates), dtype=jnp.float32)
+        param_values = jnp.clip(param_values, lower_bounds, upper_bounds)
 
         loss_history.append(float(loss_value))
         params_values_np = np.array(param_values)
@@ -426,6 +460,81 @@ def plot_loss_over_iterations(
         plt.show()
 
 
+def plot_param_history_over_iterations(
+    param_history: list[dict[str, float]],
+    fit_params: list[str],
+    param_bounds: dict[str, tuple[float, float]],
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot fitted parameter values over optimization iterations.
+
+    Parameters
+    ----------
+    param_history : list[dict[str, float]]
+        History of fitted parameters at each iteration.
+    fit_params : list[str]
+        Parameters optimized during fitting.
+    param_bounds : dict[str, tuple[float, float]]
+        Parameter bounds loaded from Excel.
+    save_path : str | None
+        Optional output image path.
+    show : bool
+        Whether to display the figure.
+    """
+    if not param_history or not fit_params:
+        return
+
+    n_params = len(fit_params)
+    n_cols = min(3, n_params)
+    n_rows = int(np.ceil(n_params / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows))
+    axes_list = np.ravel(np.atleast_1d(axes)).tolist()
+
+    iterations = np.arange(len(param_history))
+
+    for ax, param_name in zip(axes_list, fit_params, strict=False):
+        values = [step_values[param_name] for step_values in param_history]
+        ax.plot(iterations, values, color="tab:blue", linewidth=2, label=param_name)
+
+        lower, upper = param_bounds.get(param_name, (-np.inf, np.inf))
+        if np.isfinite(lower):
+            ax.axhline(
+                lower,
+                color="tab:red",
+                linestyle="--",
+                linewidth=1.5,
+                label="min",
+            )
+        if np.isfinite(upper):
+            ax.axhline(
+                upper,
+                color="tab:green",
+                linestyle="--",
+                linewidth=1.5,
+                label="max",
+            )
+
+        ax.set_title(param_name)
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("Value")
+        ax.grid(alpha=0.3)
+        ax.legend(loc="best")
+
+    for ax in axes_list[n_params:]:
+        ax.set_visible(False)
+
+    fig.suptitle("Gradient Descent Parameter Trajectories")
+    fig.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+
+
 def save_loss_history(loss_history: list[float], save_path: str) -> None:
     """Save loss trajectory to CSV.
 
@@ -473,6 +582,14 @@ if __name__ == "__main__":
     plot_loss_over_iterations(
         fit_results.loss_history,
         save_path=str(image_dir / "Gradient_descent_loss.png"),
+        show=False,
+    )
+    param_bounds = load_param_bounds(config.file_path, config.param_bounds_sheet)
+    plot_param_history_over_iterations(
+        param_history=fit_results.param_history,
+        fit_params=config.fit_params,
+        param_bounds=param_bounds,
+        save_path=str(image_dir / "Gradient_descent_param_history.png"),
         show=False,
     )
     save_loss_history(
