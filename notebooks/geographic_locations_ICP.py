@@ -225,7 +225,6 @@ def _(mo):
     country_ui = mo.ui.dropdown(
         options=country_codes.keys(), label="🌍 Select Country", value=None
     )
-
     return country_codes, country_ui
 
 
@@ -234,21 +233,19 @@ def _(country_codes, country_ui, df, mo, pl):
     # Get integer code
     selected_country_code = country_codes.get(country_ui.value) if country_ui.value else None
 
+    options_list = (
+        df.filter(pl.col("code_country") == selected_country_code)["plot_id"]
+        .unique()
+        .sort()
+        .to_list()
+        if selected_country_code is not None
+        else df["plot_id"].unique().sort().to_list()
+    )
     plot_selector_ui = mo.ui.dropdown(
-        options=(
-            df.filter(pl.col("code_country") == selected_country_code)["plot_id"]
-            .unique()
-            .sort()
-            .to_list()
-            if selected_country_code is not None
-            else df["plot_id"].unique().sort().to_list()
-        ),
-        label="🌲 Select ICP Forest Plot",
-        value=df["plot_id"].unique().sort().to_list()[-1],
+        options=options_list, label="🌲 Select ICP Forest Plot", value=options_list[-1]
     )
 
     mo.hstack([country_ui, plot_selector_ui])
-
     return (plot_selector_ui,)
 
 

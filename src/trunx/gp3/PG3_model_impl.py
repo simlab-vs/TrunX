@@ -104,17 +104,22 @@ def prepare_data(file_path):
 
 
 def run_threepg_main(
-    file_path, observed_data=None, plot_output=True, r_comparison=False, plot_id=""
+    file_path,
+    observed_data=None,
+    plot_output=True,
+    r_comparison=False,
+    plot_id="",
+    show_plots: bool = True,
 ):
     """Run 3PG model."""
     if file_path == "./data/data_sspecies_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_nothinning.png"
+        fig_name = "r_3PG_trotsiuk_nothinning"
     elif file_path == "./data/data.input.xlsx":
-        fig_name = "r_3PG_trotsiuk.png"
+        fig_name = "r_3PG_trotsiuk"
     elif file_path == "./data/data_semisynthetic.xlsx":
-        fig_name = "r_3PG_ICPdata.png"
+        fig_name = "r_3PG_ICPdata"
     elif file_path == "./data/data_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_mult_nothinning.png"
+        fig_name = "r_3PG_trotsiuk_mult_nothinning"
     else:
         fig_name = "ICP"
 
@@ -164,14 +169,18 @@ def run_threepg_main(
             r_outputs, outputs, climate.start_month, species_names
         )
         fig = plot_combined_3pg_outputs_obv(
-            df_comp, observed_data=observed_data, fig_name=fig_name, plot_id=plot_id
+            df_comp,
+            observed_data=observed_data,
+            fig_name=fig_name,
+            plot_id=plot_id,
+            show=show_plots,
         )
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month, species_names)
         fig = None
     elif plot_output:
-        fig = plot_outputs(outputs, climate.start_month, fig_name)
+        fig = plot_outputs(outputs, climate.start_month, fig_name, show=show_plots)
     else:
         fig = None
 
@@ -209,10 +218,11 @@ if __name__ == "__main__":
     # file_path = "./data/S_weather_data.xlsx"
 
     # file_path = "./data/solling_data.xlsx"
-    # file_path = "./data//davos_data.xlsx"
+    # file_path = "./data/davos_data.xlsx"
+    # file_path = "./data/Davos_data_GPP.xlsx"
     # fig, outputs = run_threepg_main(
     #     file_path, observed_data=None, plot_output=True, r_comparison=True
     # )
 
-    plot_id = "50.0013"
+    plot_id = "50.0018"
     fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

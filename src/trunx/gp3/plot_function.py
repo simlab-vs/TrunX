@@ -13,7 +13,7 @@ import polars as pl
 from trunx.gp3.create_data_inputs import create_weather_input
 
 
-def plot_outputs(outputs, start_month, fig_name: str | None = None):
+def plot_outputs(outputs, start_month, fig_name: str | None = None, show: bool = True):
     """Visualize key 3-PG state variables over time."""
     if fig_name is None:
         fig_name = "3PG.png"
@@ -64,7 +64,8 @@ def plot_outputs(outputs, start_month, fig_name: str | None = None):
 
     plt.tight_layout()
     plt.savefig(os.path.join("./images/", fig_name))
-    plt.show()
+    if show:
+        plt.show()
 
     return fig
 
@@ -484,7 +485,12 @@ def plot_combined_3pg_outputs_per_species(
 
 
 def plot_combined_3pg_outputs_obv(
-    df, metrics_to_plot=None, observed_data=None, fig_name=None, plot_id=""
+    df,
+    metrics_to_plot=None,
+    observed_data=None,
+    fig_name=None,
+    plot_id="",
+    show: bool = True,
 ):
     """Visualize R and Python 3PG implementations with observed data."""
     # Prepare data
@@ -495,7 +501,6 @@ def plot_combined_3pg_outputs_obv(
     if observed_data is not None and "date" in observed_data.columns:
         observed_data["date"] = pd.to_datetime(observed_data["date"])
 
-    print(observed_data)
     species_list = df["species"].unique()
 
     metrics_to_plot = {
@@ -581,7 +586,8 @@ def plot_combined_3pg_outputs_obv(
         )
         figures.append(fig)
 
-    plt.show()
+    if show:
+        plt.show()
 
     return figures
 
