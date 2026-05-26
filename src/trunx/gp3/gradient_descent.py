@@ -379,6 +379,15 @@ def plot_observed_vs_predicted(
         axes = [axes]
     axes = np.ravel(axes).tolist()
 
+    metrics_label = {
+        "DBH": "DBH (cm)",
+        "LAI": "LAI",
+        "GPP": "GPP (mol C m⁻²)",
+        "WS": "Stem Biomass (t DM ha⁻¹)",
+        "WF": "Foliage Biomass (t DM ha⁻¹)",
+        "WR": "Root Biomass (t DM ha⁻¹)",
+    }
+
     for ax, var_name in zip(axes, ["DBH", "LAI", "GPP", "WS", "WF", "WR"], strict=True):
         pred_fitted_col = f"pred_fitted_{var_name}"
         pred_default_col = f"pred_default_{var_name}"
@@ -417,7 +426,7 @@ def plot_observed_vs_predicted(
             ax.xaxis.set_major_locator(locator)
             ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
-        ax.set_ylabel(var_name)
+        ax.set_ylabel(metrics_label.get(var_name, var_name))
         ax.grid(alpha=0.3)
         ax.legend()
 
