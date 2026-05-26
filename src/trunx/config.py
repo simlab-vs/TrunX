@@ -30,7 +30,7 @@ elif mode == "local":
 else:
     raise ValueError(f"Invalid mode '{mode}'. Must be 'local' or 'server'.")
 
-
+data_folder = Path(os.path.join(base_dir, "data/"))
 raw_data_folder = Path(os.path.join(base_dir, "data/raw/"))
 clean_data_folder = Path(os.path.join(base_dir, "data/clean/"))
 intermediate_data_folder = Path(os.path.join(base_dir, "data/intermediate/"))

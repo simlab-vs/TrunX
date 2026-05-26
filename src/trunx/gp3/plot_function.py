@@ -552,13 +552,14 @@ def plot_combined_3pg_outputs_obv(
             ):
                 obs = observed_data[observed_data["specie"] == species]
                 axes[idx].scatter(
-                    obs["period_end"],
+                    obs["Date"],
                     obs[config["python_col"]],
-                    s=50,
+                    s=20,
                     marker="s",
+                    color="red",
                     label="Observed",
                 )
-                axes[idx].plot(obs["period_end"], obs[config["python_col"]], "-", alpha=0.6)
+                axes[idx].plot(obs["Date"], obs[config["python_col"]], "-", alpha=0.6)
 
             if (
                 observed_data is not None

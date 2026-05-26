@@ -124,7 +124,7 @@ def run_threepg_main(
         fig_name = "ICP"
 
     try:
-        observed_data = pd.read_excel(file_path, sheet_name="full_observed")
+        observed_data = pd.read_excel(file_path, sheet_name="observed")
     except Exception as e:
         print(f"Could not read observed data from {file_path}: {e}")
         observed_data = None
@@ -217,12 +217,12 @@ if __name__ == "__main__":
     # file_path = "./data/data_nothinning.xlsx"
     # file_path = "./data/S_weather_data.xlsx"
 
-    # file_path = "./data/solling_data.xlsx"
+    file_path = "./data/solling_data.xlsx"
     # file_path = "./data/davos_data.xlsx"
     # file_path = "./data/Davos_data_GPP.xlsx"
-    # fig, outputs = run_threepg_main(
-    #     file_path, observed_data=None, plot_output=True, r_comparison=True
-    # )
+    fig, outputs = run_threepg_main(
+        file_path, observed_data=None, plot_output=True, r_comparison=True
+    )
 
-    plot_id = "50.0018"
-    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    # plot_id = "50.0018"
+    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

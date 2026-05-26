@@ -10,7 +10,7 @@ import polars as pl
 import rasterio
 import requests
 
-from trunx.config import clean_data_folder
+from trunx.config import clean_data_folder, raw_data_folder
 from trunx.gp3.create_data_inputs import dms_to_decimal
 
 base_url = "https://data.globalecology.unh.edu/data/GOSIF-GPP_v2/Monthly/Mean/"
@@ -45,7 +45,7 @@ def get_icp_data():
 
 def get_GOSIF_GPP_for_icp(icp_df):
     """Download GOSIF GPP for ICP forest locations and save to CSV."""
-    SCALE_FACTOR = 0.0001  # scale factor from GOSIF documentation
+    SCALE_FACTOR = 0.01  # scale factor from GOSIF documentation
     # GOSIF documentation states these are fill values for missing data
     FILL_VALUES = [32766, 32767]
     icp_loc = icp_df.select(["Lat", "Lon", "plot_id"])
@@ -67,8 +67,17 @@ def get_GOSIF_GPP_for_icp(icp_df):
                 print(f"Skipping {file_name}")
                 continue
 
-            # decompress in memory
-            with gzip.GzipFile(fileobj=BytesIO(r.content)) as gz:
+            file_path = os.path.join(raw_data_folder, "GOSIF", file_name)
+
+            with open(file_path, "wb") as f:
+                f.write(r.content)
+
+            # Read from the saved file instead of memory
+            with open(file_path, "rb") as f:
+                content = f.read()
+
+            # Decompress the saved file
+            with gzip.GzipFile(fileobj=BytesIO(content)) as gz:
                 tif_bytes = gz.read()
 
             # open raster in memory
@@ -80,9 +89,6 @@ def get_GOSIF_GPP_for_icp(icp_df):
 
             # Remove fill values
             values[np.isin(values, FILL_VALUES)] = np.nan
-
-            # Scale
-            values = values * SCALE_FACTOR
 
             df = pl.DataFrame({"year": year, "month": month, "plot_id": plot_ids, "GPP": values})
 

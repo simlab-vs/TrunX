@@ -557,7 +557,7 @@ if __name__ == "__main__":
         file_path="./data/solling_data.xlsx",
         observed_sheet="observed",
         fit_params=fit_params,
-        target_vars=["DBH", "WS", "WF", "WR"],
+        target_vars=["DBH", "WS", "WF", "WR"],  # Fit to these variables
         n_steps=500,
         optimizer_name="adam",
         learning_rate=1e-3,
