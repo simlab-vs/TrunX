@@ -550,7 +550,9 @@ def plot_combined_3pg_outputs_obv(
                 and config["python_col"] in observed_data.columns
                 and "specie" in observed_data.columns
             ):
-                obs = observed_data[observed_data["specie"] == species]
+                obs = observed_data[observed_data["specie"] == species].dropna(
+                    subset=[config["python_col"]]
+                )
                 axes[idx].scatter(
                     obs["Date"],
                     obs[config["python_col"]],
@@ -559,7 +561,8 @@ def plot_combined_3pg_outputs_obv(
                     color="red",
                     label="Observed",
                 )
-                axes[idx].plot(obs["Date"], obs[config["python_col"]], "-", alpha=0.6)
+
+                axes[idx].plot(obs["Date"], obs[config["python_col"]], alpha=0.6)
 
             if (
                 observed_data is not None
@@ -569,8 +572,9 @@ def plot_combined_3pg_outputs_obv(
                 axes[idx].scatter(
                     observed_data["date"],
                     observed_data[config["python_col"]],
-                    s=50,
+                    s=20,
                     marker="s",
+                    color="red",
                     label="Observed",
                 )
 
@@ -672,7 +676,6 @@ def plot_weather_data(clean_wdf, plot_id):
 
         ax.set_xlabel("Date")
         ax.set_ylabel(weather_labels[metric])
-        ax.set_title("Time Series - Red Regions Indicate Missing Data")
         ax.legend()
         ax.grid(True, alpha=0.3)
 

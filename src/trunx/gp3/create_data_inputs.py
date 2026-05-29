@@ -438,17 +438,17 @@ def create_observation_data(plot_id, icp_df, weather_df, start_year):
         .filter(pl.col("Date").dt.year() >= start_year)
     )
 
-    specie_gdd = []
+    specie_gpp = []
     for specie in dbh_df["specie"].unique():
         tdf = gpp_df.with_columns(pl.lit(specie).alias("specie"))
-        specie_gdd.append(tdf)
+        specie_gpp.append(tdf)
 
-    specie_gdd = pl.concat(specie_gdd)
+    specie_gpp = pl.concat(specie_gpp)
 
     observed_data = (
-        specie_gdd.join(dbh_df, on=["specie", "month_year"], how="full")
+        specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full")
         .select(["specie", "month", "year", "Date", "GPP", "DBH"])
-        .join(weather_df, on=["month", "year"], how="left")
+        .join(weather_df, on=["month", "year"], how="full")
         .select(
             "specie",
             "month",
@@ -465,9 +465,11 @@ def create_observation_data(plot_id, icp_df, weather_df, start_year):
 def create_input_data(input_data_file, plot_id):
     """Create input data for 3PG model."""
     # ICP weather data
-    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    processor = prepare_icp_weather_data(raw_file_path)
-    df = processor.clean_data()
+    # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    # processor = prepare_icp_weather_data(raw_file_path)
+    # df = processor.clean_data()
+
+    df = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
 
     # ICP data
     icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))

@@ -23,27 +23,32 @@ def _():
 
     sys.path.append(str(Path(__file__).parent.parent))
     from scripts.support_utils import load_prepare_data
-    from trunx.config import icp_raw_data_folder
-    from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+    from trunx.config import clean_data_folder
     from trunx.plot_utils import plot_geographic_location_species
 
     return (
-        icp_raw_data_folder,
+        clean_data_folder,
         load_prepare_data,
         os,
         pl,
         plot_geographic_location_species,
-        prepare_icp_weather_data,
     )
 
 
 @app.cell
-def _(load_prepare_data, pl, plot_geographic_location_species):
-    _, df = load_prepare_data()
+def _(load_prepare_data):
+    _, full_df = load_prepare_data()
+
+    full_df["period_end"].min()
+    return (full_df,)
+
+
+@app.cell
+def _(full_df, pl, plot_geographic_location_species):
 
     # Single species locations
-    df = df.join(
-        df.group_by(["Lat", "Lon"]).agg(species_count=pl.col("Species").unique().count()),
+    df = full_df.join(
+        full_df.group_by(["Lat", "Lon"]).agg(species_count=pl.col("Species").unique().count()),
         on=["Lat", "Lon"],
     ).filter(pl.col("species_count") == 1)
 
@@ -53,11 +58,11 @@ def _(load_prepare_data, pl, plot_geographic_location_species):
 
 @app.cell
 def _(df, pl):
-    df.group_by(["code_plot", "Lat", "Lon", "plot_id"], maintain_order=True).agg(
+    df.group_by(["code_country", "code_plot", "Lat", "Lon", "plot_id"], maintain_order=True).agg(
         num_trees=pl.col("tree_id").n_unique(),
         specie=pl.col("specie").unique(),
-        age=pl.col("soph_avg_age").unique(),
-    )
+        age=pl.col("soph_avg_age").drop_nans().drop_nulls().unique(),
+    ).filter(pl.col("age").list.len() > 0).filter(pl.col("code_country") == 50)
     return
 
 
@@ -65,21 +70,25 @@ def _(df, pl):
 def _(df, pl):
     # Plot ids with maximum number of growth periods
     max_number_periods_df = (
-        df.group_by(["code_plot", "Lat", "Lon", "plot_id", "tree_id"], maintain_order=True)
+        df.group_by(
+            ["code_country", "code_plot", "Lat", "Lon", "plot_id", "tree_id"], maintain_order=True
+        )
         .agg(
             num_period_group=pl.len(),
             specie=pl.col("specie").unique(),
             age=pl.col("soph_avg_age").unique(),
         )
-        .filter(pl.col("num_period_group") == pl.col("num_period_group").max())
-        .group_by(["code_plot", "Lat", "Lon", "plot_id"])
+        .filter(
+            pl.col("num_period_group") == 4  # pl.col("num_period_group").max()
+        )
+        .group_by(["code_country", "code_plot", "Lat", "Lon", "plot_id"])
         .agg(
             num_trees=pl.col("tree_id").unique().len(),
             species_list=pl.col("specie").unique(),
             age_values=pl.col("age").unique(),
         )
         .sort("num_trees", descending=True)
-    )
+    ).filter(pl.col("code_country") == 50)
 
     max_number_periods_plot_ids = sorted(max_number_periods_df["plot_id"].to_list())
     print("Plot ids with maximum number of growth periods are: \n", max_number_periods_plot_ids)
@@ -89,11 +98,13 @@ def _(df, pl):
 
 
 @app.cell
-def _(icp_raw_data_folder, os, prepare_icp_weather_data):
+def _(clean_data_folder, os, pl):
 
-    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    processor = prepare_icp_weather_data(raw_file_path)
-    clean_wdf = processor.clean_data()
+    # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    # processor = prepare_icp_weather_data(raw_file_path)
+    # clean_wdf = processor.clean_data()
+
+    clean_wdf = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
     return (clean_wdf,)
 
 
@@ -265,6 +276,12 @@ def _(df, pl, plot_selector_ui):
         num_tress=pl.len(),
         age=pl.col("soph_avg_age").mean(),
     )
+    return
+
+
+@app.cell
+def _(pl):
+    pl.read_csv("./data/raw/ICP/595_mm_20260227091917/mm_mem.csv", separator=";")
     return
 
 

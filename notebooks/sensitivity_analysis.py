@@ -45,7 +45,6 @@ def _(np, os, pl, plt):
     ax.set_xticks(x)
     ax.set_xticklabels(df["Parameter"], rotation=45)
     ax.legend()
-
     return
 
 

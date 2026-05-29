@@ -217,9 +217,9 @@ if __name__ == "__main__":
     # file_path = "./data/data_nothinning.xlsx"
     # file_path = "./data/S_weather_data.xlsx"
 
-    file_path = "./data/solling_data.xlsx"
+    # file_path = "./data/solling_data.xlsx"
     # file_path = "./data/davos_data.xlsx"
-    # file_path = "./data/Davos_data_GPP.xlsx"
+    file_path = "./data/Davos_data_GPP.xlsx"
     fig, outputs = run_threepg_main(
         file_path, observed_data=None, plot_output=True, r_comparison=True
     )

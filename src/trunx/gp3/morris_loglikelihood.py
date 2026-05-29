@@ -314,7 +314,7 @@ class MorrisSensitivityOnLikelihood:
         # Likelihood components only
         likelihood_components = {}
         for key, log_lik in log_lik_components.items():
-            if np.isinf(log_lik):
+            if np.isinf(log_lik) or np.isnan(log_lik) or log_lik == 0.0:
                 likelihood_components[key] = -np.inf
             else:
                 likelihood_components[key] = log_lik
@@ -359,7 +359,6 @@ class MorrisSensitivityOnLikelihood:
         for i in range(self.param_values.shape[0]):
             if i % 100 == 0:
                 print(f"  {i}/{self.param_values.shape[0]}")
-
             try:
                 likelihood_components = self._log_likelihood(self.param_values[i])
                 for name in component_names:
