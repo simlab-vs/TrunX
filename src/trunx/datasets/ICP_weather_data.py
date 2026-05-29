@@ -1,9 +1,12 @@
 """Process ICP weather data."""
 
+import os
 from typing import Optional, Union
 
 import pandas as pd
 import polars as pl
+
+from trunx.config import clean_data_folder
 
 
 class prepare_icp_weather_data:
@@ -284,6 +287,9 @@ if __name__ == "__main__":
     processor = prepare_icp_weather_data(file_path)
 
     df_cleaned = processor.clean_data()
+    # Save cleaned data for future use
+    df_cleaned.write_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
+
     monthly_agg = processor.aggregate_monthly_variables(["AT", "PR", "SR"])
     coverage = processor.compute_plot_temporal_coverage()
 

@@ -1,13 +1,16 @@
 """Create data input for 3PG model using ICP data."""
 
+import logging
 import os
 
 import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
-from trunx.config import clean_data_folder, icp_raw_data_folder
+from trunx.config import clean_data_folder, data_folder, icp_raw_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+
+logger = logging.getLogger(__name__)
 
 
 def dms_to_decimal(dms):
@@ -47,6 +50,22 @@ def create_weather_input(df, plot_id):
     mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))
 
     msrad_df = srad_df.group_by("month_year").agg(pl.col("daily_mean").mean().alias("srad"))
+
+    empty_dfs = [
+        name
+        for name, df in [
+            ("temperature", mtemp_df),
+            ("precipitation", mprcp_df),
+            ("solar radiation", msrad_df),
+        ]
+        if df.height == 0
+    ]
+
+    if empty_dfs:
+        raise ValueError(
+            f"Empty DataFrame(s) for plot_id {plot_id}: {', '.join(empty_dfs)}. "
+            "Please check the input data."
+        )
 
     weather_df = mtemp_df.join(mprcp_df, on="month_year").join(msrad_df, on="month_year")
 
@@ -219,7 +238,9 @@ def weather_summary(weather_df):
 def create_input_params(icp_df):
     """Create parameter data input for 3PG model."""
     input_params = {}
-    params_df = pl.read_excel("./data/data.input.xlsx", sheet_name="parameters")
+    params_df = pl.read_excel(
+        os.path.join(data_folder, "data.input.xlsx"), sheet_name="parameters"
+    )
     input_params["parameter"] = params_df["parameter"].to_list()
     for specie in icp_df["specie"].unique().to_list():
         if specie in params_df.schema:
@@ -235,7 +256,8 @@ def create_input_params(icp_df):
 
 def create_species_data(icp_df):
     """Create species data input for 3PG model."""
-    species_df = pl.read_excel("./data/data.input.xlsx", sheet_name="species")
+    species_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="species")
+
     print(
         "\n Species found in this location: ",
         icp_df.select("specie").unique().to_series().to_list(),
@@ -243,12 +265,13 @@ def create_species_data(icp_df):
     species_df = species_df.filter(
         pl.col("species").is_in(icp_df.select("specie").unique().to_series().to_list())
     )
+
     return species_df
 
 
 def create_site_data(icp_df, weather_df):
     """Create site data input for 3PG model."""
-    site_df = pl.read_excel("./data/data.input.xlsx", sheet_name="site")
+    site_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="site")
 
     latitude_value = icp_df["Lat"][0]
     altitude_value = icp_df["plot_altitude"][0]
@@ -390,12 +413,63 @@ def update_species_data(icp_df, species_df, input_params_df):
     return species_df, start_year
 
 
+def create_observation_data(plot_id, icp_df, weather_df, start_year):
+    """Create observed data input for 3PG model."""
+    dbh_df = (
+        icp_df.group_by(["specie", "period_end"])
+        .agg(pl.col("diameter_end").mean().alias("DBH"))
+        .sort("period_end")
+    ).with_columns(
+        pl.col("period_end").dt.year().cast(pl.Int64).alias("year"),
+        pl.col("period_end").dt.month().cast(pl.Int64).alias("month"),
+        pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+    )
+
+    gpp_df = pl.read_csv(os.path.join(clean_data_folder, "GOSIF_GPP_icp.csv"))
+
+    gpp_df = gpp_df.filter(pl.col("plot_id") == float(plot_id))
+
+    gpp_df = (
+        gpp_df.with_columns(pl.datetime(pl.col("year"), pl.col("month"), 1).alias("Date"))
+        .sort(["year", "month"])
+        .with_columns(pl.col("Date").dt.month_end())
+        .with_columns(pl.col("Date").dt.strftime("%m-%Y").alias("month_year"))
+        .drop(["plot_id"])
+        .filter(pl.col("Date").dt.year() >= start_year)
+    )
+
+    specie_gpp = []
+    for specie in dbh_df["specie"].unique():
+        tdf = gpp_df.with_columns(pl.lit(specie).alias("specie"))
+        specie_gpp.append(tdf)
+
+    specie_gpp = pl.concat(specie_gpp)
+
+    observed_data = (
+        specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full")
+        .select(["specie", "month", "year", "Date", "GPP", "DBH"])
+        .join(weather_df, on=["month", "year"], how="full")
+        .select(
+            "specie",
+            "month",
+            "year",
+            "Date",
+            "GPP",
+            "DBH",
+        )
+    )
+
+    return observed_data
+
+
 def create_input_data(input_data_file, plot_id):
     """Create input data for 3PG model."""
     # ICP weather data
-    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    processor = prepare_icp_weather_data(raw_file_path)
-    df = processor.clean_data()
+    # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    # processor = prepare_icp_weather_data(raw_file_path)
+    # df = processor.clean_data()
+
+    df = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
 
     # ICP data
     icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
@@ -421,14 +495,18 @@ def create_input_data(input_data_file, plot_id):
         .alias("Lon"),
     )
 
+    logging.info("Pre-processed ICP data for plot_id: %s", plot_id)
     # Weather data
     miss_months, weather_df = create_weather_input(df, plot_id=plot_id)
+    logging.info("Pre-processed weather data for plot_id: %s", plot_id)
 
     # Species data
     input_species_df = create_species_data(icp_df)
+    logging.info("Created species data for plot_id: %s", plot_id)
 
     # Parameter data
     input_params_df = create_input_params(icp_df)
+    logging.info("Created parameter data for plot_id: %s", plot_id)
 
     input_species_df, start_year = update_species_data(icp_df, input_species_df, input_params_df)
 
@@ -438,23 +516,8 @@ def create_input_data(input_data_file, plot_id):
     input_site_df = create_site_data(icp_df, weather_df)
 
     icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"]))
-    observed_data = icp_df.group_by(["specie", "period_end"]).agg(
-        pl.col("diameter_end").mean().alias("DBH")
-    )
 
-    observed_data = (
-        observed_data.with_columns(
-            pl.col("period_end").dt.year().alias("year"),
-            pl.col("period_end").dt.month().alias("month"),
-            pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
-        )
-        .join(
-            weather_df.with_columns(pl.int_range(0, pl.len()).alias("idx")),
-            on=["month", "year"],
-            how="inner",
-        )
-        .select(["idx", "specie", "period_end", "month_year", "DBH"])
-    )
+    observed_data = create_observation_data(plot_id, icp_df, weather_df, start_year)
 
     if len(miss_months) == 0:
         with pd.ExcelWriter(input_data_file, engine="openpyxl") as writer:
@@ -475,11 +538,36 @@ def create_input_data(input_data_file, plot_id):
 
 if __name__ == "__main__":
     file_path = os.path.join("./data/", "S_weather_data.xlsx")
-    # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    # processor = prepare_icp_weather_data(raw_file_path)
-    # df = processor.clean_data()
+    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
+    processor = prepare_icp_weather_data(raw_file_path)
+    df = processor.clean_data()
 
     # miss_months, weather_df = create_weather_input(df, plot_id="50.0018")
     # print(weather_df.head())
 
-    create_input_data(file_path, plot_id="50.0018")
+    plot_id = "50.0018"
+    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
+    icp_df = icp_df.filter(
+        pl.col("specie").is_in(
+            list(
+                [
+                    "Picea abies",
+                    "Pinus sylvestris",
+                    "Fagus sylvatica",
+                    "Quercus robur",
+                    "Quercus petraea",
+                ]
+            )
+        )
+    )
+
+    icp_df = icp_df.with_columns(
+        pl.col("plot_latitude").map_elements(dms_to_decimal, return_dtype=pl.Float64).alias("Lat"),
+        pl.col("plot_longitude")
+        .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+        .alias("Lon"),
+    )
+
+    observed_data = create_observation_data(plot_id, icp_df, df, create_species_data(icp_df))
+    print(observed_data)

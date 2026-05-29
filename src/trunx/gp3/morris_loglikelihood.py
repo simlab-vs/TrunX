@@ -1,7 +1,8 @@
-"""Morris sensitivity analysis on log-posterior."""
+"""Morris sensitivity analysis on log-likelihood."""
 
 import os
 import warnings
+from typing import Any
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -17,8 +18,116 @@ from trunx.gp3.run_3pg import run_3pg
 warnings.filterwarnings("ignore")
 
 
-class MorrisSensitivityOnPosterior:
-    """Morris sensitivity analysis on log-posterior."""
+def _load_saved_morris_results(results_csv_path: str) -> pd.DataFrame:
+    """Load exported Morris results from CSV.
+
+    Parameters
+    ----------
+    results_csv_path : str
+        Path to the exported `morris_all_components.csv` file.
+
+    Returns
+    -------
+    pd.DataFrame
+        Morris results table.
+    """
+    if not os.path.exists(results_csv_path):
+        raise FileNotFoundError(f"Results file not found: {results_csv_path}")
+    return pd.read_csv(results_csv_path)
+
+
+def plot_component_comparison_from_results(
+    results_csv_path: str, output_vars: list[str], save_path: str | None = None
+) -> None:
+    """Compare top parameters across all components from saved results.
+
+    Parameters
+    ----------
+    results_csv_path : str
+        Path to the exported `morris_all_components.csv` file.
+    output_vars : list[str]
+        Output variables to include in the comparison.
+    save_path : str | None, optional
+        Path to save the figure.
+    """
+    combined_df = _load_saved_morris_results(results_csv_path)
+    components = [c for c in ["total", *output_vars] if c in combined_df["Component"].unique()]
+    fig, axes = plt.subplots(1, len(components), figsize=(5 * len(components), 8))
+    if len(components) == 1:
+        axes = [axes]
+
+    for ax, comp in zip(axes, components, strict=True):
+        df = combined_df[combined_df["Component"] == comp].nlargest(10, "mu_star")
+        colors = plt.get_cmap("viridis")(df["mu_star"] / df["mu_star"].max())
+        ax.barh(range(len(df)), df["mu_star"], color=colors)
+        ax.set_yticks(range(len(df)))
+        ax.set_yticklabels(df["Parameter"], fontsize=8)
+        ax.set_xlabel(r"$\mu^*$", fontsize=10)
+        ax.set_title(comp.upper(), fontsize=12, fontweight="bold")
+        ax.grid(True, alpha=0.3, axis="x")
+
+    plt.suptitle(
+        "Morris Sensitivity: Parameter Rankings by Component", fontsize=14, fontweight="bold"
+    )
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+
+def plot_individual_sensitivity_from_results(
+    results_csv_path: str, component_name: str, save_path: str | None = None
+) -> None:
+    """Plot detailed sensitivity for one component from saved results.
+
+    Parameters
+    ----------
+    results_csv_path : str
+        Path to the exported `morris_all_components.csv` file.
+    component_name : str
+        Component name to plot.
+    save_path : str | None, optional
+        Path to save the figure.
+    """
+    combined_df = _load_saved_morris_results(results_csv_path)
+    df = combined_df[combined_df["Component"] == component_name].nlargest(20, "mu_star")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, max(6, len(df) * 0.3)))
+
+    ax1.barh(
+        range(len(df)),
+        df["mu_star"],
+        color=plt.get_cmap("RdYlGn_r")(np.linspace(0, 1, len(df))),
+    )
+    ax1.set_yticks(range(len(df)))
+    ax1.set_yticklabels(df["Parameter"], fontsize=9)
+    ax1.set_xlabel(r"$\mu^*$", fontsize=11)
+    ax1.set_title(f"{component_name.upper()} - Sensitivity", fontsize=12, fontweight="bold")
+    ax1.grid(True, alpha=0.3, axis="x")
+
+    all_data = combined_df[combined_df["Component"] == component_name]
+    scatter = ax2.scatter(
+        all_data["mu_star"],
+        all_data["sigma"],
+        c=all_data["mu_star"],
+        cmap="viridis",
+        s=80,
+        alpha=0.7,
+    )
+    ax2.set_xlabel(r"$\mu^*$", fontsize=11)
+    ax2.set_ylabel(r"$\sigma$", fontsize=11)
+    ax2.set_title("Sensitivity vs Interactions", fontsize=12, fontweight="bold")
+    ax2.grid(True, alpha=0.3)
+    plt.colorbar(scatter, ax=ax2, label=r"$\mu^*$")
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+
+class MorrisSensitivityOnLikelihood:
+    """Morris sensitivity analysis on log-likelihood."""
 
     def __init__(
         self,
@@ -28,7 +137,7 @@ class MorrisSensitivityOnPosterior:
         output_vars: list[str],
         param_bounds: dict[str, tuple[float, float]],
         param_best: dict[str, float],
-        fixed_sigmas: dict[str, float],
+        sigma_param_names: dict[str, str] | None = None,
         n_levels: int = 20,
         n_trajectories: int = 500,
         seed: int = 432,
@@ -42,9 +151,10 @@ class MorrisSensitivityOnPosterior:
         self.n_trajectories = n_trajectories
         self.seed = seed
         self.species_index = species_index
-        self.fixed_sigmas = fixed_sigmas or {}
+        self.sigma_param_names = sigma_param_names or {}
         self.param_bounds = param_bounds or {}
         self.param_best = param_best or {}
+        self._sigma_param_set = set(self.sigma_param_names.values())
 
         np.random.seed(seed)
 
@@ -60,14 +170,23 @@ class MorrisSensitivityOnPosterior:
             self.species_names,
         ) = prepare_data(file_path)
 
-        self.all_param_names = self.calib_params
+        self.all_param_names = list(dict.fromkeys(self.calib_params + list(self._sigma_param_set)))
         self.full_param_bounds = {}
         self.par_cal_best = {}
 
-        print("Calibration parameters: ", self.calib_params)
+        print("Calibration parameters: ", self.all_param_names)
         for param in self.calib_params:
             self.full_param_bounds[param] = list(self.param_bounds[param])
             self.par_cal_best[param] = self.param_best[param]
+
+        for sigma_param in self._sigma_param_set:
+            if sigma_param not in self.param_bounds:
+                raise KeyError(
+                    f"Missing bounds for sigma parameter '{sigma_param}'. Add it to param_bounds."
+                )
+            self.full_param_bounds[sigma_param] = list(self.param_bounds[sigma_param])
+            if sigma_param in self.param_best:
+                self.par_cal_best[sigma_param] = self.param_best[sigma_param]
 
         self.par_cal_min = [self.full_param_bounds[name][0] for name in self.all_param_names]
         self.par_cal_max = [self.full_param_bounds[name][1] for name in self.all_param_names]
@@ -76,7 +195,7 @@ class MorrisSensitivityOnPosterior:
             f"\nAnalyzing {len(self.all_param_names)} parameters \
                 (r={n_trajectories}, p={n_levels}):"
         )
-        print(f"  Calibration parameters: {', '.join(self.calib_params)}")
+        print(f"  Calibration parameters: {', '.join(self.all_param_names)}")
         print(f"  Output variables for individual analysis: {', '.join(self.output_vars)}")
 
         # Prepare observation times and values
@@ -107,7 +226,22 @@ class MorrisSensitivityOnPosterior:
             obs_months.append(max(0, months))
         return np.array(obs_months, dtype=int)
 
-    def _log_likelihood_components(self, model_outputs: dict) -> dict[str, float]:
+    def _infer_sigma_param_name(self, var_name: str) -> str | None:
+        """Infer the sampled sigma parameter name for a variable."""
+        candidates = (
+            self.sigma_param_names.get(var_name),
+            f"err_{var_name}",
+            f"sigma_{var_name}",
+            f"sd_{var_name}",
+        )
+        for candidate in candidates:
+            if candidate and candidate in self.full_param_bounds:
+                return candidate
+        return None
+
+    def _output_log_likelihood_components(
+        self, model_outputs: dict, sampled_params: dict[str, float]
+    ) -> dict[str, float]:
         """Compute log-likelihood for each output variable individually."""
         log_lik_components = {}
 
@@ -130,7 +264,13 @@ class MorrisSensitivityOnPosterior:
             predictions, observations = predictions[valid_mask], observations[valid_mask]
 
             if len(predictions) > 0:
-                sigma = self.fixed_sigmas.get(var_name, 1.0)
+                sigma_param_name = self._infer_sigma_param_name(var_name)
+                if sigma_param_name is None:
+                    raise KeyError(
+                        f"No sigma parameter found for output variable '{var_name}'. "
+                        "Add an entry to sigma_param_names or an 'err_*' param to param_bounds."
+                    )
+                sigma = sampled_params[sigma_param_name]
 
                 # Normal log-likelihood
                 residuals = predictions - observations
@@ -147,21 +287,15 @@ class MorrisSensitivityOnPosterior:
 
         return log_lik_components
 
-    def _uniform_prior(self, par_v: np.ndarray) -> float:
-        """Uniform prior on log scale."""
-        for i, (min_val, max_val) in enumerate(
-            zip(self.par_cal_min, self.par_cal_max, strict=True)
-        ):
-            if par_v[i] < min_val or par_v[i] > max_val:
-                return -np.inf
-        return 0.0
-
-    def _log_posterior_components(self, param_values: np.ndarray) -> dict[str, float]:
-        """Compute log posterior for total and each component."""
+    def _log_likelihood(self, param_values: np.ndarray) -> dict[str, float]:
+        """Compute log-likelihood for total and each component."""
         # Update parameters
         params_dict = {field: getattr(self.params, field) for field in self.params._fields}
+        sampled_params = dict(zip(self.all_param_names, param_values, strict=True))
 
         for i, param_name in enumerate(self.all_param_names):
+            if param_name in self._sigma_param_set:
+                continue
             params_dict[param_name] = param_values[i]
 
         # Run model
@@ -175,22 +309,17 @@ class MorrisSensitivityOnPosterior:
         )
 
         # Get log-likelihood components
-        log_lik_components = self._log_likelihood_components(model_outputs)
+        log_lik_components = self._output_log_likelihood_components(model_outputs, sampled_params)
 
-        # Add prior (uniform prior)
-        log_prior = self._uniform_prior(param_values)
-        if np.isinf(log_prior):
-            return {key: -np.inf for key in log_lik_components}
-
-        # Posterior = likelihood + prior for each component
-        posterior_components = {}
+        # Likelihood components only
+        likelihood_components = {}
         for key, log_lik in log_lik_components.items():
-            if np.isinf(log_lik):
-                posterior_components[key] = -np.inf
+            if np.isinf(log_lik) or np.isnan(log_lik) or log_lik == 0.0:
+                likelihood_components[key] = -np.inf
             else:
-                posterior_components[key] = log_lik + log_prior
+                likelihood_components[key] = log_lik
 
-        return posterior_components
+        return likelihood_components
 
     def _create_morris_problem(self) -> dict:
         """Create SALib problem definition."""
@@ -201,8 +330,8 @@ class MorrisSensitivityOnPosterior:
         }
 
     def run_analysis(self) -> dict:
-        """Run Morris sensitivity analysis on log-posterior for all components."""
-        print("MORRIS SENSITIVITY ANALYSIS ON LOG-POSTERIOR")
+        """Run Morris sensitivity analysis on log-likelihood for all components."""
+        print("MORRIS SENSITIVITY ANALYSIS ON LOG-LIKELIHOOD")
         print(f"Parameters: {len(self.all_param_names)}")
         print(f"Output components: {', '.join(self.output_vars)} + total")
         print(f"Trajectories (r): {self.n_trajectories}")
@@ -219,8 +348,8 @@ class MorrisSensitivityOnPosterior:
         )
         print(f"Generated {self.param_values.shape[0]} samples")
 
-        # Evaluate log-posterior for all samples
-        print("\nEvaluating log-posterior for all components...")
+        # Evaluate log-likelihood for all samples
+        print("\nEvaluating log-likelihood for all components...")
 
         # Initialize storage for each component
         component_names = self.output_vars + ["total"]
@@ -230,11 +359,10 @@ class MorrisSensitivityOnPosterior:
         for i in range(self.param_values.shape[0]):
             if i % 100 == 0:
                 print(f"  {i}/{self.param_values.shape[0]}")
-
             try:
-                posterior_components = self._log_posterior_components(self.param_values[i])
+                likelihood_components = self._log_likelihood(self.param_values[i])
                 for name in component_names:
-                    value = posterior_components.get(name, -np.inf)
+                    value = likelihood_components.get(name, -np.inf)
                     component_values[name][i] = value
 
                     if not np.isfinite(value):
@@ -257,7 +385,7 @@ class MorrisSensitivityOnPosterior:
                 )
 
         # Analyze each component separately
-        self.results = {}
+        self.results: dict[str, Any] = {}
         for component_name in component_names:
             values = component_values[component_name]
             # valid_mask = ~np.isinf(values)
@@ -334,91 +462,24 @@ class MorrisSensitivityOnPosterior:
                         {row['sigma']:<20.6f}"
                 )
 
-    def plot_component_comparison(self, save_path=None):
-        """Compare top parameters across all components."""
-        if not hasattr(self, "combined_df"):
-            self.export_all_results()
-
-        components = [
-            c for c in ["total"] + self.output_vars if c in self.combined_df["Component"].unique()
-        ]
-        fig, axes = plt.subplots(1, len(components), figsize=(5 * len(components), 8))
-        if len(components) == 1:
-            axes = [axes]
-
-        for ax, comp in zip(axes, components, strict=True):
-            df = self.combined_df[self.combined_df["Component"] == comp].nlargest(10, "mu_star")
-            colors = plt.get_cmap("viridis")(df["mu_star"] / df["mu_star"].max())
-            ax.barh(range(len(df)), df["mu_star"], color=colors)
-            ax.set_yticks(range(len(df)))
-            ax.set_yticklabels(df["Parameter"], fontsize=8)
-            ax.set_xlabel(r"$\mu^*$", fontsize=10)
-            ax.set_title(comp.upper(), fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.3, axis="x")
-
-        plt.suptitle(
-            "Morris Sensitivity: Parameter Rankings by Component", fontsize=14, fontweight="bold"
-        )
-        plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.show()
-
-    def plot_individual_sensitivity(self, component_name, save_path=None):
-        """Plot detailed sensitivity for a specific component."""
-        df = self.combined_df[self.combined_df["Component"] == component_name].nlargest(
-            20, "mu_star"
-        )
-
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, max(6, len(df) * 0.3)))
-
-        # Bar plot
-        ax1.barh(
-            range(len(df)),
-            df["mu_star"],
-            color=plt.get_cmap("RdYlGn_r")(np.linspace(0, 1, len(df))),
-        )
-        ax1.set_yticks(range(len(df)))
-        ax1.set_yticklabels(df["Parameter"], fontsize=9)
-        ax1.set_xlabel(r"$\mu^*$", fontsize=11)
-        ax1.set_title(f"{component_name.upper()} - Sensitivity", fontsize=12, fontweight="bold")
-        ax1.grid(True, alpha=0.3, axis="x")
-
-        # Interaction plot
-        all_data = self.combined_df[self.combined_df["Component"] == component_name]
-        scatter = ax2.scatter(
-            all_data["mu_star"],
-            all_data["sigma"],
-            c=all_data["mu_star"],
-            cmap="viridis",
-            s=80,
-            alpha=0.7,
-        )
-        ax2.set_xlabel(r"$\mu^*$", fontsize=11)
-        ax2.set_ylabel(r"$\sigma$", fontsize=11)
-        ax2.set_title("Sensitivity vs Interactions", fontsize=12, fontweight="bold")
-        ax2.grid(True, alpha=0.3)
-        plt.colorbar(scatter, ax=ax2, label=r"$\mu^*$")
-
-        plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.show()
-
     def export_all_results(self, save_dir: str = "morris_results"):
         """Export all results to CSV files."""
         os.makedirs(save_dir, exist_ok=True)
         # Export combined results
         combined_data = []
         for component_name, result in self.results.items():
-            for i, param_name in enumerate(result["names"]):
+            names = list(result["names"])
+            mu_star = np.asarray(result["mu_star"])
+            sigma = np.asarray(result["sigma"])
+            mu = np.asarray(result["mu"])
+            for i, param_name in enumerate(names):
                 combined_data.append(
                     {
                         "Component": component_name,
                         "Parameter": param_name,
-                        "mu_star": result["mu_star"][i],
-                        "sigma": result["sigma"][i],
-                        "mu": result["mu"][i],
+                        "mu_star": mu_star[i],
+                        "sigma": sigma[i],
+                        "mu": mu[i],
                     }
                 )
 
@@ -439,27 +500,24 @@ def run_morris_analysis(
     output_vars: list[str],
     params_bounds: dict[str, tuple[float, float]],
     param_best: dict[str, float],
-    fixed_sigmas: dict[str, float],
+    sigma_param_names: dict[str, str] | None = None,
     n_trajectories: int = 500,
     n_levels: int = 20,
     save_plots: bool = True,
     export_csv: bool = True,
     save_dir: str = "",
-) -> MorrisSensitivityOnPosterior:
+) -> MorrisSensitivityOnLikelihood:
     """Run Morris sensitivity analysis with individual output components."""
-    if fixed_sigmas is None:
-        fixed_sigmas = {"WS": 5.0, "DBH": 1.0, "Height": 2.0, "BA": 3.0}
-
-    analyzer = MorrisSensitivityOnPosterior(
+    analyzer = MorrisSensitivityOnLikelihood(
         file_path=file_path,
         observed_data=observed_data,
         calib_params=calib_params,
         param_bounds=params_bounds,
         param_best=param_best,
         output_vars=output_vars,
+        sigma_param_names=sigma_param_names,
         n_levels=n_levels,
         n_trajectories=n_trajectories,
-        fixed_sigmas=fixed_sigmas,
     )
 
     analyzer.run_analysis()
@@ -468,16 +526,23 @@ def run_morris_analysis(
 
     if save_plots:
         os.makedirs(save_dir, exist_ok=True)
+        results_csv_path = os.path.join(save_dir, "morris_all_components.csv")
 
         # Plot individual components
         for component in ["total"] + output_vars:
             if component in analyzer.results:
-                analyzer.plot_individual_sensitivity(
-                    component, save_path=f"{save_dir}/morris_{component}.png"
+                plot_individual_sensitivity_from_results(
+                    results_csv_path,
+                    component,
+                    save_path=f"{save_dir}/morris_{component}.png",
                 )
 
         # Plot comparison grid
-        analyzer.plot_component_comparison(save_path=f"{save_dir}/morris_comparison.png")
+        plot_component_comparison_from_results(
+            results_csv_path,
+            output_vars,
+            save_path=f"{save_dir}/morris_comparison.png",
+        )
 
     if export_csv:
         analyzer.export_all_results(save_dir)
@@ -492,6 +557,8 @@ if __name__ == "__main__":
 
     # Get parameter bounds
     param_bounds_df = pd.read_excel(file_path, sheet_name="param_bound")
+    error_bounds_df = pd.read_excel(file_path, sheet_name="error_param")
+    param_bounds_df = pd.concat([param_bounds_df, error_bounds_df]).reset_index(drop=True)
     param_bounds = {}
     param_best = {}
     for _, row in param_bounds_df.iterrows():
@@ -501,22 +568,27 @@ if __name__ == "__main__":
 
     calib_params = list(param_bounds.keys())
 
-    # Run analysis for multiple output variables
+    # Output variables to analyze
+    output_vars = ["DBH", "WS", "WR", "WF"]
+
+    # sigma_param_names maps each model output key to its corresponding err_* parameter
+    sigma_param_names = {
+        "DBH": "err_DBH",
+        "WS": "err_WS",
+        "WR": "err_WR",
+        "WF": "err_WF",
+    }
+
     analyzer = run_morris_analysis(
         file_path=file_path,
         observed_data=observed_df,
         calib_params=calib_params,
-        output_vars=["WS", "DBH", "WF", "WR"],
+        output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=100,
+        n_trajectories=500,
         n_levels=20,
-        fixed_sigmas={
-            "WS": 1.0,
-            "DBH": 1.0,
-            "WF": 1.0,
-            "WR": 1.0,
-        },
+        sigma_param_names=sigma_param_names,
         save_plots=True,
         export_csv=True,
         save_dir=os.path.join("./data/", "morris_analysis_results"),

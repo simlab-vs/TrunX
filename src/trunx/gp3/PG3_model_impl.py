@@ -1,6 +1,7 @@
 """Base implementation of 3PG Model."""
 
 # %%
+import logging
 import os
 
 import jax
@@ -29,6 +30,14 @@ from trunx.gp3.prepare_species import prepare_species
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
 from trunx.gp3.run_r3pg import run_comparison_r
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+logger = logging.getLogger(__name__)
+
 os.chdir(project_root)
 
 
@@ -43,7 +52,7 @@ def prepare_data(file_path):
     d_species = pl.read_excel(file_path, sheet_name="species")
     species_data = prepare_species(d_species)
 
-    print(species_data.specie)
+    logging.info("Pre-processed species data for %d species", len(species_data.specie))
 
     params_df = pl.read_excel(file_path, sheet_name="parameters")
 
@@ -94,18 +103,25 @@ def prepare_data(file_path):
     return initial_state, climate, params, site_data, species_data, n_species, species_names
 
 
-def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparison=False):
+def run_threepg_main(
+    file_path,
+    observed_data=None,
+    plot_output=True,
+    r_comparison=False,
+    plot_id="",
+    show_plots: bool = True,
+):
     """Run 3PG model."""
     if file_path == "./data/data_sspecies_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_nothinning.png"
+        fig_name = "r_3PG_trotsiuk_nothinning"
     elif file_path == "./data/data.input.xlsx":
-        fig_name = "r_3PG_trotsiuk.png"
+        fig_name = "r_3PG_trotsiuk"
     elif file_path == "./data/data_semisynthetic.xlsx":
-        fig_name = "r_3PG_ICPdata.png"
+        fig_name = "r_3PG_ICPdata"
     elif file_path == "./data/data_nothinning.xlsx":
-        fig_name = "r_3PG_trotsiuk_mult_nothinning.png"
+        fig_name = "r_3PG_trotsiuk_mult_nothinning"
     else:
-        fig_name = None
+        fig_name = "ICP"
 
     try:
         observed_data = pd.read_excel(file_path, sheet_name="observed")
@@ -149,26 +165,29 @@ def run_threepg_main(file_path, observed_data=None, plot_output=True, r_comparis
 
     if r_comparison and plot_output:
         r_outputs = run_comparison_r(file_path)
-        # fig = plot_combined_3pg_outputs(
-        #     r_outputs, outputs, climate.start_month, species_data.specie, fig_name
-        # )
         df_comp = create_comparison_dataframe(
             r_outputs, outputs, climate.start_month, species_names
         )
-        fig = plot_combined_3pg_outputs_obv(df_comp, observed_data=observed_data)
+        fig = plot_combined_3pg_outputs_obv(
+            df_comp,
+            observed_data=observed_data,
+            fig_name=fig_name,
+            plot_id=plot_id,
+            show=show_plots,
+        )
     elif r_comparison:
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month, species_names)
         fig = None
     elif plot_output:
-        fig = plot_outputs(outputs, climate.start_month, fig_name)
+        fig = plot_outputs(outputs, climate.start_month, fig_name, show=show_plots)
     else:
         fig = None
 
     return fig, outputs
 
 
-def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
+def run_threepg_with_icp(plot_id: str = "", plot_output=True, r_comparison=True):
     """Run 3PG model with ICP weather data."""
     file_path = os.path.join("./data/", "S_weather_data.xlsx")
     if os.path.exists(file_path):
@@ -177,7 +196,11 @@ def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
     miss_months, observed_data = create_input_data(file_path, plot_id)
     if len(miss_months) == 0:
         fig, outputs = run_threepg_main(
-            file_path, observed_data, plot_output=plot_output, r_comparison=r_comparison
+            file_path,
+            observed_data,
+            plot_output=plot_output,
+            r_comparison=r_comparison,
+            plot_id=plot_id,
         )
         return fig, outputs
     else:
@@ -190,15 +213,16 @@ def run_threepg_with_icp(plot_id=None, plot_output=True, r_comparison=True):
 if __name__ == "__main__":
     # file_path = "./data/data_semisynthetic.xlsx"
     # file_path = "./data/data.input.xlsx"
-    file_path = "./data/data_sspecies_nothinning.xlsx"
+    # file_path = "./data/data_sspecies_nothinning.xlsx"
     # file_path = "./data/data_nothinning.xlsx"
     # file_path = "./data/S_weather_data.xlsx"
 
     # file_path = "./data/solling_data.xlsx"
-    # file_path = "./data//davos_data.xlsx"
+    # file_path = "./data/davos_data.xlsx"
+    file_path = "./data/Davos_data_GPP.xlsx"
     fig, outputs = run_threepg_main(
         file_path, observed_data=None, plot_output=True, r_comparison=True
     )
 
-    # plot_id = "50.0013"
+    # plot_id = "50.0018"
     # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
