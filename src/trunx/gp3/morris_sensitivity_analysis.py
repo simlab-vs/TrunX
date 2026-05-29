@@ -216,14 +216,23 @@ class MorrisSensitivityOnOutputs:
         """Create combined DataFrame from results."""
         data = []
         for var, result in self.results.items():
-            for i, name in enumerate(result["names"]):
+            mu_star_values = np.atleast_1d(np.asarray(result["mu_star"], dtype=float))
+            sigma_values = np.atleast_1d(np.asarray(result["sigma"], dtype=float))
+            mu_values = np.atleast_1d(np.asarray(result["mu"], dtype=float))
+            raw_names = result["names"]
+            param_names = (
+                [name for name in raw_names if isinstance(name, str)]
+                if isinstance(raw_names, list)
+                else []
+            )
+            for i, name in enumerate(param_names):
                 data.append(
                     {
                         "Component": var,
                         "Parameter": name,
-                        "mu_star": result["mu_star"][i],
-                        "sigma": result["sigma"][i],
-                        "mu": result["mu"][i],
+                        "mu_star": mu_star_values[i],
+                        "sigma": sigma_values[i],
+                        "mu": mu_values[i],
                     }
                 )
         df = pd.DataFrame(data)
@@ -280,14 +289,23 @@ class MorrisSensitivityOnOutputs:
 
         combined_data = []
         for component_name, result in self.results.items():
-            for i, param_name in enumerate(result["names"]):
+            mu_star_values = np.atleast_1d(np.asarray(result["mu_star"], dtype=float))
+            sigma_values = np.atleast_1d(np.asarray(result["sigma"], dtype=float))
+            mu_values = np.atleast_1d(np.asarray(result["mu"], dtype=float))
+            raw_names = result["names"]
+            param_names = (
+                [name for name in raw_names if isinstance(name, str)]
+                if isinstance(raw_names, list)
+                else []
+            )
+            for i, param_name in enumerate(param_names):
                 combined_data.append(
                     {
                         "Component": component_name,
                         "Parameter": param_name,
-                        "mu_star": result["mu_star"][i],
-                        "sigma": result["sigma"][i],
-                        "mu": result["mu"][i],
+                        "mu_star": mu_star_values[i],
+                        "sigma": sigma_values[i],
+                        "mu": mu_values[i],
                     }
                 )
 
