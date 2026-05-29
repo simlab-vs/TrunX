@@ -2,8 +2,8 @@
 
 import os
 import warnings
+from typing import TypedDict
 
-# from typing import Dict, List, Tuple
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +16,18 @@ from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 warnings.filterwarnings("ignore")
+
+
+class MorrisResult(TypedDict):
+    """Typed Morris analysis result container."""
+
+    mu: np.ndarray
+    mu_star: np.ndarray
+    sigma: np.ndarray
+    mu_star_conf: np.ndarray
+    names: list[str]
+    n_valid: int
+    n_total: int
 
 
 class MorrisSensitivityOnOutputs:
@@ -79,7 +91,7 @@ class MorrisSensitivityOnOutputs:
         print(f"  Output variables: {', '.join(self.output_vars)}")
 
         # Store results for each output
-        self.results = {}
+        self.results: dict[str, MorrisResult] = {}
         self.param_values = None
         self.all_outputs = None
 
@@ -216,23 +228,17 @@ class MorrisSensitivityOnOutputs:
         """Create combined DataFrame from results."""
         data = []
         for var, result in self.results.items():
-            mu_star_values = np.atleast_1d(np.asarray(result["mu_star"], dtype=float))
-            sigma_values = np.atleast_1d(np.asarray(result["sigma"], dtype=float))
-            mu_values = np.atleast_1d(np.asarray(result["mu"], dtype=float))
-            raw_names = result["names"]
-            param_names = (
-                [name for name in raw_names if isinstance(name, str)]
-                if isinstance(raw_names, list)
-                else []
-            )
-            for i, name in enumerate(param_names):
+            mu_star = np.asarray(result["mu_star"])
+            sigma = np.asarray(result["sigma"])
+            mu = np.asarray(result["mu"])
+            for i, name in enumerate(result["names"]):
                 data.append(
                     {
                         "Component": var,
                         "Parameter": name,
-                        "mu_star": mu_star_values[i],
-                        "sigma": sigma_values[i],
-                        "mu": mu_values[i],
+                        "mu_star": mu_star[i],
+                        "sigma": sigma[i],
+                        "mu": mu[i],
                     }
                 )
         df = pd.DataFrame(data)
@@ -289,23 +295,17 @@ class MorrisSensitivityOnOutputs:
 
         combined_data = []
         for component_name, result in self.results.items():
-            mu_star_values = np.atleast_1d(np.asarray(result["mu_star"], dtype=float))
-            sigma_values = np.atleast_1d(np.asarray(result["sigma"], dtype=float))
-            mu_values = np.atleast_1d(np.asarray(result["mu"], dtype=float))
-            raw_names = result["names"]
-            param_names = (
-                [name for name in raw_names if isinstance(name, str)]
-                if isinstance(raw_names, list)
-                else []
-            )
-            for i, param_name in enumerate(param_names):
+            mu_star = np.asarray(result["mu_star"])
+            sigma = np.asarray(result["sigma"])
+            mu = np.asarray(result["mu"])
+            for i, param_name in enumerate(result["names"]):
                 combined_data.append(
                     {
                         "Component": component_name,
                         "Parameter": param_name,
-                        "mu_star": mu_star_values[i],
-                        "sigma": sigma_values[i],
-                        "mu": mu_values[i],
+                        "mu_star": mu_star[i],
+                        "sigma": sigma[i],
+                        "mu": mu[i],
                     }
                 )
 
