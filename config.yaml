@@ -1,12 +1,12 @@
 # # This file centralizes configurations for the current project.
 #
-# Can be used to change default data locations and download URLs 
-# in case they evolve. 
+# Can be used to change default data locations and download URLs
+# in case they evolve.
 #
 # These configurations are handled by src/__pacakge_name__/config.py
 #
 # All paths are relative to the project root.
-# If absolute paths are given (starting with / ) then these are treated 
+# If absolute paths are given (starting with / ) then these are treated
 # as absolute paths.
 #
 # -----------
@@ -21,7 +21,7 @@
 #   data/results/
 #
 # To ease the transition between development and production, two modes are offered:
-# 
+#
 # - local: data/ folder is at the project root
 # - server: data/ folder is at the location specified by server_base_dir (relative or absolute)
 mode: local

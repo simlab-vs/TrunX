@@ -15,7 +15,7 @@ create a new project:
 
 1. Update the name of the project in `pyproject.toml`.
 2. Change the name of the folder `src/python-base` to match the project name.
-3. Run `uv sync` from the root of the repo. 
+3. Run `uv sync` from the root of the repo.
 This will create a virtual environment and install needed development dependencies.
 4. Add the dependencies you need (and run this same command every time you need
    a new package):
@@ -63,4 +63,3 @@ We recommend the use of [type hints](https://docs.python.org/3/library/typing.ht
 of your code. One of the pre-commit hooks is [`pyright`](https://github.com/microsoft/pyright),
 which will perform type checking when hints are available. This reduces greatly the
 risk of bugs and the maintainability of the code.
-
