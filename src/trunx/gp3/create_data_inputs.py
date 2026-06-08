@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
-from trunx.config import clean_data_folder, data_folder, icp_raw_data_folder
+from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 
 logger = logging.getLogger(__name__)
@@ -239,7 +239,7 @@ def create_input_params(icp_df):
     """Create parameter data input for 3PG model."""
     input_params = {}
     params_df = pl.read_excel(
-        os.path.join(data_folder, "data.input.xlsx"), sheet_name="parameters"
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="parameters"
     )
     input_params["parameter"] = params_df["parameter"].to_list()
     for specie in icp_df["specie"].unique().to_list():
@@ -256,7 +256,9 @@ def create_input_params(icp_df):
 
 def create_species_data(icp_df):
     """Create species data input for 3PG model."""
-    species_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="species")
+    species_df = pl.read_excel(
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="species"
+    )
 
     print(
         "\n Species found in this location: ",
@@ -271,7 +273,9 @@ def create_species_data(icp_df):
 
 def create_site_data(icp_df, weather_df):
     """Create site data input for 3PG model."""
-    site_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="site")
+    site_df = pl.read_excel(
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="site"
+    )
 
     latitude_value = icp_df["Lat"][0]
     altitude_value = icp_df["plot_altitude"][0]
@@ -534,40 +538,3 @@ def create_input_data(input_data_file, plot_id):
         print(summary_wdf)
 
     return miss_months, observed_data.to_pandas()
-
-
-if __name__ == "__main__":
-    file_path = os.path.join("./data/", "S_weather_data.xlsx")
-    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    processor = prepare_icp_weather_data(raw_file_path)
-    df = processor.clean_data()
-
-    # miss_months, weather_df = create_weather_input(df, plot_id="50.0018")
-    # print(weather_df.head())
-
-    plot_id = "50.0018"
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
-    icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
-    icp_df = icp_df.filter(
-        pl.col("specie").is_in(
-            list(
-                [
-                    "Picea abies",
-                    "Pinus sylvestris",
-                    "Fagus sylvatica",
-                    "Quercus robur",
-                    "Quercus petraea",
-                ]
-            )
-        )
-    )
-
-    icp_df = icp_df.with_columns(
-        pl.col("plot_latitude").map_elements(dms_to_decimal, return_dtype=pl.Float64).alias("Lat"),
-        pl.col("plot_longitude")
-        .map_elements(dms_to_decimal, return_dtype=pl.Float64)
-        .alias("Lon"),
-    )
-
-    observed_data = create_observation_data(plot_id, icp_df, df, create_species_data(icp_df))
-    print(observed_data)

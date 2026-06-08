@@ -22,6 +22,7 @@ from trunx.gp3.helper_function import (
     f_calpha,
     f_cg,
     f_exp_foliage,
+    f_exp_wood,
     f_frost,
     f_nutrition,
     f_soil_water,
@@ -115,7 +116,7 @@ def model_step(state, climate_month, params, site, species, n_species):
     # gammaF = compute_litterfall_rate(age_months, params.gammaF0, params.gammaF1, params.tgammaF)
     gammaF = f_exp_foliage(params, age_months)
     gammaF = jnp.clip(gammaF, 0.0, 1.0)
-
+    wood_density = f_exp_wood(params, age_months)
     WF_debt_after = WF_debt_new
     NPP_after_debt = NPP_scaled
 
@@ -136,11 +137,8 @@ def model_step(state, climate_month, params, site, species, n_species):
     )
 
     # Calculate biomass losses (litterfall) using current foliage
-    # biom_loss_foliage = jnp.where(growing, gammaF * WF_active, 0.0)
-
     biom_loss_foliage = jnp.where(
         dormant & first_dormant,
-        # WF_debt,  # should be WF_debt_new
         WF_debt_new,
         jnp.where(growing, gammaF * WF_active, 0.0),
     )
@@ -164,19 +162,14 @@ def model_step(state, climate_month, params, site, species, n_species):
 
     mort_stress = jnp.zeros_like(N)
 
-    # Stress mortality is disabled to match current R comparison settings
-    # (Trunx_comp.R uses enable_stress_mortality = 0)
-    apply_stress_mortality_enabled = True
-    if apply_stress_mortality_enabled:
-        WS_stress, WF_stress, WR_stress, N_stress, mort_stress = apply_stress_mortality(
-            params, age_months, WS_new, WF_new, WR_new, N, dormant
-        )
-        WS_new = WS_stress
-        WF_new = WF_stress
-        WR_new = WR_stress
-        N_new = N_stress
-    else:
-        N_new = N
+    # Stress mortality
+    WS_stress, WF_stress, WR_stress, N_stress, mort_stress = apply_stress_mortality(
+        params, age_months, WS_new, WF_new, WR_new, N, dormant
+    )
+    WS_new = WS_stress
+    WF_new = WF_stress
+    WR_new = WR_stress
+    N_new = N_stress
 
     # Self-thinning with R/Fortran logic (iterative solver + mortality factors)
     # Built-in dormancy gating: only thins in growing season
@@ -189,12 +182,17 @@ def model_step(state, climate_month, params, site, species, n_species):
     WR_new = WR_thinned
     N_new = N_thinned
 
-    # Recalculate DBH after all biomass events (matches R/Fortran behavior)
+    # Recalculate DBH after all biomass events
     DBH_updated = compute_dbh(params, WS_new, N_new)
 
     # Recalculate LAI after all updates
     LAI, SLA = compute_lai(params, WF_new, age_months + 1)
     LAI = jnp.clip(LAI, 0.0, 15.0)
+
+    BA = jnp.pi * (DBH_updated / 200.0) ** 2 * N_new  # Basal area in m^2/ha
+    competition_total = jnp.sum(wood_density * BA)
+    H = params.aH * DBH_updated**params.nHB * competition_total**params.nHC  # Height in m
+    V = params.aV * DBH_updated**params.nVB * H**params.nVH  # Volume in m^3/ha
 
     new_state = State(
         WF=WF_new,
@@ -239,7 +237,9 @@ def model_step(state, climate_month, params, site, species, n_species):
         mort_stress=mort_stress,
         mort_thinn=mort_count,
         stems_n=N_new,
-        Volume=WS_new * 0.85 / (params.tRho + 1e-8),
+        Volume=V,
+        Height=H,
+        BA=BA,
     )
 
     return new_state, outputs

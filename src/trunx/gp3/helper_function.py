@@ -1010,3 +1010,18 @@ def f_exp_foliage(params, age_months: Array) -> Array:
     )
 
     return out
+
+
+def f_exp_wood(params, age_months: Array) -> Array:
+    """Exponential wood density function."""
+    eps = 1e-8
+    age_years = age_months / 12.0
+    out = jnp.where(
+        params.tRho > eps,
+        params.rhoMax
+        + (params.rhoMin - params.rhoMax)
+        * jnp.exp(-jnp.log(2.0) * (age_years / (params.tRho + eps))),
+        params.rhoMax,
+    )
+
+    return out

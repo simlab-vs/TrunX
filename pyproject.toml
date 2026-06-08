@@ -26,6 +26,9 @@ dependencies = [
     "nbstripout>=0.9.1",
     "marimo>=0.23.6",
     "rasterio>=1.5.0",
+    "lxml>=6.1.1",
+    "docx>=0.2.4",
+    "tqdm>=4.67.3",
 ]
 
 # Set curent project as a package, with src/ folder.

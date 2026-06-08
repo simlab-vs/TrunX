@@ -249,6 +249,8 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
                 "stems_n",
                 "mort_stress",
                 "mort_thinn",
+                "basal_area",
+                "height",
             ]
         )
     )
@@ -285,6 +287,8 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
         "stems_n": "r_stems_n",
         "mort_stress": "r_mort_stress",
         "mort_thinn": "r_mort_thinn",
+        "basal_area": "r_BA",
+        "height": "r_Height",
     }
     r_outputs = r_outputs.rename(rename_dict)
     r_outputs = r_outputs.with_columns(
@@ -350,6 +354,8 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
             "stems_n",
             "mort_stress",
             "mort_thinn",
+            "BA",
+            "Height",
         ]
     )
 

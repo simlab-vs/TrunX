@@ -11,6 +11,7 @@ import pandas as pd
 from SALib.analyze import morris as morris_analyze
 from SALib.sample import morris as morris_sample
 
+from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -552,7 +553,7 @@ def run_morris_analysis(
 
 if __name__ == "__main__":
     # Observed data
-    file_path = "./data/solling_data.xlsx"
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     observed_df = pd.read_excel(file_path, sheet_name="observed")
 
     # Get parameter bounds
@@ -569,7 +570,7 @@ if __name__ == "__main__":
     calib_params = list(param_bounds.keys())
 
     # Output variables to analyze
-    output_vars = ["DBH", "WS", "WR", "WF"]
+    output_vars = ["DBH", "WS", "WR", "WF", "BA", "Height"]
 
     # sigma_param_names maps each model output key to its corresponding err_* parameter
     sigma_param_names = {
@@ -577,6 +578,8 @@ if __name__ == "__main__":
         "WS": "err_WS",
         "WR": "err_WR",
         "WF": "err_WF",
+        "BA": "err_BA",
+        "Height": "err_Height",
     }
 
     analyzer = run_morris_analysis(
@@ -591,5 +594,5 @@ if __name__ == "__main__":
         sigma_param_names=sigma_param_names,
         save_plots=True,
         export_csv=True,
-        save_dir=os.path.join("./data/", "morris_analysis_results"),
+        save_dir=os.path.join(results_data_folder, "morris_analysis_results"),
     )
