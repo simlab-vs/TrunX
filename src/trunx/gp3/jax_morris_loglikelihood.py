@@ -455,5 +455,5 @@ if __name__ == "__main__":
         sigma_param_names=sigma_param_names,
         save_plots=True,
         export_csv=True,
-        save_dir=os.path.join(results_data_folder, "morris_analysis_results"),
+        save_dir=os.path.join(results_data_folder, "morris_analysis_results_jax"),
     )

@@ -1,5 +1,5 @@
-FROM python:3.12-slim
-# FROM nvidia/cuda:12.6.2-base-ubuntu22.04
+# FROM python:3.12-slim
+FROM nvidia/cuda:12.6.2-base-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1 \
 	PYTHONDONTWRITEBYTECODE=1 \
@@ -22,13 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	libgomp1 \
 	libgl1 \
 	libglib2.0-0 \
-	r-base \
-    r-base-dev \
-    python3-rpy2 \  
+	# r-base \
+    # r-base-dev \
+    # python3-rpy2 \  
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install required R packages 
-RUN R -e "install.packages(c('readxl', 'dplyr', 'tidyr', 'ggplot2'), repos='https://cran.rstudio.com/')"
+# RUN R -e "install.packages(c('readxl', 'dplyr', 'tidyr', 'ggplot2'), repos='https://cran.rstudio.com/')"
 
 # Install uv.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -44,7 +44,7 @@ COPY src ./src
 COPY config.yaml ./ 
 
 #Copy R implementation
-COPY models/r3PG ./models/r3PG
+# COPY models/r3PG ./models/r3PG
 
 # Install dependencies
 RUN uv sync
@@ -52,8 +52,8 @@ RUN uv sync
 ENV PATH="/app/.venv/bin:${PATH}"
 
 # Set R environment variables
-ENV R_HOME=/usr/lib/R 
-ENV LD_LIBRARY_PATH=/usr/lib/R/lib
+# ENV R_HOME=/usr/lib/R 
+# ENV LD_LIBRARY_PATH=/usr/lib/R/lib
 
 # Run necessary scripts
 ENTRYPOINT ["uv", "run", "python"]

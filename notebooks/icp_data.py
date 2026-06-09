@@ -2,7 +2,7 @@
 
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
@@ -24,14 +24,14 @@ def _():
 
 @app.cell
 def _():
-    # SPECIES_MAPPING = {
-    #     "Picea abies": "spruce",  # Norway Spruce
-    #     "Pinus sylvestris": "pine",  # Scots Pine
-    #     "Fagus sylvatica": "beech",  # Common Beech
-    #     "Quercus petraea": "oak",  # Sessile Oak
-    #     "Quercus robur": "oak",  # Pedunculate Oak
-    # }
-    return
+    SPECIES_MAPPING = {
+        "Picea abies": "spruce",  # Norway Spruce
+        "Pinus sylvestris": "pine",  # Scots Pine
+        "Fagus sylvatica": "beech",  # Common Beech
+        "Quercus petraea": "oak",  # Sessile Oak
+        "Quercus robur": "oak",  # Pedunculate Oak
+    }
+    return (SPECIES_MAPPING,)
 
 
 @app.cell
@@ -77,7 +77,7 @@ def _(pl):
 
 
 @app.cell
-def _(country_df, pl, species_df):
+def _(SPECIES_MAPPING, country_df, pl, species_df):
     df_growth_raw = pl.read_csv(
         "./data/raw/ICP/595_gr_20260306090551/gr_ipm.csv", separator=";", ignore_errors=True
     )
@@ -108,6 +108,8 @@ def _(country_df, pl, species_df):
     df_growth_raw = df_growth_raw.join(
         country_df.select(["code_country", "country"]), on="code_country"
     )
+
+    df_growth_raw = df_growth_raw.filter(pl.col("specie").is_in(SPECIES_MAPPING.keys()))
     return (df_growth_raw,)
 
 
@@ -216,7 +218,7 @@ def _(country_df, pl):
 
 @app.cell
 def _(df_growth, df_plot_info):
-    df_plot_info.join(df_growth, on="plot_id", how="inner")
+    df_plot_info.join(df_growth, on="plot_id", how="inner").unique()
     return
 
 
