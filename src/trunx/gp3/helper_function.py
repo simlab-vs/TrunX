@@ -160,17 +160,23 @@ def f_soil_water(
     f_sw : Array
         Soil water stress factor clipped to [0, 1].
     """
-    if site.soil_class > 0:
-        SWconst = 0.8 - 0.10 * site.soil_class
-        SWpower = 11.0 - 2.0 * site.soil_class
-    elif site.soil_class < 0:
-        if params.SWconst is None or params.SWpower is None:
-            raise ValueError("SWconst and SWpower must be provided when soil_class < 0")
-        SWconst = params.SWconst
-        SWpower = params.SWpower
-    else:
-        SWconst = jnp.asarray(999.0)
-        SWpower = params.SWpower if params.SWpower is not None else jnp.asarray(0.0)
+    soil_class = jnp.asarray(site.soil_class)
+    swconst_param = params.SWconst if params.SWconst is not None else jnp.asarray(0.0)
+    swpower_param = params.SWpower if params.SWpower is not None else jnp.asarray(0.0)
+
+    pos_class = soil_class > 0
+    neg_class = soil_class < 0
+
+    SWconst = jnp.where(
+        pos_class,
+        0.8 - 0.10 * soil_class,
+        jnp.where(neg_class, swconst_param, jnp.asarray(999.0)),
+    )
+    SWpower = jnp.where(
+        pos_class,
+        11.0 - 2.0 * soil_class,
+        jnp.where(neg_class, swpower_param, swpower_param),
+    )
 
     SWdef = 1.0 - ASW / (site.ASW_max + 1e-8)
     f_sw = 1 / (1 + (SWdef / (SWconst + 1e-8)) ** SWpower)
@@ -517,7 +523,7 @@ def compute_canopy_cover(params, age: Array):
     return canopy_cover
 
 
-def is_dormant(month: int, leafgrow: Array, leaffall: Array) -> Array:
+def is_dormant(month: Array, leafgrow: Array, leaffall: Array) -> Array:
     """
     Determine if current month is in dormant period.
 

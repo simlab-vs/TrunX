@@ -40,11 +40,24 @@ def create_weather_input(df, plot_id):
         if col.startswith("daily_m"):
             srad_df = srad_df.with_columns((pl.col(col) * 0.0864).alias(col))
 
-    mtemp_df = temp_df.group_by(["month_year"]).agg(
-        pl.col("daily_mean").mean().alias("tmp_ave"),
-        pl.col("daily_min").mean().alias("tmp_min"),
-        pl.col("daily_max").mean().alias("tmp_max"),
-        (pl.col("daily_min") < 0).sum().alias("frost_days"),
+    mtemp_df = (
+        temp_df.group_by(["month_year"])
+        .agg(
+            pl.col("daily_mean").mean().alias("tmp_ave"),
+            pl.col("daily_min").mean().alias("tmp_min"),
+            pl.col("daily_max").mean().alias("tmp_max"),
+            (pl.col("daily_min") < 0).sum().alias("frost_days"),
+        )
+        .with_columns(
+            pl.when(pl.col("tmp_ave") < pl.col("tmp_min"))
+            .then(pl.col("tmp_ave"))
+            .otherwise(pl.col("tmp_min"))
+            .alias("tmp_min"),
+            pl.when(pl.col("tmp_ave") > pl.col("tmp_max"))
+            .then(pl.col("tmp_ave"))
+            .otherwise(pl.col("tmp_max"))
+            .alias("tmp_max"),
+        )
     )
 
     mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))

@@ -10,14 +10,14 @@ from jax import Array
 class State(NamedTuple):
     """State information."""
 
-    WF: Array  # Foliage mass
-    WR: Array  # Root mass
-    WS: Array  # Stem mass
-    N: Array  # Stems per hectare
-    ASW: Array  # Available soil water
-    age: Array  # Age in months
-    WF_debt: Array  # Foliage biomass stored during dormant period
-    prev_month: Array  # Previous month for dormancy transition detection
+    WF: jnp.ndarray  # Foliage mass
+    WR: jnp.ndarray  # Root mass
+    WS: jnp.ndarray  # Stem mass
+    N: jnp.ndarray  # Stems per hectare
+    ASW: jnp.ndarray  # Available soil water
+    age: jnp.ndarray  # Age in months
+    WF_debt: jnp.ndarray  # Foliage biomass stored during dormant period
+    prev_month: jnp.ndarray  # Previous month for dormancy transition detection
 
 
 class ClimateData(NamedTuple):
@@ -39,14 +39,14 @@ class ClimateData(NamedTuple):
 class SiteData(NamedTuple):
     """Site data information."""
 
-    latitude: float  # Latitude of the site
-    altitude: float  # Altitude of the site location
-    soil_class: int  # Soil parameter for soil class
-    ASW: float  # available soil water
-    ASW_max: float  # Maximum available soil water
-    ASW_min: float  # Minimum available soil water
-    year_i: int  # Initial year of simulation
-    month_i: int  # Initial month of simulation
+    latitude: jnp.ndarray  # Latitude of the site
+    altitude: jnp.ndarray  # Altitude of the site location
+    soil_class: jnp.ndarray  # Soil parameter for soil class
+    ASW: jnp.ndarray  # available soil water
+    ASW_max: jnp.ndarray  # Maximum available soil water
+    ASW_min: jnp.ndarray  # Minimum available soil water
+    year_i: jnp.ndarray  # Initial year of simulation
+    month_i: jnp.ndarray  # Initial month of simulation
     site_start: np.datetime64  # Start month of simulation
     site_end: np.datetime64  # End month of simulation
 

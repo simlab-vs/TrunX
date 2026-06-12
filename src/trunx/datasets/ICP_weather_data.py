@@ -33,11 +33,11 @@ class prepare_icp_weather_data:
         df = df.with_columns(
             [
                 pl.when(pl.col("daily_mean") < pl.col("daily_min"))
-                .then(None)
+                .then(pl.col("daily_mean"))
                 .otherwise(pl.col("daily_min"))
                 .alias("daily_min"),
                 pl.when(pl.col("daily_mean") > pl.col("daily_max"))
-                .then(None)
+                .then(pl.col("daily_mean"))
                 .otherwise(pl.col("daily_max"))
                 .alias("daily_max"),
             ]
@@ -76,9 +76,10 @@ class prepare_icp_weather_data:
             "plot_id",
             "month_year",
         ]
+
         df = (
-            df.group_by(group_cols)
-            .agg([pl.all().exclude(group_cols).mean()])
+            df.sort(by="change_date")
+            .unique(subset=group_cols, keep="last")
             .drop(
                 [
                     "code_data_origin",
@@ -93,6 +94,7 @@ class prepare_icp_weather_data:
         )
 
         self.df_cleaned = df
+
         return df
 
     def aggregate_monthly_variables(
@@ -251,7 +253,6 @@ class prepare_icp_weather_data:
             )
             .sort("plot_id")
         )
-
         # Missing months
         missing_months_list = []
         for row in coverage.iter_rows(named=True):

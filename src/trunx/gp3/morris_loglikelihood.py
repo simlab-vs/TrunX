@@ -74,6 +74,7 @@ def plot_component_comparison_from_results(
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+    plt.close(fig)
 
 
 def plot_individual_sensitivity_from_results(
@@ -125,6 +126,7 @@ def plot_individual_sensitivity_from_results(
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+    plt.close(fig)
 
 
 class MorrisSensitivityOnLikelihood:
@@ -354,7 +356,13 @@ class MorrisSensitivityOnLikelihood:
 
         # Initialize storage for each component
         component_names = self.output_vars + ["total"]
-        component_values = {name: np.zeros(self.param_values.shape[0]) for name in component_names}
+        component_values = {
+            name: np.zeros(
+                self.param_values.shape[0],
+                dtype=np.float32,
+            )
+            for name in component_names
+        }
 
         invalid_samples = {name: [] for name in component_names}
         for i in range(self.param_values.shape[0]):
@@ -400,6 +408,7 @@ class MorrisSensitivityOnLikelihood:
                 print(f" Handling {len(invalid_indices)} invalid samples for {component_name}...")
 
                 values_clean = values.copy()
+                invalid_idx_set = set(invalid_indices)
                 for idx in invalid_indices:
                     # Find nearest valid index within same trajectory
                     trajectory_size = len(self.all_param_names) + 1
@@ -409,7 +418,7 @@ class MorrisSensitivityOnLikelihood:
                     # Look for valid values in the same trajectory
                     valid_in_trajectory = []
                     for j in range(start_idx, end_idx):
-                        if j not in invalid_indices and np.isfinite(values[j]):
+                        if j not in invalid_idx_set and np.isfinite(values[j]):
                             valid_in_trajectory.append(values[j])
 
                     if valid_in_trajectory:
@@ -544,9 +553,6 @@ def run_morris_analysis(
             output_vars,
             save_path=f"{save_dir}/morris_comparison.png",
         )
-
-    if export_csv:
-        analyzer.export_all_results(save_dir)
 
     return analyzer
 

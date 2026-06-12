@@ -29,6 +29,8 @@ dependencies = [
     "lxml>=6.1.1",
     "docx>=0.2.4",
     "tqdm>=4.67.3",
+    "arviz<1.0.0",
+    "numpyro>=0.21.0",
 ]
 
 # Set curent project as a package, with src/ folder.

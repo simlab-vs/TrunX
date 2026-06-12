@@ -2,9 +2,18 @@
 
 Only single-species plots are included. One parquet file is written per species,
 named ``icp_plot_data_{Species_name}.parquet``. Each row corresponds to one plot
-with nested list-of-struct columns so every section contains only its own columns.
+with nested list-of-struct columns.
 
 Parameters are excluded; pass them separately to the estimation pipeline.
+
+Notes
+-----
+- The initial state for the 3PG model is based on the first DBH
+observed data available in each plot.
+
+TODO:
+- Add option to include multi-species plots, with per-species columns for observations.
+- Get weather data form other sources.
 
 """
 

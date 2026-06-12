@@ -1,5 +1,6 @@
 """Prepare site data for 3PG model."""
 
+import jax.numpy as jnp
 import numpy as np
 import polars as pl
 
@@ -82,14 +83,14 @@ def prepare_site(site: pl.DataFrame) -> SiteData:
     year_i, month_i = map(int, row["from"].split("-"))
 
     site_data = SiteData(
-        latitude=float(row["latitude"]),
-        altitude=float(row["altitude"]),
-        soil_class=int(row["soil_class"]),
-        ASW=float(row["asw_i"]),
-        ASW_max=float(row["asw_max"]),
-        ASW_min=float(row["asw_min"]),
-        year_i=year_i,
-        month_i=month_i,
+        latitude=jnp.asarray([row["latitude"]]),
+        altitude=jnp.asarray([row["altitude"]]),
+        soil_class=jnp.asarray([row["soil_class"]]),
+        ASW=jnp.asarray([row["asw_i"]]),
+        ASW_max=jnp.asarray([row["asw_max"]]),
+        ASW_min=jnp.asarray([row["asw_min"]]),
+        year_i=jnp.asarray([year_i]),
+        month_i=jnp.asarray([month_i]),
         site_start=np.datetime64(row["from"]),
         site_end=np.datetime64(row["to"]),
     )

@@ -14,17 +14,17 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	build-essential \
     git \
+    python3 \
     python3-pip \
-    python3-dev \ 
+	python3-dev \
 	curl \
+	r-base \
+	r-base-dev \
 	libopenblas-dev \
 	liblapack-dev \
 	libgomp1 \
 	libgl1 \
 	libglib2.0-0 \
-	# r-base \
-    # r-base-dev \
-    # python3-rpy2 \  
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install required R packages 
@@ -57,4 +57,4 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 # Run necessary scripts
 ENTRYPOINT ["uv", "run", "python"]
-CMD ["/app/src/trunx/gp3/jax_morris_loglikelihood.py"]
+CMD ["/app/src/trunx/gp3/morris_loglikelihood.py"]

@@ -202,7 +202,7 @@ def model_step(state, climate_month, params, site, species, n_species):
         ASW=ASW_new,
         age=jnp.asarray(age_months + 1),
         WF_debt=jnp.asarray(WF_debt_after),
-        prev_month=jnp.full(n_species, month),
+        prev_month=jnp.full(n_species, month, dtype=jnp.int32),
     )
 
     outputs = dict(
