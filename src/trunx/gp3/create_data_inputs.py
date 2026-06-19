@@ -9,6 +9,7 @@ import polars as pl
 
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +310,33 @@ def create_site_data(icp_df, weather_df):
     return site_df
 
 
-def update_species_data(icp_df, species_df, input_params_df):
-    """Create species data for 3PG model for specific site."""
+def update_species_data(
+    icp_df: pl.DataFrame,
+    species_df: pl.DataFrame,
+    input_params_df: pl.DataFrame,
+    models: dict[str, tuple[float, float]] | None = None,
+) -> tuple[pl.DataFrame, int]:
+    """Create species data for 3PG model for a specific site.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        ICP level2 data filtered to the target plot.
+    species_df : pl.DataFrame
+        Species template data from the 3PG input file.
+    input_params_df : pl.DataFrame
+        Parameter data for the species present.
+    models : dict[str, tuple[float, float]] | None
+        Per-species power-law coefficients ``(a, b)`` from
+        :func:`trunx.gp3.age_regression.fit_models`. When provided, the
+        ``planted`` date is estimated from DBH at the first common survey
+        year rather than taken from the template.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, int]
+        Updated species DataFrame and the first common survey year.
+    """
     avg_diameter = icp_df.group_by(["specie", "period_end"]).agg(
         pl.col("diameter_end").mean().alias("DBH")
     )
@@ -329,6 +355,29 @@ def update_species_data(icp_df, species_df, input_params_df):
     start_year = common_start["start_year"].item()
 
     avg_diameter = avg_diameter.filter(pl.col("year") == start_year)
+
+    if models is not None:
+        for specie in avg_diameter["specie"].unique().to_list():
+            if specie not in models:
+                logger.warning("No age model for '%s', keeping template planted date", specie)
+                continue
+            dbh = avg_diameter.filter(pl.col("specie") == specie)["DBH"].to_numpy()
+            a, b = models[specie]
+            estimated_age = predict_age_from_dbh(dbh, a, b)
+            planting_year = int(start_year - round(estimated_age))
+            species_df = species_df.with_columns(
+                pl.when(pl.col("species") == specie)
+                .then(pl.lit(f"{planting_year}-01"))
+                .otherwise(pl.col("planted"))
+                .alias("planted")
+            )
+            logger.info(
+                "Estimated planting year for '%s': %d (age %.1f yr at %d)",
+                specie,
+                planting_year,
+                estimated_age,
+                start_year,
+            )
 
     num_trees = (
         icp_df.filter(pl.col("specie").is_in(species_df.select("species").to_series().to_list()))
@@ -488,9 +537,10 @@ def create_input_data(input_data_file, plot_id):
 
     df = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
 
-    # ICP data
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
-    icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
+    # ICP data — load full dataset first for cross-plot age model fitting
+    icp_full = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    age_models = fit_models(icp_full)
+    icp_df = icp_full.filter(pl.col("plot_id") == plot_id)
     icp_df = icp_df.filter(
         pl.col("specie").is_in(
             list(
@@ -525,7 +575,9 @@ def create_input_data(input_data_file, plot_id):
     input_params_df = create_input_params(icp_df)
     logging.info("Created parameter data for plot_id: %s", plot_id)
 
-    input_species_df, start_year = update_species_data(icp_df, input_species_df, input_params_df)
+    input_species_df, start_year = update_species_data(
+        icp_df, input_species_df, input_params_df, models=age_models
+    )
 
     weather_df = weather_df.filter(pl.col("year") >= start_year)
 

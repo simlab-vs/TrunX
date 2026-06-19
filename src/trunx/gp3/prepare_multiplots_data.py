@@ -24,6 +24,7 @@ from pathlib import Path
 import polars as pl
 
 from trunx.config import clean_data_folder, threepg_data_folder
+from trunx.gp3.age_regression import fit_models
 from trunx.gp3.create_data_inputs import (
     create_input_params,
     create_observation_data,
@@ -94,6 +95,7 @@ def _build_plot_row(
     plot_id: str,
     weather_raw: pl.DataFrame,
     icp_raw: pl.DataFrame,
+    models: dict[str, tuple[float, float]] | None = None,
 ) -> pl.DataFrame | None:
     """Build a single-row DataFrame for one plot with nested section columns.
 
@@ -105,6 +107,10 @@ def _build_plot_row(
         Full ICP weather dataset.
     icp_raw : pl.DataFrame
         Full ICP level2 dataset.
+    models : dict[str, tuple[float, float]] | None
+        Per-species power-law age models from
+        :func:`trunx.gp3.age_regression.fit_models`. Passed through to
+        :func:`update_species_data` to estimate the planted date from DBH.
 
     Returns
     -------
@@ -126,7 +132,9 @@ def _build_plot_row(
         return None
 
     input_params_df = create_input_params(icp_df)
-    species_df, start_year = update_species_data(icp_df, base_species_df, input_params_df)
+    species_df, start_year = update_species_data(
+        icp_df, base_species_df, input_params_df, models=models
+    )
 
     weather_df = weather_df.filter(pl.col("year") >= start_year)
     site_df = create_site_data(icp_df, weather_df)
@@ -204,6 +212,7 @@ def prepare_data_bayesian_opt(output_dir: Path | str) -> None:
 
     weather_raw = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
     icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    age_models = fit_models(icp_raw)
 
     plots_by_species = _get_single_species_plots(icp_raw)
     total = sum(len(ids) for ids in plots_by_species.values())
@@ -213,7 +222,7 @@ def prepare_data_bayesian_opt(output_dir: Path | str) -> None:
         for plot_id in plot_ids:
             counter += 1
             try:
-                row = _build_plot_row(plot_id, weather_raw, icp_raw)
+                row = _build_plot_row(plot_id, weather_raw, icp_raw, models=age_models)
                 if row is not None:
                     by_species.setdefault(species_name, []).append(row)
                     logger.info(

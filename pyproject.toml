@@ -31,6 +31,9 @@ dependencies = [
     "tqdm>=4.67.3",
     "arviz<1.0.0",
     "numpyro>=0.21.0",
+    "pyproj>=3.7.2",
+    "streamlit>=1.58.0",
+    "boto3>=1.43.31",
 ]
 
 # Set curent project as a package, with src/ folder.

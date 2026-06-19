@@ -217,14 +217,14 @@ if __name__ == "__main__":
     # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
 
-    fig, outputs = run_threepg_main(
-        file_path, observed_data=None, plot_output=True, r_comparison=False
-    )
+    # fig, outputs = run_threepg_main(
+    #     file_path, observed_data=None, plot_output=True, r_comparison=False
+    # )
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
-    # plot_id = "50.0018"
-    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=False)
+    plot_id = "04.1205"
+    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
