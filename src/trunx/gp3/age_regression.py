@@ -1,4 +1,10 @@
-"""Estimate stand age from DBH observations using power-law regression."""
+"""Estimate stand age from DBH observations using power-law regression.
+
+Note: This module is based on the data received from Sophia Etzold. We
+need to determine when this age was determined, i.e. as of which year, because
+the age of the trees appears to be constant over time with the current data.
+
+"""
 
 import logging
 import os

@@ -1,4 +1,12 @@
-"""Create data input for 3PG model using ICP data."""
+"""Create data input for 3PG model using ICP data.
+
+TODO
+-------
+Adjust the per-hectare scaling to account for the actual plot area
+(currently assumed to be 1 ha). Following it adjust the biomass and LAI calculations
+accordingly.
+
+"""
 
 import logging
 import os
@@ -7,11 +15,16 @@ import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
+from trunx.allometrics import add_allometric_columns, load_forrester_eq3
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
 
 logger = logging.getLogger(__name__)
+
+# Forrester et al. (2017) eq. 3 coefficients for all species with complete data.
+# Loaded once at import time to avoid repeated Excel reads.
+_FORRESTER_COEFFS = load_forrester_eq3()
 
 
 def dms_to_decimal(dms):
@@ -358,6 +371,32 @@ def update_species_data(
 
     if models is not None:
         for specie in avg_diameter["specie"].unique().to_list():
+            _raw_age = (
+                icp_df.filter(
+                    (pl.col("period_end").dt.year() == start_year) & (pl.col("specie") == specie)
+                )
+                .select(pl.col("soph_avg_age").cast(pl.Float64).mean())
+                .item()
+            )
+            direct_age: float | None = float(_raw_age) if _raw_age is not None else None
+
+            if direct_age is not None:
+                planting_year = int(start_year - round(direct_age))
+                species_df = species_df.with_columns(
+                    pl.when(pl.col("species") == specie)
+                    .then(pl.lit(f"{planting_year}-01"))
+                    .otherwise(pl.col("planted"))
+                    .alias("planted")
+                )
+                logger.info(
+                    "Direct age for '%s': %d (age %.1f yr at %d)",
+                    specie,
+                    planting_year,
+                    direct_age,
+                    start_year,
+                )
+                continue
+
             if specie not in models:
                 logger.warning("No age model for '%s', keeping template planted date", specie)
                 continue
@@ -479,6 +518,48 @@ def update_species_data(
     return species_df, start_year
 
 
+def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
+    """Aggregate per-tree Forrester biomass to survey-date observations.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        Tree-level ICP data with ``diameter_end`` (cm) and ``specie`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (specie, month_year) with columns ``WS``, ``WF``, ``WR``
+        (t ha⁻¹) and ``LAI`` (m² m⁻²).  Rows whose species has no Forrester
+        equation 3 coefficients carry null values.
+
+    Notes
+    -----
+    Per-hectare scaling assumes the ICP plot represents 1 ha.  WS/WF/WR are
+    the sum of per-tree biomass (kg) divided by 1 000.  LAI is the sum of
+    per-tree leaf area (m²) divided by 10 000.
+    """
+    return (
+        add_allometric_columns(
+            icp_df,
+            _FORRESTER_COEFFS,
+            dbh_col="diameter_end",
+            species_col="specie",
+        )
+        .group_by(["specie", "period_end"])
+        .agg(
+            (pl.col("allo_sb_kg").sum() / 1000.0).alias("WS"),
+            (pl.col("allo_fb_kg").sum() / 1000.0).alias("WF"),
+            (pl.col("allo_rb_kg").sum() / 1000.0).alias("WR"),
+            (pl.col("allo_la_m2").sum() / 10000.0).alias("LAI"),
+        )
+        .with_columns(
+            pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+        )
+        .drop("period_end")
+    )
+
+
 def create_observation_data(plot_id, icp_df, weather_df, start_year):
     """Create observed data input for 3PG model."""
     dbh_df = (
@@ -511,18 +592,14 @@ def create_observation_data(plot_id, icp_df, weather_df, start_year):
 
     specie_gpp = pl.concat(specie_gpp)
 
+    biom_df = _allometric_observations(icp_df)
+
     observed_data = (
         specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full")
-        .select(["specie", "month", "year", "Date", "GPP", "DBH"])
+        .join(biom_df, on=["specie", "month_year"], how="left")
+        .select(["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"])
         .join(weather_df, on=["month", "year"], how="full")
-        .select(
-            "specie",
-            "month",
-            "year",
-            "Date",
-            "GPP",
-            "DBH",
-        )
+        .select("specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI")
     )
 
     return observed_data

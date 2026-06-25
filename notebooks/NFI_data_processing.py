@@ -13,6 +13,11 @@ def _():
     return (mo,)
 
 
+@app.cell
+def _():
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -25,13 +30,16 @@ def _(mo):
 def _():
     import os
 
+    import plotly.express as px
+    import plotly.graph_objects as go
     import polars as pl
     from pyproj import Transformer
 
     from trunx.config import data_folder
 
-    NFI_raw_data_loc = os.path.join(data_folder, "SwissData/NFI_data_Givi_202606")
-    return NFI_raw_data_loc, Transformer, os, pl
+    # NFI_raw_data_loc = os.path.join(data_folder, "SwissData/NFI_data_Givi_202606")
+    NFI_raw_data_loc = os.path.join(data_folder, "SwissData/RE_NFI data request")
+    return NFI_raw_data_loc, Transformer, go, os, pl, px
 
 
 @app.cell(hide_code=True)
@@ -62,11 +70,49 @@ def _(NFI_raw_data_loc, Transformer, os, pl):
 
     raw_data_plot_level = raw_data_plot_level.rename({"CLNR": "plot_id"})
 
-    print(
-        "Number of plots: ",
-    )
-    print()
+    print("Number of plots: ", raw_data_plot_level["plot_id"].n_unique())
+
     return (raw_data_plot_level,)
+
+
+@app.cell
+def _(raw_data_plot_level):
+    print(raw_data_plot_level.select("plot_id").n_unique())
+    return
+
+
+@app.cell
+def _(go, pl, raw_data_plot_level):
+    plot_locations_fig = go.Figure()
+
+    plot_locations_fig.add_trace(
+        go.Scattermap(
+            lat=raw_data_plot_level["lat"],
+            lon=raw_data_plot_level["lon"],
+            mode="markers",
+            marker=dict(size=3),
+            name="Tree locations",
+        )
+    )
+
+    plot_locations_fig.update_layout(
+        map=dict(
+            style="open-street-map",
+            zoom=7,
+            center=dict(
+                lat=raw_data_plot_level.select(pl.mean("lat")).item(),
+                lon=raw_data_plot_level.select(pl.mean("lon")).item(),
+            ),
+        ),
+        margin=dict(r=0, t=0, l=0, b=0),
+        legend=dict(x=0, y=1),
+        title=dict(
+            text="Tree locations",
+            x=0.5,
+            xanchor="center",
+        ),
+    )
+    return
 
 
 @app.cell(hide_code=True)
@@ -102,10 +148,10 @@ def _(NFI_raw_data_loc, os, pl):
     # Species code (from metadata)
     species_mapping = {
         10: "Picea abies",
-        15: "Pinus sylvestris",
+        # 15: "Pinus sylvestris",
         50: "Fagus sylvatica",
-        51: "Quercus robur",
-        52: "Quercus petraea",
+        # 51: "Quercus robur",
+        # 52: "Quercus petraea",
     }
 
     # Keep only the species of interest
@@ -113,8 +159,21 @@ def _(NFI_raw_data_loc, os, pl):
         pl.col("specie").is_in(species_mapping.keys())
     )
 
-    print("Number of tree:", raw_data_tree_level.select("tree_id").n_unique())
+    raw_data_tree_level = raw_data_tree_level.with_columns(
+        pl.col("specie").replace_strict(species_mapping).alias("specie_name")
+    )
+
+    print("Number of trees:", raw_data_tree_level.select("tree_id").n_unique())
+
     return (raw_data_tree_level,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Tree growth data with observation dates
+    """)
+    return
 
 
 @app.cell
@@ -125,21 +184,11 @@ def _(raw_data_plot_level, raw_data_tree_level):
     return (tree_growth_data,)
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Tree locations
-    """)
-    return
-
-
 @app.cell
-def _(pl, tree_growth_data):
-    import plotly.graph_objects as go
+def _(go, pl, tree_growth_data):
+    tree_locations = go.Figure()
 
-    fig = go.Figure()
-
-    fig.add_trace(
+    tree_locations.add_trace(
         go.Scattermap(
             lat=tree_growth_data["lat"],
             lon=tree_growth_data["lon"],
@@ -149,7 +198,7 @@ def _(pl, tree_growth_data):
         )
     )
 
-    fig.update_layout(
+    tree_locations.update_layout(
         map=dict(
             style="open-street-map",
             zoom=7,
@@ -169,9 +218,143 @@ def _(pl, tree_growth_data):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Filter single species locations
+    """)
+    return
+
+
 @app.cell
-def _(tree_growth_data):
-    tree_growth_data.group_by(["plot_id", "tree_id"]).len()
+def _(pl, px, tree_growth_data):
+    single_species_growth_data = (
+        tree_growth_data.group_by("plot_id")
+        .agg(
+            num_species=pl.col("specie").count(),
+            species=pl.col("specie").unique(),
+            species_name=pl.col("specie_name").unique(),
+        )
+        .filter(pl.col("num_species") == 1)
+        .join(tree_growth_data, on="plot_id", how="left")
+    )
+
+    print(
+        "Number of plots with single specie tree data:",
+        single_species_growth_data.select("lat", "lon").n_unique(),
+    )
+
+    # Get unique species and assign colors
+    unique_species = single_species_growth_data["specie_name"].unique().to_list()
+    colors = px.colors.qualitative.Set1
+    species_to_color = {
+        species: colors[i % len(colors)] for i, species in enumerate(unique_species)
+    }
+
+    # Create a color column
+    single_species_growth_data = single_species_growth_data.with_columns(
+        pl.col("specie_name")
+        .replace_strict(species_to_color, default="rgb(128,128,128)")
+        .alias("color")
+    ).with_columns(year=pl.col("DATUMF").str.strptime(pl.Date, "%d/%m/%Y").dt.year())
+    return single_species_growth_data, species_to_color, unique_species
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Single species Tree locations
+    """)
+    return
+
+
+@app.cell
+def _(
+    go,
+    pl,
+    single_species_growth_data,
+    species_to_color,
+    tree_growth_data,
+    unique_species,
+):
+    fig = go.Figure()
+
+    # Add a separate trace for each species
+    for species in unique_species:
+        # Filter data for this species
+        species_data = single_species_growth_data.filter(pl.col("specie_name") == species)
+
+        fig.add_trace(
+            go.Scattermap(
+                lat=species_data["lat"],
+                lon=species_data["lon"],
+                mode="markers",
+                marker=dict(
+                    size=8,
+                    color=species_to_color[species],
+                ),
+                name=species,
+                text=[species] * len(species_data),
+                hovertemplate="Species: %{text}<br>Lat: %{lat:.4f} \
+                    <br>Lon: %{lon:.4f}<extra></extra>",
+                legendgroup=species,  # Groups legend items together
+                showlegend=True,
+            )
+        )
+
+    fig.update_layout(
+        map=dict(
+            style="open-street-map",
+            zoom=7,
+            center=dict(
+                lat=tree_growth_data.select(pl.mean("lat")).item(),
+                lon=tree_growth_data.select(pl.mean("lon")).item(),
+            ),
+        ),
+        margin=dict(r=0, t=0, l=0, b=0),
+        legend=dict(
+            x=0,
+            y=1,
+            title="Species",
+            bgcolor="rgba(255,255,255,0.8)",  # Semi-transparent background
+            bordercolor="black",
+            borderwidth=1,
+        ),
+        title=dict(
+            text="Tree locations colored by species",
+            x=0.5,
+            xanchor="center",
+        ),
+    )
+
+    fig.show()
+    return
+
+
+@app.cell
+def _(pl, single_species_growth_data):
+    growth_data = (
+        single_species_growth_data.group_by("plot_id", "year", "lat", "lon", "specie_name")
+        .agg(
+            n_stems=pl.col("tree_rep_fact").sum(),
+            DBH=(pl.col("DBH") * pl.col("tree_rep_fact")).sum() / pl.col("tree_rep_fact").sum(),
+            biom_stem=(pl.col("stem_biomass") * pl.col("tree_rep_fact")).sum(),
+            biom_foliage=(pl.col("foliage_biomass") * pl.col("tree_rep_fact")).sum(),
+            biom_root=(pl.col("root_biomass") * pl.col("tree_rep_fact")).sum(),
+        )
+        .with_columns(
+            biom_stem=(pl.col("biom_stem") / 1000).round(2),
+            biom_foliage=(pl.col("biom_foliage") / 1000).round(2),
+            biom_root=(pl.col("biom_root") / 1000).round(2),
+        )
+    )
+
+    return (growth_data,)
+
+
+@app.cell
+def _(growth_data, pl):
+    growth_data.group_by("plot_id").agg(num_periods=len(pl.col("year").unique()))
     return
 
 

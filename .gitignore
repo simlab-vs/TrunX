@@ -9,6 +9,7 @@ data/
 containers/
 models/
 images/
+literature/
 
 # secrets
 .env
