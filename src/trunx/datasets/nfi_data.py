@@ -21,12 +21,12 @@ import os
 import polars as pl
 from pyproj import Transformer
 
-from trunx.allometrics import CoefficientsDict, add_allometric_columns, load_forrester_eq3
 from trunx.config import clean_data_folder, data_folder
+from trunx.gp3.allometrics import CoefficientsDict, add_allometric_columns, load_forrester_eq3
 
 logger = logging.getLogger(__name__)
 
-_NFI_RAW_FOLDER = str(os.path.join(data_folder, "SwissData/RE_NFI data request"))
+_NFI_RAW_FOLDER = str(os.path.join(data_folder, "SwissData/NFI"))
 _INVENTORY_STEP = 100
 
 # Refer metadata to get the codes for the species.
@@ -165,7 +165,7 @@ def _filter_consecutive_inventories(df: pl.DataFrame) -> pl.DataFrame:
     valid_groups = (
         grouped.group_by(["plot_id", "consec_group"])
         .agg(pl.len().alias("n_inv"))
-        .filter(pl.col("n_inv") >= 2)
+        .filter(pl.col("n_inv") == 5)
         .select(["plot_id", "consec_group"])
     )
 
@@ -200,7 +200,9 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
         (pl.col("allo_fb_kg") * pl.col("tree_rep_fact")).sum().alias("biom_foliage"),
         (pl.col("allo_rb_kg") * pl.col("tree_rep_fact")).sum().alias("biom_root"),
         (pl.col("allo_la_m2") * pl.col("tree_rep_fact")).sum().alias("la_m2_ha"),
-        (math.pi * pl.col("dbh_cm").pow(2) / 40000.0 * pl.col("tree_rep_fact")).sum().alias("ba"),
+        (math.pi * pl.col("dbh_cm").pow(2) / 40000.0 * pl.col("tree_rep_fact"))
+        .sum()
+        .alias("basal_area"),
     )
 
     return (
@@ -210,7 +212,7 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             (pl.col("biom_stem") / 1000.0).alias("biom_stem"),
             (pl.col("biom_foliage") / 1000.0).alias("biom_foliage"),
             (pl.col("biom_root") / 1000.0).alias("biom_root"),
-            (pl.col("la_m2_ha") / 10000.0).alias("la"),
+            (pl.col("la_m2_ha") / 10000.0).alias("lai"),
             pl.col("date").dt.year().alias("year"),
         )
         .drop("la_m2_ha")
@@ -233,7 +235,7 @@ def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
         Columns: `plot_id`, `species`, `date`, `year`, `lat`,
         `lon`, `elevation`, `n_stems` (ha⁻¹), `dbh_cm`,
         `biom_stem`, `biom_foliage`, `biom_root` (all t ha⁻¹),
-        `la` (m² m⁻²), `ba` (m² ha⁻¹).
+        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹).
     """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "nfi_cleaned.parquet"))

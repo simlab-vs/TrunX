@@ -15,10 +15,10 @@ import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
-from trunx.allometrics import add_allometric_columns, load_forrester_eq3
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
+from trunx.gp3.allometrics import add_allometric_columns, load_forrester_eq3
 
 logger = logging.getLogger(__name__)
 

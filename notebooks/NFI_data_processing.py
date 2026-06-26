@@ -38,7 +38,7 @@ def _():
     from trunx.config import data_folder
 
     # NFI_raw_data_loc = os.path.join(data_folder, "SwissData/NFI_data_Givi_202606")
-    NFI_raw_data_loc = os.path.join(data_folder, "SwissData/RE_NFI data request")
+    NFI_raw_data_loc = os.path.join(data_folder, "SwissData/NFI")
     return NFI_raw_data_loc, Transformer, go, os, pl, px
 
 
@@ -71,8 +71,13 @@ def _(NFI_raw_data_loc, Transformer, os, pl):
     raw_data_plot_level = raw_data_plot_level.rename({"CLNR": "plot_id"})
 
     print("Number of plots: ", raw_data_plot_level["plot_id"].n_unique())
-
     return (raw_data_plot_level,)
+
+
+@app.cell
+def _(raw_data_plot_level):
+    raw_data_plot_level["plot_id", "INVNR"].n_unique()
+    return
 
 
 @app.cell
@@ -164,7 +169,6 @@ def _(NFI_raw_data_loc, os, pl):
     )
 
     print("Number of trees:", raw_data_tree_level.select("tree_id").n_unique())
-
     return (raw_data_tree_level,)
 
 
@@ -228,15 +232,25 @@ def _(mo):
 
 @app.cell
 def _(pl, px, tree_growth_data):
-    single_species_growth_data = (
-        tree_growth_data.group_by("plot_id")
+    species_per_inv = (
+        tree_growth_data.group_by(["plot_id", "INVNR"])
         .agg(
-            num_species=pl.col("specie").count(),
+            n_species=pl.col("specie").n_unique(),
+            specie=pl.col("specie").first(),
+            specie_name=pl.col("specie_name").unique(),
+        )
+        .filter(pl.col("n_species") == 1)
+    )
+
+    single_species_growth_data = (
+        species_per_inv.group_by("plot_id")
+        .agg(
+            num_species=pl.col("specie").n_unique(),
             species=pl.col("specie").unique(),
             species_name=pl.col("specie_name").unique(),
         )
         .filter(pl.col("num_species") == 1)
-        .join(tree_growth_data, on="plot_id", how="left")
+        .join(tree_growth_data, on="plot_id", how="inner")
     )
 
     print(
@@ -334,7 +348,7 @@ def _(
 @app.cell
 def _(pl, single_species_growth_data):
     growth_data = (
-        single_species_growth_data.group_by("plot_id", "year", "lat", "lon", "specie_name")
+        single_species_growth_data.group_by("plot_id", "year", "specie_name")
         .agg(
             n_stems=pl.col("tree_rep_fact").sum(),
             DBH=(pl.col("DBH") * pl.col("tree_rep_fact")).sum() / pl.col("tree_rep_fact").sum(),
@@ -349,12 +363,33 @@ def _(pl, single_species_growth_data):
         )
     )
 
+    growth_data = growth_data.join(
+        single_species_growth_data, on=["plot_id", "specie_name"]
+    ).select(
+        "plot_id",
+        "lat",
+        "lon",
+        "year",
+        "specie_name",
+        "n_stems",
+        "DBH",
+        "biom_stem",
+        "biom_root",
+        "biom_foliage",
+        "DATUMF",
+    )
+
+    print(growth_data.head())
     return (growth_data,)
 
 
 @app.cell
 def _(growth_data, pl):
-    growth_data.group_by("plot_id").agg(num_periods=len(pl.col("year").unique()))
+    growth_data.group_by("plot_id", "specie_name").agg(
+        num_periods=pl.col("year").n_unique()
+    ).filter(pl.col("num_periods") == 5).group_by("specie_name").agg(
+        count=pl.col("plot_id").n_unique()
+    )
     return
 
 
