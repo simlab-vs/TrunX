@@ -1,5 +1,7 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
+import os
+
 import arviz as az
 import jax
 import jax.numpy as jnp
@@ -12,6 +14,7 @@ import polars as pl
 from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS
 
+from trunx.config import data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -47,11 +50,17 @@ def load_priors_from_file(
         Dictionary mapping parameter names to (min, max) tuples
     """
     param_bounds_df = pl.read_excel(file_path, sheet_name="param_bound")
-
     priors = {}
 
     if param_names is None:
-        param_names = param_bounds_df["param_name"].to_list()
+        param_names = param_bounds_df.filter(
+            pl.col("min").is_not_null() & pl.col("max").is_not_null()
+        )["param_name"].to_list()
+
+        if len(param_names) == 0:
+            raise ValueError(
+                "No parameters with specified min/max bounds found in param_bound sheet"
+            )
 
     for param_name in param_names:
         row = param_bounds_df.filter(pl.col("param_name") == param_name)
@@ -119,7 +128,7 @@ def model(
     species,
     n_species: int,
     fixed_params,
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
     initial_state: State | None = None,
 ):
@@ -138,7 +147,7 @@ def model(
         Number of species
     fixed_params
         Fixed parameters that won't be estimated
-    priors : dict[str, tuple[float, float]] | None
+    priors : dict[str, tuple[float, float]]
         Dictionary mapping parameter names to (min, max) tuples for priors.
         If None, uses default priors.
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None
@@ -148,18 +157,6 @@ def model(
         Initial state for simulation
     """
     assert fixed_params is not None
-
-    # Default priors if none provided
-    if priors is None:
-        priors = {
-            "alphaCx": (0.020, 0.090),
-            "CoeffCond": (0.0001, 0.070),
-            "Y": (0.440, 0.510),
-            "gammaF0": (0.0001, 0.003),
-            "gammaF1": (0.0001, 0.040),
-            "tgammaF": (12.0, 150.0),
-            "tRho": (0.0, 150.0),
-        }
 
     # Sample from priors
     samples = {}
@@ -286,7 +283,7 @@ def predict_with_uncertainty(
     initial_state: State,
     fixed_params,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     n_predictions: int = 50,
     seed: int = 42,
     include_obs_error: bool = False,
@@ -298,7 +295,7 @@ def predict_with_uncertainty(
     ----------
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]]
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
-    priors : dict[str, tuple[float, float]] | None
+    priors : dict[str, tuple[float, float]]
         Dictionary of parameter priors (used to get parameter names).
 
     Returns
@@ -309,19 +306,7 @@ def predict_with_uncertainty(
     rng_key = random.PRNGKey(seed)
     samples = mcmc.get_samples()
 
-    # Get parameter names from priors if provided
-    if priors is None:
-        param_names = [
-            "alphaCx",
-            "CoeffCond",
-            "Y",
-            "gammaF0",
-            "gammaF1",
-            "tgammaF",
-            "tRho",
-        ]
-    else:
-        param_names = list(priors.keys())
+    param_names = list(priors.keys())
 
     # Randomly select n_predictions samples
     n_total_samples = len(samples[param_names[0]])
@@ -364,8 +349,8 @@ def plot_results(
     initial_state: State,
     fixed_params,
     params,
+    priors: dict[str, tuple[float, float]],
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
-    priors: dict[str, tuple[float, float]] | None = None,
     save_path: str | None = None,
     show_plots: bool = True,
     predict_with_uncert: bool = False,
@@ -375,7 +360,7 @@ def plot_results(
 
     Parameters
     ----------
-    priors : dict[str, tuple[float, float]] | None
+    priors : dict[str, tuple[float, float]]
         Dictionary of parameter priors (used to get parameter names).
     """
     inf_data = az.from_numpyro(mcmc)
@@ -464,7 +449,7 @@ def run_full_analysis(
     n_species: int,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     fixed_params,
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     num_warmup: int = 1000,
     num_samples: int = 1000,
     num_chains: int = 4,
@@ -489,17 +474,6 @@ def run_full_analysis(
         - mcmc: MCMC object with samples
         - samples: Dictionary of posterior samples
     """
-    if priors is None:
-        priors = {
-            "alphaCx": (0.020, 0.090),
-            "CoeffCond": (0.0001, 0.070),
-            "Y": (0.440, 0.510),
-            "gammaF0": (0.0001, 0.003),
-            "gammaF1": (0.0001, 0.040),
-            "tgammaF": (12.0, 150.0),
-            "tRho": (0.0, 150.0),
-        }
-
     param_names = list(priors.keys())
 
     print("Running HMC inference for 3PG model (multi-variable)")
@@ -553,7 +527,7 @@ def run_full_analysis(
 
 
 def run_hmc_analysis(
-    file_path: str = "./data/solling_data.xlsx",
+    file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_names: list[str] | None = None,
     predict_with_uncert: bool = False,
 ):
@@ -574,19 +548,7 @@ def run_hmc_analysis(
         prepare_data(file_path)
     )
 
-    # Load priors from file
-    if param_names is None:
-        param_names = [
-            "alphaCx",
-            "CoeffCond",
-            "Y",
-            "gammaF0",
-            "gammaF1",
-            "tgammaF",
-            "tRho",
-        ]
-
-    priors = load_priors_from_file(file_path, param_names)
+    priors = load_priors_from_file(file_path)
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
@@ -606,7 +568,7 @@ def run_hmc_analysis(
         num_warmup=200,
         num_samples=200,
         num_chains=2,
-        output_dir="./data/hmc_results",
+        output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=True,
         predict_with_uncert=predict_with_uncert,
     )
@@ -623,10 +585,12 @@ def run_hmc_analysis(
 if __name__ == "__main__":
     # Use solling_data.xlsx by default
     # Can specify custom parameters to estimate, or use defaults
+
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     run_hmc_analysis(
-        file_path="./data/solling_data.xlsx",
-        # None uses default: ["alphaCx", "CoeffCond", "Y", "gammaF0",
-        # "gammaF1", "tgammaF", "tRho"]
+        file_path=os.path.join(threepg_data_folder, "solling_data.xlsx"),
+        # If none, use all parameters with prior bounds from the param_bound sheet
+        # else specify a list of parameter names to estimate
         param_names=None,
         predict_with_uncert=True,
     )

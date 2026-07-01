@@ -139,20 +139,21 @@ def _build_plot_row(
     weather_df = weather_df.filter(pl.col("year") >= start_year)
     site_df = create_site_data(icp_df, weather_df)
 
-    icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].implode()))
-    observed_df = create_observation_data(plot_id, icp_filtered, weather_df, start_year)
+    icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].to_list()))
 
-    def _to_records(df: pl.DataFrame, section: str) -> list[dict]:
+    observed_df = create_observation_data(plot_id, icp_filtered, start_year)
+
+    def _to_nested(df: pl.DataFrame, section: str) -> pl.Series:
         cols = [c for c in SECTION_COLS[section] if c in df.columns]
-        return df.select(cols).to_dicts()
+        return df.select(cols).to_struct(name=section).implode()
 
     return pl.DataFrame(
         {
             "plot_id": [plot_id],
-            "climate": [_to_records(weather_df, "climate")],
-            "site": [_to_records(site_df, "site")],
-            "species": [_to_records(species_df, "species")],
-            "observed": [_to_records(observed_df, "observed")],
+            "climate": _to_nested(weather_df, "climate"),
+            "site": _to_nested(site_df, "site"),
+            "species": _to_nested(species_df, "species"),
+            "observed": _to_nested(observed_df, "observed"),
         }
     )
 
@@ -211,7 +212,9 @@ def prepare_data_bayesian_opt(output_dir: Path | str) -> None:
     output_dir = Path(output_dir)
 
     weather_raw = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
-    icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    # icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
+    icp_raw = icp_raw.filter(pl.col("specie").is_in(SUPPORTED_SPECIES))
     age_models = fit_models(icp_raw)
 
     plots_by_species = _get_single_species_plots(icp_raw)
@@ -273,3 +276,4 @@ if __name__ == "__main__":
     pid = "04.1401"
     print(load_section(df, pid, "climate").head())
     print(load_section(df, pid, "site"))
+    print(load_section(df, pid, "observed"))

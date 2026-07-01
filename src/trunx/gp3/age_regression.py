@@ -25,7 +25,7 @@ def _aggregate_training_data(icp_df: pl.DataFrame) -> pl.DataFrame:
         icp_df.filter(pl.col("soph_avg_age").is_not_null())
         .group_by(["tree_id", "specie"])
         .agg(
-            pl.col("diameter_end").mean().alias("mean_dbh"),
+            pl.col("dbh_cm").mean().alias("mean_dbh"),
             pl.col("soph_avg_age").mean().alias("age"),
         )
         .drop_nulls()
@@ -89,7 +89,7 @@ def estimate_plot_age(
             logger.warning("No model available for species '%s', skipping", specie)
             continue
 
-        dbh = plot_df.filter(pl.col("specie") == specie)["diameter_end"].drop_nulls().to_numpy()
+        dbh = plot_df.filter(pl.col("specie") == specie)["dbh_cm"].drop_nulls().to_numpy()
         if dbh.size == 0:
             continue
 
@@ -104,7 +104,7 @@ def estimate_plot_age(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    icp = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     fitted_models = fit_models(icp)
 
     plot_id = "50.0013"

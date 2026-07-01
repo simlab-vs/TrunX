@@ -226,5 +226,5 @@ if __name__ == "__main__":
     # )
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
-    plot_id = "04.1205"
+    plot_id = "50.0013"
     fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

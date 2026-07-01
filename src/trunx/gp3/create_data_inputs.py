@@ -287,10 +287,6 @@ def create_species_data(icp_df):
         os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="species"
     )
 
-    print(
-        "\n Species found in this location: ",
-        icp_df.select("specie").unique().to_series().to_list(),
-    )
     species_df = species_df.filter(
         pl.col("species").is_in(icp_df.select("specie").unique().to_series().to_list())
     )
@@ -350,10 +346,8 @@ def update_species_data(
     tuple[pl.DataFrame, int]
         Updated species DataFrame and the first common survey year.
     """
-    avg_diameter = icp_df.group_by(["specie", "period_end"]).agg(
-        pl.col("diameter_end").mean().alias("DBH")
-    )
-    avg_diameter = avg_diameter.with_columns(pl.col("period_end").dt.year().alias("year"))
+    avg_diameter = icp_df.group_by(["specie", "date"]).agg(pl.col("dbh_cm").mean().alias("DBH"))
+    avg_diameter = avg_diameter.with_columns(pl.col("date").dt.year().alias("year"))
     avg_diameter = avg_diameter.filter(
         pl.col("specie").is_in(species_df.select("species").to_series().to_list())
     )
@@ -373,7 +367,7 @@ def update_species_data(
         for specie in avg_diameter["specie"].unique().to_list():
             _raw_age = (
                 icp_df.filter(
-                    (pl.col("period_end").dt.year() == start_year) & (pl.col("specie") == specie)
+                    (pl.col("date").dt.year() == start_year) & (pl.col("specie") == specie)
                 )
                 .select(pl.col("soph_avg_age").cast(pl.Float64).mean())
                 .item()
@@ -420,9 +414,9 @@ def update_species_data(
 
     num_trees = (
         icp_df.filter(pl.col("specie").is_in(species_df.select("species").to_series().to_list()))
-        .group_by(["specie", "period_end"])
+        .group_by(["specie", "date"])
         .agg(pl.len().alias("num_trees"))
-        .with_columns(pl.col("period_end").dt.year().alias("year"))
+        .with_columns(pl.col("date").dt.year().alias("year"))
         .filter(pl.col("year") == start_year)
         .rename({"specie": "species"})
     )
@@ -524,7 +518,7 @@ def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
     Parameters
     ----------
     icp_df : pl.DataFrame
-        Tree-level ICP data with ``diameter_end`` (cm) and ``specie`` columns.
+        Tree-level ICP data with ``dbh_cm`` (cm) and ``specie`` columns.
 
     Returns
     -------
@@ -533,20 +527,15 @@ def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
         (t ha⁻¹) and ``LAI`` (m² m⁻²).  Rows whose species has no Forrester
         equation 3 coefficients carry null values.
 
-    Notes
-    -----
-    Per-hectare scaling assumes the ICP plot represents 1 ha.  WS/WF/WR are
-    the sum of per-tree biomass (kg) divided by 1 000.  LAI is the sum of
-    per-tree leaf area (m²) divided by 10 000.
     """
     return (
         add_allometric_columns(
             icp_df,
             _FORRESTER_COEFFS,
-            dbh_col="diameter_end",
+            dbh_col="dbh_cm",
             species_col="specie",
         )
-        .group_by(["specie", "period_end"])
+        .group_by(["specie", "date"])
         .agg(
             (pl.col("allo_sb_kg").sum() / 1000.0).alias("WS"),
             (pl.col("allo_fb_kg").sum() / 1000.0).alias("WF"),
@@ -554,53 +543,102 @@ def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
             (pl.col("allo_la_m2").sum() / 10000.0).alias("LAI"),
         )
         .with_columns(
-            pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+            pl.col("date").dt.strftime("%m-%Y").alias("month_year"),
         )
-        .drop("period_end")
+        .drop("date")
     )
 
 
-def create_observation_data(plot_id, icp_df, weather_df, start_year):
-    """Create observed data input for 3PG model."""
+def create_observation_data(
+    plot_id: str,
+    icp_df: pl.DataFrame,
+    start_year: int,
+) -> pl.DataFrame:
+    """Create observed data input for 3PG model.
+
+    Parameters
+    ----------
+    plot_id : str
+        Plot identifier used to filter GPP data.
+    icp_df : pl.DataFrame
+        ICP tree-level data filtered to the target plot and species.
+    start_year : int
+        First year to include in the output.
+    """
+    if icp_df.is_empty():
+        logger.warning("No ICP data for plot_id %s — returning empty observations", plot_id)
+        return pl.DataFrame()
+
     dbh_df = (
-        icp_df.group_by(["specie", "period_end"])
-        .agg(pl.col("diameter_end").mean().alias("DBH"))
-        .sort("period_end")
-    ).with_columns(
-        pl.col("period_end").dt.year().cast(pl.Int64).alias("year"),
-        pl.col("period_end").dt.month().cast(pl.Int64).alias("month"),
-        pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+        icp_df.group_by(["specie", "date"])
+        .agg(pl.col("dbh_cm").mean().alias("DBH"))
+        .sort("date")
+        .with_columns(
+            pl.col("date").dt.year().cast(pl.Int64).alias("year"),
+            pl.col("date").dt.month().cast(pl.Int64).alias("month"),
+            pl.col("date").dt.strftime("%m-%Y").alias("month_year"),
+        )
     )
 
-    gpp_df = pl.read_csv(os.path.join(clean_data_folder, "GOSIF_GPP_icp.csv"))
+    gpp_raw = pl.read_csv(os.path.join(clean_data_folder, "GOSIF_GPP_icp.csv"))
+    gpp_plot = gpp_raw.filter(pl.col("plot_id") == float(plot_id))
 
-    gpp_df = gpp_df.filter(pl.col("plot_id") == float(plot_id))
+    if gpp_plot.is_empty():
+        logger.warning("No GPP data for plot_id %s — GPP column will be null", plot_id)
+        specie_gpp = pl.DataFrame()
+    else:
+        gpp_plot = (
+            gpp_plot.with_columns(pl.datetime(pl.col("year"), pl.col("month"), 1).alias("Date"))
+            .sort(["year", "month"])
+            .with_columns(pl.col("Date").dt.month_end())
+            .with_columns(pl.col("Date").dt.strftime("%m-%Y").alias("month_year"))
+            .drop(["plot_id"])
+            .filter(pl.col("Date").dt.year() >= start_year)
+        )
 
-    gpp_df = (
-        gpp_df.with_columns(pl.datetime(pl.col("year"), pl.col("month"), 1).alias("Date"))
-        .sort(["year", "month"])
-        .with_columns(pl.col("Date").dt.month_end())
-        .with_columns(pl.col("Date").dt.strftime("%m-%Y").alias("month_year"))
-        .drop(["plot_id"])
-        .filter(pl.col("Date").dt.year() >= start_year)
-    )
-
-    specie_gpp = []
-    for specie in dbh_df["specie"].unique():
-        tdf = gpp_df.with_columns(pl.lit(specie).alias("specie"))
-        specie_gpp.append(tdf)
-
-    specie_gpp = pl.concat(specie_gpp)
+        species = dbh_df["specie"].unique().to_list()
+        if not species:
+            logger.warning("No species in DBH data for plot_id %s", plot_id)
+            specie_gpp = pl.DataFrame()
+        else:
+            specie_gpp = pl.concat(
+                [gpp_plot.with_columns(pl.lit(sp).alias("specie")) for sp in species]
+            ).drop_nulls(subset=["GPP"])
 
     biom_df = _allometric_observations(icp_df)
 
-    observed_data = (
-        specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full")
-        .join(biom_df, on=["specie", "month_year"], how="left")
-        .select(["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"])
-        .join(weather_df, on=["month", "year"], how="full")
-        .select("specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI")
-    )
+    if specie_gpp.is_empty():
+        # No GPP: build from DBH side only
+        observed_data = (
+            dbh_df.join(biom_df, on=["specie", "month_year"], how="left")
+            .with_columns(pl.lit(None).cast(pl.Float64).alias("GPP"))
+            .with_columns(pl.col("date").dt.strftime("%m-%Y").alias("Date"))
+        )
+    else:
+        # Full join so DBH-only rows (census dates) and GPP-only rows are kept.
+        # Both sides carry month/year — coalesce to avoid nulls for one-sided rows.
+        observed_data = (
+            specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full", coalesce=True)
+            .with_columns(
+                pl.coalesce("year", "year_right").alias("year"),
+                pl.coalesce("month", "month_right").alias("month"),
+            )
+            .drop(["year_right", "month_right"], strict=False)
+            .join(biom_df, on=["specie", "month_year"], how="left")
+            .with_columns(pl.col("Date").dt.strftime("%m-%Y"))
+            .with_columns(
+                pl.when(pl.col("Date").is_null())
+                .then(
+                    pl.col("month").cast(pl.Utf8).str.zfill(2) + "-" + pl.col("year").cast(pl.Utf8)
+                )
+                .otherwise(pl.col("Date"))
+                .alias("Date")
+            )
+        )
+
+    observed_data = observed_data.select(
+        ["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"]
+    ).drop_nulls(subset=["specie"])
 
     return observed_data
 
@@ -615,9 +653,10 @@ def create_input_data(input_data_file, plot_id):
     df = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
 
     # ICP data — load full dataset first for cross-plot age model fitting
-    icp_full = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp_full = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     age_models = fit_models(icp_full)
     icp_df = icp_full.filter(pl.col("plot_id") == plot_id)
+
     icp_df = icp_df.filter(
         pl.col("specie").is_in(
             list(
@@ -631,6 +670,7 @@ def create_input_data(input_data_file, plot_id):
             )
         )
     )
+    print("Unique dates in ICP data:", icp_df.select("date").unique().to_series().to_list())
 
     icp_df = icp_df.with_columns(
         pl.col("plot_latitude").map_elements(dms_to_decimal, return_dtype=pl.Float64).alias("Lat"),
@@ -655,15 +695,17 @@ def create_input_data(input_data_file, plot_id):
     input_species_df, start_year = update_species_data(
         icp_df, input_species_df, input_params_df, models=age_models
     )
+    logger.info("Updated species data with planting years for plot_id: %s", plot_id)
 
     weather_df = weather_df.filter(pl.col("year") >= start_year)
-
+    logger.info("Filtered weather data to start year %d for plot_id: %s", start_year, plot_id)
     # Site data
     input_site_df = create_site_data(icp_df, weather_df)
+    logger.info("Created site data for plot_id: %s", plot_id)
 
-    icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"]))
+    icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"].to_list()))
 
-    observed_data = create_observation_data(plot_id, icp_df, weather_df, start_year)
+    observed_data = create_observation_data(plot_id, icp_df, start_year)
 
     if len(miss_months) == 0:
         with pd.ExcelWriter(input_data_file, engine="openpyxl") as writer:
@@ -680,3 +722,14 @@ def create_input_data(input_data_file, plot_id):
         print(summary_wdf)
 
     return miss_months, observed_data.to_pandas()
+
+
+if __name__ == "__main__":
+    plot_id = "67.0005"
+    file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        print(f"Deleted: {file_path}")
+    miss_months, observed_data = create_input_data(file_path, plot_id)
+
+    print(observed_data.head())
