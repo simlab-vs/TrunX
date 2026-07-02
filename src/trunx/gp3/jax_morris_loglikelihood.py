@@ -19,6 +19,12 @@ from trunx.gp3.run_3pg import run_3pg
 
 warnings.filterwarnings("ignore")
 
+# If a prediction exceeds this multiple of the observed data's own scale, the
+# model has numerically diverged (e.g. an allometric coefficient sampled at a
+# boundary that divides by ~0) and the resulting likelihood is not meaningful,
+# regardless of which parameter combination caused it.
+PLAUSIBILITY_MULTIPLIER = 100.0
+
 
 class MorrisSensitivityOnLikelihood:
     """Morris sensitivity analysis on log-likelihood."""
@@ -158,7 +164,11 @@ class MorrisSensitivityOnLikelihood:
             0.0,
         )
         valid_count = jnp.sum(valid_mask)
-        return jnp.where(valid_count > 0, jnp.sum(log_terms), -jnp.inf)
+        result = jnp.where(valid_count > 0, jnp.sum(log_terms), -jnp.inf)
+
+        obs_scale = jnp.max(jnp.abs(observations)) + 1e-8
+        plausible = jnp.all(jnp.abs(predictions) < PLAUSIBILITY_MULTIPLIER * obs_scale)
+        return jnp.where(plausible, result, -jnp.inf)
 
     def _log_likelihood_components(self, param_values: jnp.ndarray) -> jnp.ndarray:
         """Compute component log-likelihoods for one sample on all components with JAX."""
@@ -201,8 +211,8 @@ class MorrisSensitivityOnLikelihood:
             )
 
         component_array = jnp.asarray(component_values, dtype=jnp.float32)
-        total = jnp.sum(jnp.where(jnp.isfinite(component_array), component_array, 0.0))
-        total = jnp.where(jnp.any(jnp.isfinite(component_array)), total, -jnp.inf)
+        total = jnp.sum(component_array)
+        total = jnp.where(jnp.isnan(total) | (total == 0.0), -jnp.inf, total)
         return jnp.concatenate([component_array, jnp.asarray([total], dtype=jnp.float32)])
 
     def _evaluate_batch_samples(self, sample_values: np.ndarray) -> np.ndarray:
@@ -450,7 +460,7 @@ if __name__ == "__main__":
         output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=100,
+        n_trajectories=5000,
         n_levels=20,
         sigma_param_names=sigma_param_names,
         save_plots=True,
