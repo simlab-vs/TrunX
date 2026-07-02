@@ -14,14 +14,14 @@ import polars as pl
 from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS
 
-from trunx.config import data_folder, threepg_data_folder
+from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 az.rcParams["plot.backend"] = "matplotlib"
 
-numpyro.set_host_device_count(2)
+numpyro.set_host_device_count(4)  # Set number of chains to run in parallel
 
 
 def load_priors_from_file(
@@ -31,12 +31,12 @@ def load_priors_from_file(
     default_upper_factor: float = 1.2,
 ) -> dict[str, tuple[float, float]]:
     """
-    Load parameter priors from param_bound sheet in Excel file.
+    Load parameter priors from the param_bound and error_param sheets in Excel file.
 
     Parameters
     ----------
     file_path : str
-        Path to Excel file containing param_bound sheet
+        Path to Excel file containing param_bound and error_param sheets
     param_names : list[str] | None
         List of parameter names to load. If None, loads all available parameters.
     default_lower_factor : float
@@ -47,9 +47,16 @@ def load_priors_from_file(
     Returns
     -------
     dict[str, tuple[float, float]]
-        Dictionary mapping parameter names to (min, max) tuples
+        Dictionary mapping parameter names (including sigma parameters such as
+        `err_DBH`) to (min, max) tuples
     """
-    param_bounds_df = pl.read_excel(file_path, sheet_name="param_bound")
+    param_bounds_df = pl.concat(
+        [
+            pl.read_excel(file_path, sheet_name="param_bound"),
+            pl.read_excel(file_path, sheet_name="error_param"),
+        ],
+        how="vertical_relaxed",
+    )
     priors = {}
 
     if param_names is None:
@@ -82,6 +89,35 @@ def load_priors_from_file(
         priors[param_name] = (float(min_val), float(max_val))
 
     return priors
+
+
+def load_top_sensitive_params(morris_results_path: str, n_top: int = 20) -> list[str]:
+    """
+    Load the N most sensitive physiology parameter names from Morris results.
+
+    Following the r3PG reference vignette, calibration is restricted to the
+    most sensitive parameters (identified via Morris screening on the total
+    log-likelihood) rather than every bounded parameter.
+
+    Parameters
+    ----------
+    morris_results_path : str
+        Path to a Morris results CSV with `Component`, `Parameter`, `mu_star`
+        columns (as produced by the Morris sensitivity analysis scripts).
+    n_top : int
+        Number of top physiology parameters to keep. Error parameters are
+        excluded here since they are added separately as sigma priors.
+
+    Returns
+    -------
+    list[str]
+        Parameter names ranked by `mu_star` on the `total` component, descending.
+    """
+    df = pl.read_csv(morris_results_path)
+    ranked = df.filter(
+        (pl.col("Component") == "total") & ~pl.col("Parameter").str.starts_with("err_")
+    ).sort("mu_star", descending=True)
+    return ranked["Parameter"].head(n_top).to_list()
 
 
 def load_observations_from_file(
@@ -149,7 +185,8 @@ def model(
         Fixed parameters that won't be estimated
     priors : dict[str, tuple[float, float]]
         Dictionary mapping parameter names to (min, max) tuples for priors.
-        If None, uses default priors.
+        Includes both physiology parameters and sigma/error parameters
+        (e.g. `err_DBH`), typically loaded together via `load_priors_from_file`.
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
         Variables: DBH, Height, BA, N, WS, WF, WR
@@ -163,27 +200,29 @@ def model(
     for param_name, (lower, upper) in priors.items():
         samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
 
-    # Update parameters with sampled values
-    param_updates = {}
-    for param_name in priors:
-        param_updates[param_name] = samples[param_name]
-
+    param_updates = {
+        name: value for name, value in samples.items() if name in fixed_params._fields
+    }
     params = fixed_params._replace(**param_updates)
 
     # Run model simulation
     _, outputs = run_3pg(initial_state, climate, params, site, species, n_species)
 
-    # Observation likelihoods for each variable
+    # Observation likelihoods for each variable.
     if observations is not None:
         for var_name, (obs_times, obs_values) in observations.items():
-            if var_name in outputs:
-                pred_values = outputs[var_name][obs_times]
-                sigma = numpyro.sample(f"sigma_{var_name}", dist.HalfNormal(1.0))
-                numpyro.sample(
-                    f"obs_{var_name}",
-                    dist.StudentT(df=3, loc=pred_values, scale=sigma),
-                    obs=obs_values,
-                )
+            if var_name not in outputs:
+                continue
+            sigma_name = f"err_{var_name}"
+            if sigma_name not in samples:
+                continue
+            pred_values = outputs[var_name][obs_times]
+            numpyro.sample(
+                f"obs_{var_name}",
+                # dist.StudentT(df=3, loc=pred_values, scale=samples[sigma_name]),
+                dist.Normal(loc=pred_values, scale=samples[sigma_name]),
+                obs=obs_values,
+            )
 
 
 def run_hmc_inference(
@@ -318,8 +357,13 @@ def predict_with_uncertainty(
     all_outputs = []
 
     for idx in indices:
-        # Extract parameters for this sample
-        param_dict = {name: samples[name][idx] for name in param_names if name in samples}
+        # Extract physiology parameters for this sample (sigma/error parameters
+        # such as `err_DBH` are not fields of `fixed_params`)
+        param_dict = {
+            name: samples[name][idx]
+            for name in param_names
+            if name in samples and name in fixed_params._fields
+        }
         params = fixed_params._replace(**param_dict)
 
         # Run simulation
@@ -685,12 +729,16 @@ def run_hmc_analysis(
         prepare_data(file_path)
     )
 
-    priors = load_priors_from_file(file_path)
+    priors = load_priors_from_file(file_path, param_names=param_names)
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
     observations = load_observations_from_file(file_path)
     print(f"Loaded observations for variables: {list(observations.keys())}")
+
+    skipped = [name for name in observations if f"err_{name}" not in priors]
+    if skipped:
+        print(f"Skipping observations with no matching sigma prior in error_param: {skipped}")
 
     # Run analysis
     mcmc, samples = run_full_analysis(
@@ -702,8 +750,8 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=200,
-        num_samples=200,
+        num_warmup=1000,
+        num_samples=1000,
         num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=True,
@@ -721,13 +769,21 @@ def run_hmc_analysis(
 
 if __name__ == "__main__":
     # Use solling_data.xlsx by default
-    # Can specify custom parameters to estimate, or use defaults
 
     file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+
+    # Restrict calibration to the most sensitive physiology parameters (from
+    # Morris screening) plus all error parameters, following the r3PG
+    # reference vignette's calibration approach.
+    morris_results_path = os.path.join(
+        results_data_folder, "morris_analysis_results_jax", "morris_all_components.csv"
+    )
+    error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+    top_params = load_top_sensitive_params(morris_results_path, n_top=20)
+    param_names = top_params + error_names
+
     run_hmc_analysis(
-        file_path=os.path.join(threepg_data_folder, "solling_data.xlsx"),
-        # If none, use all parameters with prior bounds from the param_bound sheet
-        # else specify a list of parameter names to estimate
-        param_names=None,
+        file_path=file_path,
+        param_names=param_names,
         predict_with_uncert=True,
     )
