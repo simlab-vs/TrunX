@@ -342,58 +342,179 @@ def predict_with_uncertainty(
     return predictions
 
 
-def plot_results(
-    mcmc: MCMC,
-    climate,
-    site,
-    species,
-    n_species: int,
-    initial_state: State,
-    fixed_params,
-    params,
-    priors: dict[str, tuple[float, float]],
-    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
-    save_path: str | None = None,
-    show_plots: bool = True,
-    predict_with_uncert: bool = False,
-):
+def save_inference_data(
+    inf_data: az.InferenceData, output_dir: str, filename: str = "inference_data.nc"
+) -> str:
     """
-    Plot MCMC results including trace plots, posterior distributions, and predictions.
+    Save arviz InferenceData (posterior samples, diagnostics) to a NetCDF file.
 
     Parameters
     ----------
-    priors : dict[str, tuple[float, float]]
-        Dictionary of parameter priors (used to get parameter names).
+    inf_data : az.InferenceData
+        Inference data produced by ``az.from_numpyro``.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the NetCDF file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    inf_data.to_netcdf(file_path)
+    return file_path
+
+
+def load_inference_data(file_path: str) -> az.InferenceData:
+    """
+    Load arviz InferenceData previously saved with `save_inference_data`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the NetCDF file.
+
+    Returns
+    -------
+    az.InferenceData
+        Loaded inference data.
+    """
+    return az.from_netcdf(file_path)
+
+
+def save_predictions(
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]],
+    output_dir: str,
+    filename: str = "predictions.npz",
+) -> str:
+    """
+    Save prediction uncertainty bands to a compressed .npz file.
+
+    Parameters
+    ----------
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]
+        Dictionary mapping variable names to (mean_pred, lower_pred, upper_pred),
+        as returned by `predict_with_uncertainty`.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the .npz file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    arrays: dict[str, np.ndarray] = {}
+    for var_name, (mean_pred, lower_pred, upper_pred) in predictions.items():
+        arrays[f"{var_name}_mean"] = np.asarray(mean_pred)
+        arrays[f"{var_name}_lower"] = np.asarray(lower_pred)
+        arrays[f"{var_name}_upper"] = np.asarray(upper_pred)
+    np.savez(file_path, **arrays)  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType]
+    return file_path
+
+
+def load_predictions(file_path: str) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Load prediction uncertainty bands previously saved with `save_predictions`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .npz file.
+
+    Returns
+    -------
+    dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]
+        Dictionary mapping variable names to (mean_pred, lower_pred, upper_pred).
+    """
+    data = np.load(file_path)
+    var_names = sorted({key.rsplit("_", 1)[0] for key in data.files})
+    return {
+        var_name: (data[f"{var_name}_mean"], data[f"{var_name}_lower"], data[f"{var_name}_upper"])
+        for var_name in var_names
+    }
+
+
+def save_results(
+    mcmc: MCMC,
+    output_dir: str,
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None = None,
+) -> az.InferenceData:
+    """
+    Save inference data and, if available, prediction uncertainty bands to disk.
+
+    Parameters
+    ----------
+    mcmc : MCMC
+        Fitted MCMC object.
+    output_dir : str
+        Directory to save results in.
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None
+        Prediction uncertainty bands from `predict_with_uncertainty`, if computed.
+
+    Returns
+    -------
+    az.InferenceData
+        The inference data, so callers can reuse it for plotting without recomputing.
     """
     inf_data = az.from_numpyro(mcmc)
+    save_inference_data(inf_data, output_dir)
+    if predictions is not None:
+        save_predictions(predictions, output_dir)
+    return inf_data
 
+
+def plot_results(
+    inf_data: az.InferenceData,
+    params: list[str] | None,
+    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None = None,
+    climate=None,
+    output_dir: str | None = None,
+):
+    """
+    Plot trace, posterior, and prediction-uncertainty figures.
+
+    Parameters
+    ----------
+    inf_data : az.InferenceData
+        Inference data produced by `az.from_numpyro`.
+    params : list[str] | None
+        Parameter names to plot. If None, plots all posterior variables.
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None
+        Prediction uncertainty bands from `predict_with_uncertainty`. Plotted
+        alongside `observations` when both are given.
+    climate
+        Climate data, needed to determine the prediction time axis when
+        `predictions` is given.
+    output_dir : str | None
+        If given, save each figure as a PNG in this directory.
+    """
     if params is None:
-        params = list(inf_data.posterior.data_vars)
+        params = [str(name) for name in inf_data["posterior"].data_vars]
 
     # Trace plots
     az.plot_trace(inf_data, var_names=params)
+    if output_dir is not None:
+        plt.gcf().savefig(os.path.join(output_dir, "trace_plots.png"))
 
     # Posterior plots
     az.plot_posterior(inf_data, var_names=params)
+    if output_dir is not None:
+        plt.gcf().savefig(os.path.join(output_dir, "posterior_plots.png"))
 
     # Summary diagnostics
     summary = az.summary(inf_data, var_names=params)
     print(summary)
 
-    if predict_with_uncert and observations is not None:
-        # Get predictions
-        predictions = predict_with_uncertainty(
-            mcmc,
-            climate,
-            site,
-            species,
-            n_species,
-            initial_state,
-            fixed_params,
-            observations=observations,
-            priors=priors,
-            n_predictions=min(500, len(mcmc.get_samples()[params[0]])) if params else 50,
-        )
+    if predictions is not None and observations is not None:
+        assert climate is not None, "climate is required to plot predictions"
 
         # Determine number of months
         n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
@@ -440,6 +561,9 @@ def plot_results(
             ax.legend()
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
+            if output_dir is not None:
+                fig.savefig(os.path.join(output_dir, f"prediction_{var_name}.png"))
+
     plt.show()
 
 
@@ -448,6 +572,7 @@ def run_full_analysis(
     climate,
     site,
     species,
+    output_dir: str,
     n_species: int,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     fixed_params,
@@ -455,7 +580,6 @@ def run_full_analysis(
     num_warmup: int = 1000,
     num_samples: int = 1000,
     num_chains: int = 4,
-    output_dir: str = "./hmc_results",
     seed: int = 42,
     show_plots: bool = True,
     predict_with_uncert: bool = False,
@@ -507,23 +631,34 @@ def run_full_analysis(
     print("R-hat values (should be <= 1.0):")
     mcmc.print_summary()
 
-    # Plot results
-    print("Generating plots...")
+    predictions = None
+    if predict_with_uncert:
+        predictions = predict_with_uncertainty(
+            mcmc,
+            climate,
+            site,
+            species,
+            n_species,
+            initial_state,
+            fixed_params,
+            observations=observations,
+            priors=priors,
+            n_predictions=min(500, len(samples[param_names[0]])) if param_names else 50,
+        )
 
-    plot_results(
-        mcmc=mcmc,
-        climate=climate,
-        site=site,
-        species=species,
-        n_species=n_species,
-        initial_state=initial_state,
-        fixed_params=fixed_params,
-        observations=observations,
-        params=param_names,
-        priors=priors,
-        show_plots=show_plots,
-        predict_with_uncert=predict_with_uncert,
-    )
+    print("Saving results...")
+    inf_data = save_results(mcmc, output_dir, predictions)
+
+    if show_plots:
+        print("Generating plots...")
+        plot_results(
+            inf_data=inf_data,
+            params=param_names,
+            observations=observations,
+            predictions=predictions,
+            climate=climate,
+            output_dir=output_dir,
+        )
 
     return mcmc, samples
 
