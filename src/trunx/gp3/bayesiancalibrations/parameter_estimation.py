@@ -332,6 +332,8 @@ def predict_with_uncertainty(
             continue
 
         var_series = jnp.stack([output[var_name] for output in all_outputs], axis=0)
+        if n_species == 1:
+            var_series = var_series[..., 0]
         mean_pred = jnp.mean(var_series, axis=0)
         lower_pred = jnp.percentile(var_series, 2.5, axis=0)
         upper_pred = jnp.percentile(var_series, 97.5, axis=0)
@@ -567,7 +569,7 @@ def run_hmc_analysis(
         priors=priors,
         num_warmup=200,
         num_samples=200,
-        num_chains=2,
+        num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=True,
         predict_with_uncert=predict_with_uncert,
