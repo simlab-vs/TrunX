@@ -26,13 +26,11 @@ import polars as pl
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.gp3.age_regression import fit_models
 from trunx.gp3.create_data_inputs import (
-    create_input_params,
     create_observation_data,
     create_site_data,
     create_species_data,
     create_weather_input,
     dms_to_decimal,
-    update_species_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,7 +56,7 @@ SECTION_COLS: dict[str, list[str]] = {
         "biom_root",
         "biom_foliage",
     ],
-    "observed": ["specie", "month", "year", "Date", "GPP", "DBH"],
+    "observed": ["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"],
 }
 
 
@@ -126,15 +124,10 @@ def _build_plot_row(
 
     _, weather_df = create_weather_input(weather_raw, plot_id)
 
-    base_species_df = create_species_data(icp_df)
-    if base_species_df.is_empty():
+    species_df, start_year = create_species_data(icp_df)
+    if species_df.is_empty():
         logger.warning("plot_id %s: no species data — skipping", plot_id)
         return None
-
-    input_params_df = create_input_params(icp_df)
-    species_df, start_year = update_species_data(
-        icp_df, base_species_df, input_params_df, models=models
-    )
 
     weather_df = weather_df.filter(pl.col("year") >= start_year)
     site_df = create_site_data(icp_df, weather_df)
@@ -273,7 +266,8 @@ if __name__ == "__main__":
 
     # Example: read climate data for one plot from the Picea abies file
     df = pl.read_parquet(os.path.join(threepg_data_folder, "icp_plot_data_Picea_abies.parquet"))
-    pid = "04.1401"
+    pid = "50.0018"
     print(load_section(df, pid, "climate").head())
     print(load_section(df, pid, "site"))
-    print(load_section(df, pid, "observed"))
+    obv = load_section(df, pid, "observed")
+    print(obv.drop_nulls(subset=["DBH"]))

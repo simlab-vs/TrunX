@@ -295,8 +295,7 @@ class MorrisSensitivityOnLikelihood:
             else:
                 log_lik_components[var_name] = -np.inf
 
-        # Total log-likelihood: any non-finite component poisons the total,
-        # matching R's `is.nan(logpost) | is.na(logpost) | logpost == 0 -> -Inf`.
+        # Total log-likelihood: any non-finite component poisons the total.
         total = sum(log_lik_components.values())
         if np.isnan(total) or total == 0.0:
             total = -np.inf

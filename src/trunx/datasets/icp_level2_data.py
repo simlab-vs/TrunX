@@ -166,6 +166,7 @@ def _load_plots() -> pl.DataFrame:
             "slope": "plot_slope",
             "code_orientation": "plot_orientation",
             "code_altitude": "plot_altitude",
+            "plot_size": "plot_size_ha",
         }
     )
     return df_plots_raw
@@ -598,11 +599,11 @@ if __name__ == "__main__":
     print("Tree-level data:")
     print(tree_df.head())
 
-    # plot_id = "50.0010"
-    # plot_df = tree_df.filter(pl.col("plot_id") == plot_id)
-    # print(plot_df.select("date").unique())
-    # plot_df = prepare_icp_plot_data()
-    # print("\nPlot-level data:")
-    # print(plot_df.head())
-    # print("\nPer-species plot counts:")
-    # print(plot_df.group_by("specie").agg(pl.col("plot_id").n_unique().alias("n_plots")))
+    plot_id = "50.0013"
+    print(tree_df.filter(pl.col("plot_id") == plot_id))
+
+    plot_df = prepare_icp_plot_data()
+    print("\nPlot-level data:")
+    print(plot_df.head())
+    print("\nPer-species plot counts:")
+    print(plot_df.group_by("specie").agg(pl.col("plot_id").n_unique().alias("n_plots")))

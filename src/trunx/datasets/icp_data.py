@@ -133,7 +133,7 @@ def _filter_single_species(trees: pl.DataFrame) -> pl.DataFrame:
 
 def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFrame:
     """Compute allometric quantities and aggregate to plot-level per-ha values."""
-    trees = add_allometric_columns(trees, _FORRESTER_EQ3)
+    trees = add_allometric_columns(trees, _FORRESTER_EQ3, species_col="species", dbh_col="dbh_cm")
 
     per_plot = (
         trees.sort("date")
@@ -273,3 +273,5 @@ if __name__ == "__main__":
     print(df.head())
     print("\nPer-species plot counts:")
     print(df.group_by("species").agg(pl.col("plot_id").n_unique().alias("n_plots")))
+
+    print(df.filter(pl.col("plot_id") == "50.0013"))
