@@ -1,10 +1,4 @@
-"""Create data input for 3PG model using ICP data.
-
-TODO
--------
-If we don't have weather data from ICP from the common start year determined
-in create_species_data, get the weather data from ERA5 and fill it.
-"""
+"""Create data input for 3PG model using ICP data."""
 
 import logging
 import os
@@ -17,6 +11,11 @@ from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
 from trunx.gp3.allometrics import add_allometric_columns, load_forrester_eq3
+from trunx.gp3.weather_processing import (
+    create_weather_input,
+    fill_weather_with_era5,
+    weather_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,228 +35,6 @@ def dms_to_decimal(dms):
 
     val = sign * (degrees + minutes / 60 + seconds / 3600)
     return val
-
-
-def create_weather_input(df, plot_id):
-    """Create weather data input for 3PG model."""
-    plot_df = df.filter(pl.col("plot_id") == plot_id)
-
-    temp_df = plot_df.filter(pl.col("code_variable") == "AT")
-
-    prcp_df = plot_df.filter(pl.col("code_variable") == "PR")
-
-    srad_df = plot_df.filter(pl.col("code_variable") == "SR")
-    # Convert from W/m² to MJ/m² (1 W/m² = 0.0864 MJ/m²)
-    for col in srad_df.schema:
-        if col.startswith("daily_m"):
-            srad_df = srad_df.with_columns((pl.col(col) * 0.0864).alias(col))
-
-    mtemp_df = (
-        temp_df.group_by(["month_year"])
-        .agg(
-            pl.col("daily_mean").mean().alias("tmp_ave"),
-            pl.col("daily_min").mean().alias("tmp_min"),
-            pl.col("daily_max").mean().alias("tmp_max"),
-            (pl.col("daily_min") < 0).sum().alias("frost_days"),
-        )
-        .with_columns(
-            pl.when(pl.col("tmp_ave") < pl.col("tmp_min"))
-            .then(pl.col("tmp_ave"))
-            .otherwise(pl.col("tmp_min"))
-            .alias("tmp_min"),
-            pl.when(pl.col("tmp_ave") > pl.col("tmp_max"))
-            .then(pl.col("tmp_ave"))
-            .otherwise(pl.col("tmp_max"))
-            .alias("tmp_max"),
-        )
-    )
-
-    mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))
-
-    msrad_df = srad_df.group_by("month_year").agg(pl.col("daily_mean").mean().alias("srad"))
-
-    empty_dfs = [
-        name
-        for name, df in [
-            ("temperature", mtemp_df),
-            ("precipitation", mprcp_df),
-            ("solar radiation", msrad_df),
-        ]
-        if df.height == 0
-    ]
-
-    if empty_dfs:
-        raise ValueError(
-            f"Empty DataFrame(s) for plot_id {plot_id}: {', '.join(empty_dfs)}. "
-            "Please check the input data."
-        )
-
-    weather_df = mtemp_df.join(mprcp_df, on="month_year").join(msrad_df, on="month_year")
-
-    weather_df = (
-        weather_df.with_columns(
-            [pl.col("month_year").str.strptime(pl.Date, "%m-%Y").alias("month_year")]
-        )
-        .with_columns(
-            [
-                pl.col("month_year").dt.year().alias("year"),
-                pl.col("month_year").dt.month().alias("month"),
-            ]
-        )
-        .select(["year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad"])
-        .sort(by=["year", "month"])
-        .drop_nulls()
-    )
-
-    # Check for gaps
-    weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
-    min_date = weather_pl.select(pl.col("date").min()).item()
-    max_date = weather_pl.select(pl.col("date").max()).item()
-    all_months = pl.date_range(start=min_date, end=max_date, interval="1mo", eager=True)
-    existing_months = set(weather_pl.select("date").to_series().to_list())
-    miss_months = sorted(set(all_months) - existing_months)
-
-    return miss_months, weather_df
-
-
-def weather_summary(weather_df):
-    """Summarize weather data."""
-    summary_stats = {
-        "Metric": [
-            "Total records (months)",
-            "Start date",
-            "End date",
-            "Expected months (based on date range)",
-            "Actual months present",
-            "Missing months",
-            "Completeness (%)",
-            "Has gaps",
-            "Number of gaps",
-            "Largest gap (months)",
-            "Average gap size (months)",
-            "Unique years",
-            "Unique months",
-        ],
-        "Value": [],
-    }
-
-    # Calculate basic metrics
-    total_records = weather_df.height
-    start_date = (
-        weather_df.select(pl.col("year").min()).item(),
-        weather_df.select(pl.col("month").min()).item(),
-    )
-    end_date = (
-        weather_df.select(pl.col("year").max()).item(),
-        weather_df.select(pl.col("month").max()).item(),
-    )
-
-    # Calculate expected months if continuous
-    start_year, start_month = start_date
-    end_year, end_month = end_date
-    expected_months = (end_year - start_year) * 12 + (end_month - start_month) + 1
-
-    # Check for gaps
-    weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
-    min_date = weather_pl.select(pl.col("date").min()).item()
-    max_date = weather_pl.select(pl.col("date").max()).item()
-    all_months = pl.date_range(start=min_date, end=max_date, interval="1mo", eager=True)
-    existing_months = set(weather_pl.select("date").to_series().to_list())
-    miss_months = sorted(set(all_months) - existing_months)
-
-    # Calculate gap statistics
-    gaps = []
-    if miss_months:
-        # Find consecutive missing months (gaps)
-        missing_series = pl.Series(miss_months)
-        if len(missing_series) > 0:
-            diff = missing_series.diff().dt.total_days()
-            gap_starts = missing_series.filter((diff.is_null()) | (diff > 31)).to_list()
-            gap_lengths = []
-
-            if len(gap_starts) > 0:
-                for i, gap_start in enumerate(gap_starts):
-                    if i < len(gap_starts) - 1:
-                        gap_end = gap_starts[i + 1]
-                        gap_months = len(
-                            missing_series.filter(
-                                (missing_series >= gap_start) & (missing_series < gap_end)
-                            )
-                        )
-                    else:
-                        gap_months = len(missing_series.filter(missing_series >= gap_start))
-                    gap_lengths.append(gap_months)
-            else:
-                gap_lengths = [len(missing_series)]
-
-            gaps = gap_lengths
-        else:
-            gaps = [len(miss_months)]
-
-    # Count years with complete data
-    weather_df = weather_df.with_columns(
-        (pl.col("year").cast(pl.Utf8) + "-" + pl.col("month").cast(pl.Utf8).str.zfill(2)).alias(
-            "year_month"
-        )
-    )
-    # Populate summary values
-    summary_stats["Value"].extend(
-        [
-            total_records,
-            f"{start_date[0]}-{start_date[1]:02d}",
-            f"{end_date[0]}-{end_date[1]:02d}",
-            expected_months,
-            total_records,
-            len(miss_months),
-            f"{(total_records / expected_months * 100):.1f}%",
-            "Yes" if miss_months else "No",
-            len(gaps),
-            max(gaps) if gaps else 0,
-            f"{sum(gaps) / len(gaps):.1f}" if gaps else "N/A",
-            weather_df.select(pl.col("year").n_unique()).item(),
-            weather_df.select(pl.col("month").n_unique()).item(),
-        ]
-    )
-
-    if len(miss_months) > 0:
-        print("The data is not complete. \n")
-
-    summary_df = pd.DataFrame(summary_stats)
-
-    # Detailed missing months analysis
-
-    print("MISSING MONTHS ANALYSIS")
-
-    if miss_months:
-        # Group missing months by year
-        missing_df = pl.DataFrame({"missing_date": miss_months})
-        missing_df = missing_df.with_columns(
-            [
-                pl.col("missing_date").dt.year().alias("year"),
-                pl.col("missing_date").dt.month().alias("month"),
-            ]
-        )
-        missing_by_year = missing_df.group_by("year").agg(pl.len()).sort("year")
-
-        print("\nMissing months by year:")
-        print(missing_by_year)
-
-        print("\nFirst 10 missing months:")
-        for month in miss_months[:10]:
-            print(f"  - {month.strftime('%B %Y')}")
-
-        if len(miss_months) > 10:
-            print(f"  ... and {len(miss_months) - 10} more")
-
-        # Check if missing months are at the beginning or end
-        if miss_months[0] == all_months[0]:
-            print("\n Missing data at the beginning of the time series")
-        if miss_months[-1] == all_months[-1]:
-            print("\n Missing data at the end of the time series")
-    else:
-        print("\n No missing months detected. The dataset is perfectly continuous!")
-
-    return summary_df
 
 
 def create_input_params(icp_df):
@@ -560,8 +337,8 @@ def create_input_data(input_data_file, plot_id):
     input_params_df = create_input_params(icp_df)
     logging.info("Created parameter data for plot_id: %s", plot_id)
 
-    weather_df = weather_df.filter(pl.col("year") >= start_year)
-    logger.info("Filtered weather data to start year %d for plot_id: %s", start_year, plot_id)
+    miss_months, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
+    logger.info("Filled weather data from start year %d for plot_id: %s", start_year, plot_id)
     # Site data
     input_site_df = create_site_data(icp_df, weather_df)
     logger.info("Created site data for plot_id: %s", plot_id)
@@ -588,7 +365,7 @@ def create_input_data(input_data_file, plot_id):
 
 
 if __name__ == "__main__":
-    plot_id = "67.0005"
+    plot_id = "59.0004"
     file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
     if os.path.exists(file_path):
         os.remove(file_path)

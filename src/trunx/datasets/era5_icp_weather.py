@@ -203,6 +203,9 @@ def get_plot_weather(
         .drop_nulls()
     )
 
+    if plot_weather.is_empty():
+        return [], plot_weather
+
     dated = plot_weather.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
     min_date = dated.select(pl.col("date").min()).item()
     max_date = dated.select(pl.col("date").max()).item()

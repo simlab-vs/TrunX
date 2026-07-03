@@ -13,7 +13,6 @@ observed data available in each plot.
 
 TODO:
 - Add option to include multi-species plots, with per-species columns for observations.
-- Get weather data form other sources.
 
 """
 
@@ -29,9 +28,9 @@ from trunx.gp3.create_data_inputs import (
     create_observation_data,
     create_site_data,
     create_species_data,
-    create_weather_input,
     dms_to_decimal,
 )
+from trunx.gp3.weather_processing import create_weather_input, fill_weather_with_era5
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +128,7 @@ def _build_plot_row(
         logger.warning("plot_id %s: no species data — skipping", plot_id)
         return None
 
-    weather_df = weather_df.filter(pl.col("year") >= start_year)
+    _, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
     site_df = create_site_data(icp_df, weather_df)
 
     icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].to_list()))

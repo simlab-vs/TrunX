@@ -772,9 +772,7 @@ if __name__ == "__main__":
 
     file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
 
-    # Restrict calibration to the most sensitive physiology parameters (from
-    # Morris screening) plus all error parameters, following the r3PG
-    # reference vignette's calibration approach.
+    # Restrict calibration to the most sensitive physiology parameters.
     morris_results_path = os.path.join(
         results_data_folder, "morris_analysis_results_jax", "morris_all_components.csv"
     )
