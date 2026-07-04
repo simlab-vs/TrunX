@@ -13,26 +13,37 @@ from trunx.datasets.era5_icp_weather import get_plot_weather
 logger = logging.getLogger(__name__)
 
 
-def create_weather_input(df, plot_id):
-    """Create weather data input for 3PG model.
+def aggregate_icp_monthly(df: pl.DataFrame, plot_id: str) -> pl.DataFrame:
+    """Aggregate raw ICP weather records to monthly values for one plot.
 
-    Any of temperature, precipitation, or solar radiation entirely missing
-    from the ICP data is filled from ERA5 reanalysis for the same plot.
+    Performs no ERA5 gap-filling — a metric is null for months where ICP has
+    no observations of it.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Raw ICP weather data with columns ``plot_id``, ``code_variable``,
+        ``year``, ``month``, ``daily_mean``, ``daily_min``, ``daily_max``.
+    plot_id : str
+        Plot identifier to aggregate.
+
+    Returns
+    -------
+    pl.DataFrame
+        Monthly ICP weather with columns ``year``, ``month``, ``tmp_ave``,
+        ``tmp_min``, ``tmp_max``, ``frost_days``, ``prcp``, ``srad``.
     """
     plot_df = df.filter(pl.col("plot_id") == plot_id)
 
     temp_df = plot_df.filter(pl.col("code_variable") == "AT")
-
     prcp_df = plot_df.filter(pl.col("code_variable") == "PR")
-
-    srad_df = plot_df.filter(pl.col("code_variable") == "SR")
     # Convert from W/m² to MJ/m² (1 W/m² = 0.0864 MJ/m²)
-    for col in srad_df.schema:
-        if col.startswith("daily_m"):
-            srad_df = srad_df.with_columns((pl.col(col) * 0.0864).alias(col))
+    srad_df = plot_df.filter(pl.col("code_variable") == "SR").with_columns(
+        pl.col("daily_mean", "daily_min", "daily_max") * 0.0864
+    )
 
     mtemp_df = (
-        temp_df.group_by(["month_year"])
+        temp_df.group_by(["year", "month"])
         .agg(
             pl.col("daily_mean").mean().alias("tmp_ave"),
             pl.col("daily_min").mean().alias("tmp_min"),
@@ -50,19 +61,33 @@ def create_weather_input(df, plot_id):
             .alias("tmp_max"),
         )
     )
+    mprcp_df = prcp_df.group_by(["year", "month"]).agg(pl.col("daily_mean").sum().alias("prcp"))
+    msrad_df = srad_df.group_by(["year", "month"]).agg(pl.col("daily_mean").mean().alias("srad"))
 
-    mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))
+    return (
+        mtemp_df.join(mprcp_df, on=["year", "month"], how="full", coalesce=True)
+        .join(msrad_df, on=["year", "month"], how="full", coalesce=True)
+        .with_columns(pl.col("frost_days").cast(pl.Int32))
+        .select("year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad")
+        .sort(["year", "month"])
+    )
 
-    msrad_df = srad_df.group_by("month_year").agg(pl.col("daily_mean").mean().alias("srad"))
 
+def create_weather_input(df: pl.DataFrame, plot_id: str) -> tuple[list, pl.DataFrame]:
+    """Create weather data input for 3PG model.
+
+    Any of temperature, precipitation, or solar radiation entirely missing
+    from the ICP data is filled from ERA5 reanalysis for the same plot.
+    """
+    weather_df = aggregate_icp_monthly(df, plot_id)
+
+    value_groups = {
+        "temperature": ["tmp_ave", "tmp_min", "tmp_max", "frost_days"],
+        "precipitation": ["prcp"],
+        "solar radiation": ["srad"],
+    }
     empty_vars = [
-        name
-        for name, var_df in [
-            ("temperature", mtemp_df),
-            ("precipitation", mprcp_df),
-            ("solar radiation", msrad_df),
-        ]
-        if var_df.height == 0
+        name for name, cols in value_groups.items() if weather_df[cols[0]].drop_nulls().is_empty()
     ]
 
     if empty_vars:
@@ -81,43 +106,22 @@ def create_weather_input(df, plot_id):
             ", ".join(empty_vars),
             plot_id,
         )
-        era5_monthly = era5_weather.with_columns(
-            pl.date(pl.col("year"), pl.col("month"), 1).dt.strftime("%m-%Y").alias("month_year")
-        )
-        if mtemp_df.height == 0:
-            mtemp_df = era5_monthly.select(
-                "month_year", "tmp_ave", "tmp_min", "tmp_max", "frost_days"
+        fill_cols = [c for name in empty_vars for c in value_groups[name]]
+        weather_df = (
+            weather_df.join(
+                era5_weather.select("year", "month", *fill_cols),
+                on=["year", "month"],
+                how="full",
+                coalesce=True,
+                suffix="_era5",
             )
-        if mprcp_df.height == 0:
-            mprcp_df = era5_monthly.select("month_year", "prcp")
-        if msrad_df.height == 0:
-            msrad_df = era5_monthly.select("month_year", "srad")
+            .with_columns(
+                [pl.coalesce(pl.col(c), pl.col(f"{c}_era5")).alias(c) for c in fill_cols]
+            )
+            .select("year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad")
+        )
 
-    weather_df = mtemp_df.join(mprcp_df, on="month_year").join(msrad_df, on="month_year")
-
-    weather_df = (
-        weather_df.with_columns(
-            [pl.col("month_year").str.strptime(pl.Date, "%m-%Y").alias("month_year")]
-        )
-        .with_columns(
-            [
-                pl.col("month_year").dt.year().alias("year"),
-                pl.col("month_year").dt.month().alias("month"),
-            ]
-        )
-        .select(
-            "year",
-            "month",
-            "tmp_ave",
-            "tmp_min",
-            "tmp_max",
-            pl.col("frost_days").cast(pl.Int32),
-            "prcp",
-            "srad",
-        )
-        .sort(by=["year", "month"])
-        .drop_nulls()
-    )
+    weather_df = weather_df.sort(["year", "month"]).drop_nulls()
 
     # Check for gaps
     weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
