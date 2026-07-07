@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from trunx.config import SPECIES_INDICES
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -256,14 +257,16 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     species_df = _load_section_from_parquet(plot_df, plot_id, "species")
     observed_df = _load_section_from_parquet(plot_df, plot_id, "observed")
 
-    site_data = prepare_site(site_df)
-    climate = prepare_climate(climate_df, str(site_data.site_start), str(site_data.site_end))
+    site_data, site_start, site_end = prepare_site(site_df)
+    climate = prepare_climate(climate_df, str(site_start), str(site_end))
     species_data = prepare_species(species_df)
+    index_to_species = {value: key for key, value in SPECIES_INDICES.items()}
+    species_names = [index_to_species[int(idx)] for idx in species_data.specie.tolist()]
 
     n_species = len(species_data.specie)
 
     # Shared parameters from species file
-    fixed_params = load_params_from_file(params_file, species_data.specie)
+    fixed_params = load_params_from_file(params_file, species_names)
 
     # Build initial state — same logic as prepare_data in PG3_model_impl.py
     start_month = site_data.month_i
@@ -276,10 +279,9 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     )
     initial_ASW = jnp.clip(site_data.ASW, asw_min, site_data.ASW_max)
 
-    climate_dt = pd.to_datetime(climate.start_month)
-    age_months = (climate_dt.year - species_data.year_p) * 12 + (
-        climate_dt.month - species_data.month_p
-    )
+    climate_year = int(site_data.year_i[0])
+    climate_month = int(site_data.month_i[0])
+    age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
 
     initial_state = State(
         WF=initial_WF,
@@ -295,7 +297,7 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     observations = load_observations_from_section(
         observed_df=observed_df,
         climate_df=climate_df,
-        species_names=species_data.specie,
+        species_names=species_names,
     )
 
     plot = PlotData(

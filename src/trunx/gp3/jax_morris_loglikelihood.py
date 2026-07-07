@@ -460,7 +460,7 @@ if __name__ == "__main__":
         output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=5000,
+        n_trajectories=10000,
         n_levels=20,
         sigma_param_names=sigma_param_names,
         save_plots=True,

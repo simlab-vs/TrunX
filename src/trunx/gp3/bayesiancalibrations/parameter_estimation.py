@@ -1,6 +1,7 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
 import os
+import time
 
 import arviz as az
 import jax
@@ -11,6 +12,7 @@ import numpy as np
 import numpyro
 import numpyro.distributions as dist
 import polars as pl
+from jax import jit, tree_util, vmap
 from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS
 
@@ -18,6 +20,13 @@ from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
+
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+jax.config.update("jax_enable_x64", False)
+# jax.config.update('jax_log_compiles', True)
 
 az.rcParams["plot.backend"] = "matplotlib"
 
@@ -192,6 +201,7 @@ def model(
         Variables: DBH, Height, BA, N, WS, WF, WR
     initial_state : State | None
         Initial state for simulation
+
     """
     assert fixed_params is not None
 
@@ -211,11 +221,10 @@ def model(
     # Observation likelihoods for each variable.
     if observations is not None:
         for var_name, (obs_times, obs_values) in observations.items():
-            if var_name not in outputs:
-                continue
             sigma_name = f"err_{var_name}"
-            if sigma_name not in samples:
+            if var_name not in outputs or sigma_name not in samples:
                 continue
+
             pred_values = outputs[var_name][obs_times]
             numpyro.sample(
                 f"obs_{var_name}",
@@ -301,6 +310,7 @@ def run_hmc_inference(
         num_samples=num_samples,
         num_chains=num_chains,
         thinning=thinning,
+        chain_method="parallel",
         progress_bar=True,
     )
 
@@ -346,6 +356,8 @@ def predict_with_uncertainty(
     samples = mcmc.get_samples()
 
     param_names = list(priors.keys())
+    # Sigma/error parameters (e.g. `err_DBH`) are not fields of `fixed_params`.
+    physiology_names = [name for name in param_names if name in fixed_params._fields]
 
     # Randomly select n_predictions samples
     n_total_samples = len(samples[param_names[0]])
@@ -353,29 +365,34 @@ def predict_with_uncertainty(
         rng_key, n_total_samples, shape=(min(n_predictions, n_total_samples),), replace=False
     )
 
-    # Run model for each selected sample
-    all_outputs = []
+    param_sets = {name: samples[name][indices] for name in physiology_names}
 
-    for idx in indices:
-        # Extract physiology parameters for this sample (sigma/error parameters
-        # such as `err_DBH` are not fields of `fixed_params`)
-        param_dict = {
-            name: samples[name][idx]
-            for name in param_names
-            if name in samples and name in fixed_params._fields
-        }
-        params = fixed_params._replace(**param_dict)
+    # Convert to list of arrays for vmap
+    param_values = [param_sets[name] for name in physiology_names]
 
-        # Run simulation
-        _, outputs = run_3pg(initial_state, climate, params, site, species, n_species)
-        all_outputs.append(outputs)
+    # Define the model function
+    def run_model(*params):
+        """Run 3PG model with parameters as separate arguments."""
+        param_dict = dict(zip(physiology_names, params, strict=True))
+        params_obj = fixed_params._replace(**param_dict)
+        _, outputs = run_3pg(initial_state, climate, params_obj, site, species, n_species)
+        return outputs
+
+    # Vectorize over the first dimension (samples)
+    batched_run = vmap(run_model, in_axes=(0,) * len(physiology_names))
+
+    # Run all simulations
+    all_outputs = batched_run(*param_values)
+
+    # Get variable names from the first output
+    first_outputs = tree_util.tree_map(lambda x: x[0], all_outputs)
 
     predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = {}
     for var_name in observations:
-        if var_name not in all_outputs[0]:
+        if var_name not in first_outputs:
             continue
 
-        var_series = jnp.stack([output[var_name] for output in all_outputs], axis=0)
+        var_series = all_outputs[var_name]
         if n_species == 1:
             var_series = var_series[..., 0]
         mean_pred = jnp.mean(var_series, axis=0)
@@ -750,11 +767,11 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=1000,
-        num_samples=1000,
+        num_warmup=200,
+        num_samples=200,
         num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
-        show_plots=True,
+        show_plots=False,
         predict_with_uncert=predict_with_uncert,
     )
 
@@ -768,6 +785,8 @@ def run_hmc_analysis(
 
 
 if __name__ == "__main__":
+    start_time = time.perf_counter()
+
     # Use solling_data.xlsx by default
 
     file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
@@ -777,7 +796,7 @@ if __name__ == "__main__":
         results_data_folder, "morris_analysis_results_jax", "morris_all_components.csv"
     )
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
-    top_params = load_top_sensitive_params(morris_results_path, n_top=20)
+    top_params = load_top_sensitive_params(morris_results_path, n_top=5)
     param_names = top_params + error_names
 
     run_hmc_analysis(
@@ -785,3 +804,6 @@ if __name__ == "__main__":
         param_names=param_names,
         predict_with_uncert=True,
     )
+
+    elapsed_time = time.perf_counter() - start_time
+    print(f"Total runtime: {elapsed_time:.2f} seconds")

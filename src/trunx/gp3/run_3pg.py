@@ -34,7 +34,7 @@ from trunx.gp3.helper_function import (
 from trunx.gp3.model_inputs import State
 
 
-def model_step(state, climate_month, params, site, species, n_species):
+def model_step(state, climate_month, params, site, species):
     """Compute one model step."""
     T_avg, T_max, VPD, precip, solar_rad, frost_days, co2, n_days, month = climate_month
     WF, WR, WS, N, ASW, age_months, WF_debt, prev_month = state
@@ -121,7 +121,7 @@ def model_step(state, climate_month, params, site, species, n_species):
     NPP_after_debt = NPP_scaled
 
     growing = ~dormant
-    has_debt = WF_debt_new > jnp.zeros(n_species, dtype=float)
+    has_debt = WF_debt_new > 0.0
 
     # Calculate new debt and NPP after repayment
     WF_debt_after = jnp.where(
@@ -201,7 +201,7 @@ def model_step(state, climate_month, params, site, species, n_species):
         ASW=ASW_new,
         age=jnp.asarray(age_months + 1),
         WF_debt=jnp.asarray(WF_debt_after),
-        prev_month=jnp.full(n_species, month, dtype=jnp.int32),
+        prev_month=jnp.full_like(N, month, dtype=jnp.int32),
     )
 
     outputs = dict(
@@ -262,7 +262,7 @@ def run_3pg(initial_state, climate, params, site, species, n_species):
     )
 
     def step(state, climate_row):
-        return model_step(state, climate_row, params, site, species, n_species)
+        return model_step(state, climate_row, params, site, species)
 
     return jax.lax.scan(step, initial_state, climate_stack)
 

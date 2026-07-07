@@ -75,6 +75,7 @@ class PackedSiteData(NamedTuple):
 class PackedSpeciesData(NamedTuple):
     """Species arrays stacked across all plots."""
 
+    specie: jnp.ndarray  # shape:(n_plots, n_species)
     FR: jnp.ndarray  # shape:(n_plots, n_species)
     WF: jnp.ndarray  # shape:(n_plots, n_species)
     WR: jnp.ndarray  # shape:(n_plots, n_species)
@@ -102,7 +103,7 @@ class PackedPlotBatch(NamedTuple):
     species: PackedSpeciesData
     observations: dict[str, PackedObservationData]
     species_names: tuple[str, ...]
-    species_planted: tuple[object, ...]
+    # species_planted: tuple[object, ...]
     n_plots: int
     n_species: int
     max_months: int
@@ -248,6 +249,7 @@ def _pack_plots_with_padding(plots: list[PlotData]) -> PackedPlotBatch:
         N=jnp.stack([plot.species.N for plot in plots], axis=0),
         year_p=jnp.stack([plot.species.year_p for plot in plots], axis=0),
         month_p=jnp.stack([plot.species.month_p for plot in plots], axis=0),
+        specie=jnp.stack([plot.species.specie for plot in plots], axis=0),
     )
 
     observations = _pack_observations(plots, n_species)
@@ -260,7 +262,7 @@ def _pack_plots_with_padding(plots: list[PlotData]) -> PackedPlotBatch:
         species=species,
         observations=observations,
         species_names=tuple(plots[0].species.specie),
-        species_planted=tuple(plots[0].species.planted),
+        # species_planted=tuple(plots[0].species.planted),
         n_plots=len(plots),
         n_species=n_species,
         max_months=max_months,
@@ -285,7 +287,7 @@ def _select_single_plot(
         co2=batch.climate.co2[idx],
         d13catm=batch.climate.d13catm[idx],
         month=batch.climate.month[idx],
-        start_month=_DUMMY_MONTH,
+        # start_month=_DUMMY_MONTH,
     )
 
     site = SiteData(
@@ -297,18 +299,18 @@ def _select_single_plot(
         ASW_min=batch.site.ASW_min[idx],
         year_i=batch.site.year_i[idx],
         month_i=batch.site.month_i[idx],
-        site_start=_DUMMY_MONTH,
-        site_end=_DUMMY_MONTH,
+        # site_start=_DUMMY_MONTH,
+        # site_end=_DUMMY_MONTH,
     )
 
     species = SpeciesData(
-        specie=list(batch.species_names),
+        specie=batch.species.specie[idx],
         FR=batch.species.FR[idx],
         WF=batch.species.WF[idx],
         WR=batch.species.WR[idx],
         WS=batch.species.WS[idx],
         N=batch.species.N[idx],
-        planted=list(batch.species_planted),
+        # planted=list(batch.species_planted),
         year_p=batch.species.year_p[idx],
         month_p=batch.species.month_p[idx],
     )
