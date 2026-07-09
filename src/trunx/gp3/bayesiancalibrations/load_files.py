@@ -75,23 +75,27 @@ def load_plot_ids_from_file(plot_file: str) -> list[str]:
     return plot_ids
 
 
-def load_priors_from_file(
-    file_path: str,
-    param_names: list[str] | None = None,
-) -> dict[str, tuple[float, float]]:
-    """Load parameter priors from a parquet file."""
+def _load_param_bounds_df(file_path: str) -> pl.DataFrame:
+    """Load the raw param_bound(+error_param) table shared by priors and defaults."""
     if file_path.lower().endswith(".parquet"):
-        param_bounds_df = pl.read_parquet(file_path)
-    elif file_path.lower().endswith(".xlsx"):
-        param_bounds_df = pl.concat(
+        return pl.read_parquet(file_path)
+    if file_path.lower().endswith(".xlsx"):
+        return pl.concat(
             [
                 pl.read_excel(file_path, sheet_name="param_bound"),
                 pl.read_excel(file_path, sheet_name="error_param"),
             ],
             how="vertical_relaxed",
         )
-    else:
-        raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
+    raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
+
+
+def load_priors_from_file(
+    file_path: str,
+    param_names: list[str] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """Load parameter priors from a parquet file."""
+    param_bounds_df = _load_param_bounds_df(file_path)
 
     priors = {}
 
@@ -120,6 +124,45 @@ def load_priors_from_file(
         priors[param_name] = (float(min_val), float(max_val))
 
     return priors
+
+
+def load_param_defaults_from_file(
+    file_path: str,
+    param_names: list[str],
+) -> dict[str, float]:
+    """Load each parameter's default value, for seeding MCMC chains at a sensible start.
+
+    Mirrors the R reference's `createUniformPrior(min, max, best)`, which seeds
+    every chain at the same expert-chosen default rather than a random prior draw.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    param_names : list[str]
+        Parameter names to load defaults for (typically the same names passed
+        to `load_priors_from_file`).
+
+    Returns
+    -------
+    dict[str, float]
+        Parameter names mapped to their `default` column value.
+    """
+    param_bounds_df = _load_param_bounds_df(file_path)
+
+    defaults = {}
+    for param_name in param_names:
+        row = param_bounds_df.filter(pl.col("param_name") == param_name)
+        if len(row) == 0:
+            raise ValueError(f"Parameter {param_name} not found in param_bound sheet")
+
+        default_val = row["default"][0]
+        if default_val is None:
+            raise ValueError(f"Parameter {param_name} has no default value in param_bound sheet")
+
+        defaults[param_name] = float(default_val)
+
+    return defaults
 
 
 def load_observations_from_file(

@@ -15,11 +15,12 @@ import numpyro.distributions as dist
 import polars as pl
 from jax import jit, tree_util, vmap
 from numpyro.handlers import substitute
-from numpyro.infer import MCMC, NUTS
+from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_observations_from_file,
+    load_param_defaults_from_file,
     load_priors_from_file,
     load_top_sensitive_params,
 )
@@ -132,6 +133,7 @@ def run_hmc_inference(
     adapt_mass_matrix: bool = True,
     target_accept_prob: float = 0.9,
     max_tree_depth: int = 10,
+    param_defaults: dict[str, float] | None = None,
 ) -> tuple[MCMC, dict]:
     """
     Run HMC inference using NumPyro's NUTS sampler.
@@ -148,6 +150,11 @@ def run_hmc_inference(
         If True, adapt step size during warmup when adaptive_warmup is enabled.
     adapt_mass_matrix : bool
         If True, adapt mass matrix during warmup when adaptive_warmup is enabled.
+    param_defaults : dict[str, float] | None
+        Starting value for each calibrated parameter, used to seed every
+        chain at the same point instead of a random prior draw — matching
+        the R reference's `createUniformPrior(min, max, best)`. If None,
+        NumPyro falls back to its default init strategy (a random prior draw).
 
     Returns
     -------
@@ -175,12 +182,19 @@ def run_hmc_inference(
     use_step_size_adaptation = adaptive_warmup and adapt_step_size
     use_mass_matrix_adaptation = adaptive_warmup and adapt_mass_matrix
 
+    init_strategy = (
+        init_to_value(values=dict(param_defaults))
+        if param_defaults is not None
+        else init_to_uniform
+    )
+
     kernel = NUTS(
         model,
         adapt_step_size=use_step_size_adaptation,
         adapt_mass_matrix=use_mass_matrix_adaptation,
         target_accept_prob=target_accept_prob,
         max_tree_depth=max_tree_depth,
+        init_strategy=init_strategy,
     )
 
     mcmc = MCMC(
@@ -396,6 +410,7 @@ def run_full_analysis(
     seed: int = 42,
     show_plots: bool = True,
     predict_with_uncert: bool = False,
+    param_defaults: dict[str, float] | None = None,
 ) -> tuple[MCMC, dict]:
     """
     Run complete HMC analysis with diagnostics and plotting.
@@ -406,6 +421,9 @@ def run_full_analysis(
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
     priors : dict[str, tuple[float, float]] | None
         Dictionary mapping parameter names to (min, max) tuples for priors.
+    param_defaults : dict[str, float] | None
+        Starting value for each calibrated parameter, seeding every chain at
+        the same point instead of a random prior draw. See `run_hmc_inference`.
 
     Returns
     -------
@@ -437,6 +455,7 @@ def run_full_analysis(
         num_samples=num_samples,
         num_chains=num_chains,
         seed=seed,
+        param_defaults=param_defaults,
     )
 
     # Print summary
@@ -503,6 +522,7 @@ def run_hmc_analysis(
     )
 
     priors = load_priors_from_file(file_path, param_names=param_names)
+    param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
@@ -531,6 +551,7 @@ def run_hmc_analysis(
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=False,
         predict_with_uncert=predict_with_uncert,
+        param_defaults=param_defaults,
     )
 
     # Print parameter summaries

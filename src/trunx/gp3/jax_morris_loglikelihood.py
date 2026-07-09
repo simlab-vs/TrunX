@@ -188,14 +188,13 @@ class MorrisSensitivityOnLikelihood:
             params=Params(**params_dict),
             site=self.site_data,
             species=self.species_data,
-            n_species=self.n_species,
         )
 
         component_values = []
         for var_name in self.output_vars:
             model_values = model_outputs.get(var_name)
             if model_values is None:
-                component_values.append(jnp.asarray(-jnp.inf, dtype=jnp.float32))
+                component_values.append(jnp.asarray(-jnp.inf, dtype=jnp.float64))
                 continue
 
             sigma_param_name = self._infer_sigma_param_name(var_name)
@@ -213,14 +212,14 @@ class MorrisSensitivityOnLikelihood:
                 )
             )
 
-        component_array = jnp.asarray(component_values, dtype=jnp.float32)
+        component_array = jnp.asarray(component_values, dtype=jnp.float64)
         total = jnp.sum(component_array)
         total = jnp.where(jnp.isnan(total) | (total == 0.0), -jnp.inf, total)
-        return jnp.concatenate([component_array, jnp.asarray([total], dtype=jnp.float32)])
+        return jnp.concatenate([component_array, jnp.asarray([total], dtype=jnp.float64)])
 
     def _evaluate_batch_samples(self, sample_values: np.ndarray) -> np.ndarray:
         """Evaluate a batch of Morris samples with JAX."""
-        batch_results = self._batched_log_likelihood(jnp.asarray(sample_values, dtype=jnp.float32))
+        batch_results = self._batched_log_likelihood(jnp.asarray(sample_values, dtype=jnp.float64))
         return np.asarray(jax.block_until_ready(batch_results))
 
     def _create_morris_problem(self) -> dict:
@@ -463,7 +462,7 @@ if __name__ == "__main__":
         output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=10000,
+        n_trajectories=500,
         n_levels=20,
         sigma_param_names=sigma_param_names,
         save_plots=True,

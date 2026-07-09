@@ -13,6 +13,7 @@ import pymc as pm
 import pytensor.tensor as pt
 from jax import jit, tree_util, vmap
 from jax import numpy as jnp
+from jax.scipy.stats import norm
 from jax.scipy.stats import t as jax_student_t
 from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
@@ -20,6 +21,7 @@ from pytensor.graph.op import Op, OutputStorageType
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_observations_from_file,
+    load_param_defaults_from_file,
     load_priors_from_file,
     load_top_sensitive_params,
 )
@@ -100,10 +102,13 @@ class Run3PGLogLikeOp(Op):
             if sigma_name not in param_dict or var_name not in sim_outputs:
                 continue
             pred_values = sim_outputs[var_name][obs_times]
+            # log_likelihood = log_likelihood + jnp.sum(
+            #     jax_student_t.logpdf(
+            #         pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
+            #     )
+            # )
             log_likelihood = log_likelihood + jnp.sum(
-                jax_student_t.logpdf(
-                    pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
-                )
+                norm.logpdf(pred_values, loc=obs_values, scale=param_dict[sigma_name])
             )
         return log_likelihood
 
@@ -250,6 +255,7 @@ def run_pymc_inference(
     num_samples: int = 1000,
     chains: int = 4,
     cores: int | None = None,
+    param_defaults: dict[str, float] | None = None,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
@@ -261,6 +267,11 @@ def run_pymc_inference(
         Number of worker processes to run chains in. Defaults to `chains`
         (one process per chain). On a single GPU, pass a lower value (e.g. 1)
         so worker processes don't compete for device memory.
+    param_defaults : dict[str, float] | None
+        Starting value for each calibrated parameter, used to seed every
+        chain at the same point instead of a random prior draw — matching
+        the R reference's `createUniformPrior(min, max, best)`. If None,
+        PyMC falls back to its default (random) initialization.
     """
     model = pymc_model(
         climate=climate,
@@ -276,6 +287,8 @@ def run_pymc_inference(
         cores = chains
     _configure_gpu_memory_sharing(cores)
 
+    initvals = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+
     with model:
         step = pm.DEMetropolisZ()
         # step = pm.HamiltonianMC()
@@ -286,6 +299,7 @@ def run_pymc_inference(
             step=step,
             chains=chains,
             cores=cores,
+            initvals=initvals,
             # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
             # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
             mp_ctx="spawn",
@@ -302,8 +316,10 @@ def run_pymc_analysis(
     output_dir: str,
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
-    chains: int = 4,
+    chains: int = 3,
     cores: int | None = None,
+    num_warmup: int = 10000,
+    num_samples: int = 5000,
 ):
     """Run PyMC inference for Bayesian calibration of 3PG parameters."""
     initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
@@ -311,6 +327,7 @@ def run_pymc_analysis(
     )
 
     priors = load_priors_from_file(file_path, param_to_optimize)
+    param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     observations = load_observations_from_file(file_path)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]
@@ -328,10 +345,11 @@ def run_pymc_analysis(
         fixed_params=fixed_params,
         observations=observations,
         priors=priors,
-        num_warmup=2000,
-        num_samples=2000,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
         chains=chains,
         cores=cores,
+        param_defaults=param_defaults,
     )
 
     print("\nConvergence diagnostics:")
@@ -466,12 +484,39 @@ if __name__ == "__main__":
 
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
     top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    param_names = top_params + error_names
+    r_20_params = [
+        "pFS20",
+        "aWS",
+        "nWS",
+        "pRn",
+        "Tmin",
+        "Topt",
+        "Tmax",
+        "fN0",
+        "fNn",
+        "MaxAge",
+        "rAge",
+        "gammaN1",
+        "thinPower",
+        "mS",
+        "alphaCx",
+        "rhoMin",
+        "rhoMax",
+        "aH",
+        "nHB",
+        "nHC",
+    ]
 
+    param_names = top_params + error_names
+    param_names = r_20_params + error_names
     run_pymc_analysis(
         output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
         file_path=file_path,
         param_to_optimize=param_names,
+        chains=3,
+        cores=3,
+        num_warmup=1000,
+        num_samples=500,
     )
 
     elapsed_time = time.perf_counter() - start_time
@@ -479,7 +524,13 @@ if __name__ == "__main__":
 
     # plot_saved_results(
     #     output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
-    #     params=top_params,
+    #     params=r_20_params,
     #     observations=load_observations_from_file(file_path),
     #     climate=prepare_data(file_path)[1],
     # )
+
+    # output_dir = str(os.path.join(results_data_folder, "pymc_inference_results"))
+    # idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
+    # az.plot_trace(idata, var_names=["pFS20", "aWS"])
+    # az.plot_posterior(idata, var_names=["pFS20", "aWS"])
+    # plt.show()
