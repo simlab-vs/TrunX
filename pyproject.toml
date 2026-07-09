@@ -37,7 +37,8 @@ dependencies = [
     "pypdf>=6.14.2",
     "salib>=1.5.2",
     "jax[cuda12]; sys_platform == 'linux'",
-    "jaxlib; sys_platform == 'linux'"
+    "jaxlib; sys_platform == 'linux'",
+    "pymc>=5.28.5",
 ]
 
 # Set curent project as a package, with src/ folder.

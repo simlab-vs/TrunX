@@ -97,7 +97,6 @@ def make_loss_function(
             params=Params(**params_dict),
             site=site_data,
             species=species_data,
-            n_species=n_species,
         )
 
         total_squared_error = jnp.asarray(0.0, dtype=jnp.float32)
@@ -324,7 +323,6 @@ def build_predicted_dataframe(
         params=fitted_model_params,
         site=site_data,
         species=species_data,
-        n_species=n_species,
     )
 
     _, outputs_default = run_3pg(
@@ -333,7 +331,6 @@ def build_predicted_dataframe(
         params=params,
         site=site_data,
         species=species_data,
-        n_species=n_species,
     )
 
     df_data = pd.DataFrame()

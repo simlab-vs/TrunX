@@ -321,7 +321,6 @@ class MorrisSensitivityOnLikelihood:
             params=Params(**params_dict),
             site=self.site_data,
             species=self.species_data,
-            n_species=self.n_species,
         )
 
         # Get log-likelihood components

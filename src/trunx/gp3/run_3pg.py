@@ -244,7 +244,7 @@ def model_step(state, climate_month, params, site, species):
     return new_state, outputs
 
 
-def run_3pg(initial_state, climate, params, site, species, n_species):
+def run_3pg(initial_state, climate, params, site, species):
     """Run 3PG model."""
     climate_stack = jnp.stack(
         [
@@ -267,18 +267,18 @@ def run_3pg(initial_state, climate, params, site, species, n_species):
     return jax.lax.scan(step, initial_state, climate_stack)
 
 
-def ws_final(alphaCx, CoeffCond, Y_val, params, initial_state, climate, site, species, n_species):
+def ws_final(alphaCx, CoeffCond, Y_val, params, initial_state, climate, site, species):
     """Compute final stem biomass as a scalar function."""
     p = params._replace(alphaCx=alphaCx, CoeffCond=CoeffCond, Y=Y_val)
-    final_state, _ = run_3pg(initial_state, climate, p, site, species, n_species)
+    final_state, _ = run_3pg(initial_state, climate, p, site, species)
     return final_state.WS
 
 
-def ws_final_vector(params_vec, params, initial_state, climate, site, species, n_species):
+def ws_final_vector(params_vec, params, initial_state, climate, site, species):
     """Compute final stem biomass for all species with params as a vector."""
     alphaCx, CoeffCond, Y_val = params_vec
     p = params._replace(alphaCx=alphaCx, CoeffCond=CoeffCond, Y=Y_val)
-    final_state, _ = run_3pg(initial_state, climate, p, site, species, n_species)
+    final_state, _ = run_3pg(initial_state, climate, p, site, species)
     return final_state.WS
 
 
@@ -294,7 +294,7 @@ def loss_fn(log_params_arr, fixed_params, s0, climate, site, obs_WS, obs_times, 
     Y = jax.nn.sigmoid(log_params_arr[2])
 
     params = fixed_params._replace(alphaCx=alphaCx, CoeffCond=CoeffCond, Y=Y)
-    _, outputs = run_3pg(s0, climate, params, site, species, len(species))
+    _, outputs = run_3pg(s0, climate, params, site, species)
 
     pred_WS = outputs["WS"][obs_times]
     return jnp.mean((pred_WS - obs_WS) ** 2)

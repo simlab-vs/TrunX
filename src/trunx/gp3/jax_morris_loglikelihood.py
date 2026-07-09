@@ -15,7 +15,7 @@ from SALib.sample import morris as morris_sample
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
-from trunx.gp3.run_3pg import run_3pg
+from trunx.gp3.run_3pg import run_3pg as run_3pg_orig
 
 warnings.filterwarnings("ignore")
 
@@ -24,6 +24,9 @@ warnings.filterwarnings("ignore")
 # boundary that divides by ~0) and the resulting likelihood is not meaningful,
 # regardless of which parameter combination caused it.
 PLAUSIBILITY_MULTIPLIER = 100.0
+
+# JIT compile the 3PG model for faster execution
+run_3pg = jax.jit(run_3pg_orig)
 
 
 class MorrisSensitivityOnLikelihood:

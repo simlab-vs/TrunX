@@ -77,11 +77,11 @@ def prepare_species(species: pl.DataFrame) -> SpeciesData:
         specie=jnp.asarray(
             [SPECIES_INDICES[species_name] for species_name in species["species"]], dtype=jnp.int32
         ),
-        FR=jnp.asarray(species["fertility"], dtype=jnp.float32),
-        WF=jnp.asarray(species["biom_foliage"], dtype=jnp.float32),
-        WR=jnp.asarray(species["biom_root"], dtype=jnp.float32),
-        WS=jnp.asarray(species["biom_stem"], dtype=jnp.float32),
-        N=jnp.asarray(species["stems_n"], dtype=jnp.float32),
+        FR=jnp.asarray(species["fertility"], dtype=float),
+        WF=jnp.asarray(species["biom_foliage"], dtype=float),
+        WR=jnp.asarray(species["biom_root"], dtype=float),
+        WS=jnp.asarray(species["biom_stem"], dtype=float),
+        N=jnp.asarray(species["stems_n"], dtype=float),
         # planted=tuple([np.datetime64(dt, "M") for dt in species["planted"].to_list()]),
         year_p=jnp.asarray(species["year_p"], dtype=jnp.int32),
         month_p=jnp.asarray(species["month_p"], dtype=jnp.int32),

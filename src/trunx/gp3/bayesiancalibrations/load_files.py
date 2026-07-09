@@ -80,10 +80,19 @@ def load_priors_from_file(
     param_names: list[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """Load parameter priors from a parquet file."""
-    if not file_path.lower().endswith(".parquet"):
-        raise ValueError(f"Expected parquet file for priors, got: {file_path}")
+    if file_path.lower().endswith(".parquet"):
+        param_bounds_df = pl.read_parquet(file_path)
+    elif file_path.lower().endswith(".xlsx"):
+        param_bounds_df = pl.concat(
+            [
+                pl.read_excel(file_path, sheet_name="param_bound"),
+                pl.read_excel(file_path, sheet_name="error_param"),
+            ],
+            how="vertical_relaxed",
+        )
+    else:
+        raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
 
-    param_bounds_df = pl.read_parquet(file_path)
     priors = {}
 
     if param_names is None:
@@ -111,6 +120,44 @@ def load_priors_from_file(
         priors[param_name] = (float(min_val), float(max_val))
 
     return priors
+
+
+def load_observations_from_file(
+    file_path: str,
+) -> dict[str, tuple[jnp.ndarray, jnp.ndarray]]:
+    """
+    Load all observations from observed sheet in Excel file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to Excel file containing observed sheet
+
+    Returns
+    -------
+    dict[str, tuple[jnp.ndarray, jnp.ndarray]]
+        Dictionary mapping variable names to (obs_times, obs_values) tuples.
+        Variables included: DBH, Height, BA, N, WS, WF, WR
+    """
+    obs_df = pl.read_excel(file_path, sheet_name="observed")
+
+    obs_times = jnp.asarray(obs_df["idx"].to_numpy(), dtype=jnp.int32)
+
+    observations = {}
+    excluded_cols = {"idx", "month", "year", "date"}
+    var_names = [col for col in obs_df.columns if col not in excluded_cols]
+
+    for var_name in var_names:
+        values_np = obs_df[var_name].to_numpy()
+        valid_mask = ~np.isnan(values_np)
+        if not np.any(valid_mask):
+            continue
+
+        var_obs_times = obs_times[valid_mask]
+        obs_values = jnp.asarray(values_np[valid_mask], dtype=jnp.float32)
+        observations[var_name] = (var_obs_times, obs_values)
+
+    return observations
 
 
 def _load_section_from_parquet(plot_df: pl.DataFrame, plot_id: str, section: str) -> pl.DataFrame:
@@ -220,7 +267,13 @@ def load_params_from_file(params_file: str, species_names: list[str]) -> Params:
     params_df = pl.read_parquet(params_file)
     param_names = params_df["param_name"].to_list()
     values_matrix = params_df["default"].to_numpy()
-    params_dict = {name: jnp.asarray(values_matrix[i]) for i, name in enumerate(param_names)}
+    # Error/sigma priors (e.g. `err_DBH`) may share this file but are not model
+    # physiology parameters, so they are not fields of `Params`.
+    params_dict = {
+        name: jnp.asarray(values_matrix[i])
+        for i, name in enumerate(param_names)
+        if name in Params._fields
+    }
     return Params(**params_dict)
 
 
@@ -288,7 +341,7 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
         WR=species_data.WR,
         WS=species_data.WS,
         N=species_data.N,
-        ASW=jnp.full(n_species, initial_ASW, dtype=jnp.float32),
+        ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
         age=age_months,
         WF_debt=initial_WF_debt,
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
@@ -310,3 +363,28 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
         observations=observations,
     )
     return plot, fixed_params
+
+
+def load_top_sensitive_params(morris_results_path: str, n_top: int = 20) -> list[str]:
+    """
+    Load the N most sensitive physiology parameter names from Morris results.
+
+    Parameters
+    ----------
+    morris_results_path : str
+        Path to a Morris results CSV with `Component`, `Parameter`, `mu_star`
+        columns (as produced by the Morris sensitivity analysis scripts).
+    n_top : int
+        Number of top physiology parameters to keep. Error parameters are
+        excluded here since they are added separately as sigma priors.
+
+    Returns
+    -------
+    list[str]
+        Parameter names ranked by `mu_star` on the `total` component, descending.
+    """
+    df = pl.read_csv(morris_results_path)
+    ranked = df.filter(
+        (pl.col("Component") == "total") & ~pl.col("Parameter").str.starts_with("err_")
+    ).sort("mu_star", descending=True)
+    return ranked["Parameter"].head(n_top).to_list()

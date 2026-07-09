@@ -92,7 +92,7 @@ def prepare_data(file_path):
         WR=species_data.WR,
         WS=species_data.WS,
         N=species_data.N,
-        ASW=jnp.full(n_species, initial_ASW, dtype=jnp.float32),
+        ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
         age=age_months,
         WF_debt=initial_WF_debt,
         prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
@@ -140,7 +140,6 @@ def run_threepg_main(
         params=params,
         site=site_data,
         species=species_data,
-        n_species=n_species,
     )
 
     print("Final stem biomass (Mg/ha):", final_state.WS)
