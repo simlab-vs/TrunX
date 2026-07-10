@@ -2687,6 +2687,21 @@ wheels = [
 ]
 
 [[package]]
+name = "rdata"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "typing-extensions" },
+    { name = "xarray" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/6f/4bf8fc3981569b0fb32815db86aef880b233305353a48d2c1770a29fe9cb/rdata-1.1.0.tar.gz", hash = "sha256:37c8b19e8be82d7d7acb36c6623bfeb7ab1d95d9380ec00a6c063f88b1f50e3a", size = 106564, upload-time = "2026-06-11T18:45:40.187Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/ef/acc15553b522a3710837520a76556958d533753d27e5ead18a8600159398/rdata-1.1.0-py3-none-any.whl", hash = "sha256:12efb7597725d6db6cc78d84eb522a9634008f8fce1c2733b7fd42b9013bc41f", size = 287685, upload-time = "2026-06-11T18:45:38.837Z" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3265,6 +3280,7 @@ dependencies = [
     { name = "pyproj" },
     { name = "pyreadr" },
     { name = "rasterio" },
+    { name = "rdata" },
     { name = "requests" },
     { name = "rpy2" },
     { name = "ruff" },
@@ -3312,6 +3328,7 @@ requires-dist = [
     { name = "pyproj", specifier = ">=3.7.2" },
     { name = "pyreadr", specifier = ">=0.5.4" },
     { name = "rasterio", specifier = ">=1.5.0" },
+    { name = "rdata", specifier = ">=1.1.0" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rpy2", specifier = ">=3.6.5" },
     { name = "ruff", specifier = ">=0.11.10" },

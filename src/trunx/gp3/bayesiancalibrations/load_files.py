@@ -132,9 +132,6 @@ def load_param_defaults_from_file(
 ) -> dict[str, float]:
     """Load each parameter's default value, for seeding MCMC chains at a sensible start.
 
-    Mirrors the R reference's `createUniformPrior(min, max, best)`, which seeds
-    every chain at the same expert-chosen default rather than a random prior draw.
-
     Parameters
     ----------
     file_path : str

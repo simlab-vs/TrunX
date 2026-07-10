@@ -576,7 +576,7 @@ if __name__ == "__main__":
     )
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
     top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    param_names = top_params  # + error_names
+    param_names = top_params + error_names
 
     run_hmc_analysis(
         file_path=file_path,

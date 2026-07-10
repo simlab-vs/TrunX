@@ -39,6 +39,7 @@ dependencies = [
     "jax[cuda12]; sys_platform == 'linux'",
     "jaxlib; sys_platform == 'linux'",
     "pymc>=5.28.5",
+    "rdata>=1.1.0",
 ]
 
 # Set curent project as a package, with src/ folder.

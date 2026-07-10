@@ -31,9 +31,7 @@ def f_temperature(params, T_avg: Array) -> Array:
     Tmax : Array
         Maximum temperature for growth.
 
-    If T <= Tmin or T >= Tmax, fT is set to 0, matching the reference 3-PG
-    Fortran implementation (`md_3PG.f95`), which overrides the raw formula
-    to 0 outside that range rather than clipping the intermediate terms.
+    If T <= Tmin or T >= Tmax, fT is set to 0.
 
     Returns
     -------
