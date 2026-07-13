@@ -15,6 +15,7 @@ import pandas as pd
 from jax import grad, jit, value_and_grad
 from tqdm import tqdm
 
+from trunx.config import threepg_data_folder
 from trunx.gp3.model_inputs import Params, SiteData, SpeciesData, State
 from trunx.gp3.PG3_model_impl import prepare_data, run_threepg_main
 from trunx.gp3.run_3pg import run_3pg
@@ -564,7 +565,7 @@ if __name__ == "__main__":
     fit_params = ["alphaCx", "Y", "CoeffCond", "aWS", "nWS", "Tmin", "rAge"]
 
     config = GradientDescentConfig(
-        file_path="./data/solling_data.xlsx",
+        file_path=os.path.join(threepg_data_folder, "solling_data.xlsx"),
         observed_sheet="observed",
         fit_params=fit_params,
         target_vars=["DBH", "WS", "WF", "WR", "Height", "BA", "N"],  # Fit to these variables

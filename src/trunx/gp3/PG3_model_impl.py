@@ -156,7 +156,12 @@ def run_threepg_main(
 
     # Get Jacobian matrix (n_species × 3)
     jacobian = jax.jacobian(ws_final_vector)(
-        params_vec, params, initial_state, climate, site_data, species_data, n_species
+        params_vec,
+        params,
+        initial_state,
+        climate,
+        site_data,
+        species_data,
     )
 
     # jacobian has shape (n_species, 3)

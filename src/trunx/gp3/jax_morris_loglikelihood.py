@@ -6,9 +6,9 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from jax.scipy.stats import norm
 from SALib.analyze import morris as morris_analyze
 from SALib.sample import morris as morris_sample
 
@@ -92,9 +92,6 @@ class MorrisSensitivityOnLikelihood:
             if sigma_param in self.param_best:
                 self.par_cal_best[sigma_param] = self.param_best[sigma_param]
 
-        self.par_cal_min = [self.full_param_bounds[name][0] for name in self.all_param_names]
-        self.par_cal_max = [self.full_param_bounds[name][1] for name in self.all_param_names]
-
         print(
             f"\nAnalyzing {len(self.all_param_names)} parameters \
                 (r={n_trajectories}, p={n_levels}):"
@@ -121,17 +118,23 @@ class MorrisSensitivityOnLikelihood:
         self.results = {}
         self.param_values = None
         self.all_outputs = None
+        # self.default_point = self._build_default_point()
+        # self.default_outputs: dict[str, float] = {}
 
     def _prepare_observation_times(self) -> np.ndarray:
         """Prepare time indices for observations."""
-        start_year = self.site_data.year_i
-        start_month = self.site_data.month_i
+        start_year = int(np.asarray(self.site_data.year_i).reshape(-1)[0])
+        start_month = int(np.asarray(self.site_data.month_i).reshape(-1)[0])
+
+        if not {"year", "month"}.issubset(self.observed_data.columns):
+            raise ValueError("Observed data must contain year and month columns")
 
         obs_months = []
         for _, row in self.observed_data.iterrows():
-            obs_year = row["year"]
-            months = (obs_year - start_year) * 12 + (12 - start_month)
-            obs_months.append(max(0, months))
+            obs_year = int(row["year"])
+            obs_month = int(row["month"])
+            month_idx = (obs_year - start_year) * 12 + (obs_month - start_month)
+            obs_months.append(month_idx)
         return np.array(obs_months, dtype=int)
 
     def _infer_sigma_param_name(self, var_name: str) -> str | None:
@@ -161,11 +164,7 @@ class MorrisSensitivityOnLikelihood:
         predictions = model_values[self.obs_indices]
         valid_mask = ~(jnp.isnan(predictions) | jnp.isnan(observations))
         residuals = predictions - observations
-        log_terms = jnp.where(
-            valid_mask,
-            -0.5 * ((residuals / sigma) ** 2) - jnp.log(sigma * jnp.sqrt(2 * jnp.pi)),
-            0.0,
-        )
+        log_terms = jnp.where(valid_mask, norm.logpdf(residuals, loc=0.0, scale=sigma), 0.0)
         valid_count = jnp.sum(valid_mask)
         result = jnp.where(valid_count > 0, jnp.sum(log_terms), -jnp.inf)
 
@@ -213,8 +212,9 @@ class MorrisSensitivityOnLikelihood:
             )
 
         component_array = jnp.asarray(component_values, dtype=jnp.float64)
-        total = jnp.sum(component_array)
-        total = jnp.where(jnp.isnan(total) | (total == 0.0), -jnp.inf, total)
+        finite_mask = jnp.isfinite(component_array)
+        total = jnp.sum(jnp.where(finite_mask, component_array, 0.0))
+        total = jnp.where(jnp.any(finite_mask), total, -jnp.inf)
         return jnp.concatenate([component_array, jnp.asarray([total], dtype=jnp.float64)])
 
     def _evaluate_batch_samples(self, sample_values: np.ndarray) -> np.ndarray:
@@ -230,6 +230,27 @@ class MorrisSensitivityOnLikelihood:
             "bounds": [self.full_param_bounds[name] for name in self.all_param_names],
         }
 
+    # def _build_default_point(self) -> np.ndarray:
+    #     """Build default calibration point in optimizer parameter order.
+
+    #     Uses `par_cal_best` where available. If a parameter is missing a default,
+    #     fallback to the midpoint of its min/max bounds.
+    #     """
+    #     default_values: list[float] = []
+    #     for name in self.all_param_names:
+    #         lower, upper = self.full_param_bounds[name]
+    #         best = self.par_cal_best.get(name, (lower + upper) / 2.0)
+    #         # Keep defaults inside bounds to avoid invalid initial evaluations.
+    #         default_values.append(float(np.clip(best, lower, upper)))
+    #     return np.asarray(default_values, dtype=np.float64)
+
+    # def _evaluate_default_point(self) -> dict[str, float]:
+    #     """Evaluate component log-likelihood at the default parameter point."""
+    #     component_names = self.output_vars + ["total"]
+    #     default_eval = self._evaluate_batch_samples(self.default_point[None, :])[0]
+    #     outputs = {name: float(default_eval[i]) for i, name in enumerate(component_names)}
+    #     return outputs
+
     def run_analysis(self) -> dict:
         """Run Morris sensitivity analysis on log-likelihood for all components."""
         print("MORRIS SENSITIVITY ANALYSIS ON LOG-LIKELIHOOD")
@@ -238,6 +259,11 @@ class MorrisSensitivityOnLikelihood:
         print(f"Trajectories (r): {self.n_trajectories}")
         print(f"Levels (p): {self.n_levels}")
 
+        # print("\nEvaluating default initial point (par_cal_best)...")
+        # self.default_outputs = self._evaluate_default_point()
+        # for name in self.output_vars + ["total"]:
+        #     print(f"  default {name}: {self.default_outputs[name]:.6f}")
+
         problem = self._create_morris_problem()
 
         # Generate Morris samples
@@ -245,7 +271,8 @@ class MorrisSensitivityOnLikelihood:
         self.param_values = morris_sample.sample(
             problem,
             self.n_trajectories,
-            self.n_levels,
+            num_levels=self.n_levels,
+            seed=self.seed,
         )
         print(f"Generated {self.param_values.shape[0]} samples")
 
@@ -262,7 +289,7 @@ class MorrisSensitivityOnLikelihood:
             stop = min(start + batch_size, self.param_values.shape[0])
             batch_results = self._evaluate_batch_samples(self.param_values[start:stop])
 
-            if start % max(100, batch_size) == 0:
+            if start % max(1000, batch_size) == 0:
                 print(f"  {start}/{self.param_values.shape[0]}")
 
             for local_idx, global_idx in enumerate(range(start, stop)):
@@ -289,7 +316,6 @@ class MorrisSensitivityOnLikelihood:
         self.results: dict[str, Any] = {}
         for component_name in component_names:
             values = component_values[component_name]
-            # valid_mask = ~np.isinf(values)
             invalid_indices = invalid_samples[component_name]
 
             if len(invalid_indices) == len(values):
@@ -299,38 +325,40 @@ class MorrisSensitivityOnLikelihood:
             if len(invalid_indices) > 0:
                 print(f" Handling {len(invalid_indices)} invalid samples for {component_name}...")
 
-                values_clean = values.copy()
-                for idx in invalid_indices:
-                    # Find nearest valid index within same trajectory
-                    trajectory_size = len(self.all_param_names) + 1
-                    start_idx = (idx // trajectory_size) * trajectory_size
-                    end_idx = min(start_idx + trajectory_size, len(values))
+                trajectory_size = len(self.all_param_names) + 1
+                n_trajectories = values.shape[0] // trajectory_size
 
-                    # Look for valid values in the same trajectory
-                    valid_in_trajectory = []
-                    for j in range(start_idx, end_idx):
-                        if j not in invalid_indices and np.isfinite(values[j]):
-                            valid_in_trajectory.append(values[j])
+                x3 = self.param_values[: n_trajectories * trajectory_size].reshape(
+                    n_trajectories,
+                    trajectory_size,
+                    -1,
+                )
+                y2 = values[: n_trajectories * trajectory_size].reshape(
+                    n_trajectories, trajectory_size
+                )
+                valid_traj_mask = np.all(np.isfinite(y2), axis=1)
 
-                    if valid_in_trajectory:
-                        # Take mean of valid values in the same trajectory
-                        values_clean[idx] = np.mean(valid_in_trajectory)
-                    else:
-                        # Global mean of valid values
-                        all_valid = values[~np.isnan(values) & np.isfinite(values)]
-                        values_clean[idx] = np.mean(all_valid) if len(all_valid) > 0 else 0.0
+                if not np.any(valid_traj_mask):
+                    print(
+                        f"\nWARNING: No fully valid trajectories for {component_name}, "
+                        "skipping analysis"
+                    )
+                    continue
 
-                values_to_analyze = values_clean
+                values_to_analyze = y2[valid_traj_mask].reshape(-1)
+                x_to_analyze = x3[valid_traj_mask].reshape(-1, self.param_values.shape[1])
             else:
                 values_to_analyze = values
+                x_to_analyze = self.param_values
 
             # Run Morris analysis
             morris_result = morris_analyze.analyze(
                 problem,
-                self.param_values,
+                x_to_analyze,
                 values_to_analyze,
                 num_levels=self.n_levels,
                 conf_level=0.95,
+                scaled=False,
                 print_to_console=False,
             )
 
@@ -350,6 +378,40 @@ class MorrisSensitivityOnLikelihood:
 
     def print_summary(self):
         """Print comprehensive summary for all components."""
+        if not self.results:
+            print(" Summary \n ")
+            print("No valid Morris results to summarize.")
+            return
+
+        if not hasattr(self, "combined_df"):
+            combined_data = []
+            for component_name, result in self.results.items():
+                names = list(result["names"])
+                mu_star = np.asarray(result["mu_star"])
+                sigma = np.asarray(result["sigma"])
+                mu = np.asarray(result["mu"])
+                for i, param_name in enumerate(names):
+                    combined_data.append(
+                        {
+                            "Component": component_name,
+                            "Parameter": param_name,
+                            "mu_star": mu_star[i],
+                            "sigma": sigma[i],
+                            "mu": mu[i],
+                        }
+                    )
+            self.combined_df = pd.DataFrame(
+                combined_data,
+                columns=["Component", "Parameter", "mu_star", "sigma", "mu"],
+            )
+            if self.combined_df.empty:
+                print(" Summary \n ")
+                print("No valid Morris results to summarize.")
+                return
+            self.combined_df = self.combined_df.sort_values(
+                ["Component", "mu_star"], ascending=[True, False]
+            )
+
         print(" Summary \n ")
         for comp in self.combined_df["Component"].unique():
             print(f"\nCOMPONENT: {comp.upper()}")
@@ -359,6 +421,15 @@ class MorrisSensitivityOnLikelihood:
     def export_all_results(self, save_dir: str = "morris_results"):
         """Export all results to CSV files."""
         os.makedirs(save_dir, exist_ok=True)
+
+        if not self.results:
+            self.combined_df = pd.DataFrame(
+                columns=["Component", "Parameter", "mu_star", "sigma", "mu"]
+            )
+            self.combined_df.to_csv(f"{save_dir}/morris_all_components.csv", index=False)
+            print("\nNo valid Morris results to export; wrote empty CSV.")
+            return self.combined_df
+
         # Export combined results
         combined_data = []
         for component_name, result in self.results.items():
@@ -377,7 +448,15 @@ class MorrisSensitivityOnLikelihood:
                     }
                 )
 
-        self.combined_df = pd.DataFrame(combined_data)
+        self.combined_df = pd.DataFrame(
+            combined_data,
+            columns=["Component", "Parameter", "mu_star", "sigma", "mu"],
+        )
+        if self.combined_df.empty:
+            self.combined_df.to_csv(f"{save_dir}/morris_all_components.csv", index=False)
+            print("\nNo valid Morris results to export; wrote empty CSV.")
+            return self.combined_df
+
         self.combined_df = self.combined_df.sort_values(
             ["Component", "mu_star"], ascending=[True, False]
         )
@@ -397,11 +476,18 @@ def run_morris_analysis(
     sigma_param_names: dict[str, str] | None = None,
     n_trajectories: int = 500,
     n_levels: int = 20,
-    save_plots: bool = True,
     export_csv: bool = True,
     save_dir: str = "",
 ) -> MorrisSensitivityOnLikelihood:
     """Run Morris sensitivity analysis with individual output components."""
+    if not output_vars:
+        if sigma_param_names:
+            output_vars = [name for name in sigma_param_names if name in observed_data.columns]
+        if not output_vars:
+            raise ValueError(
+                "output_vars cannot be empty. Provide at least one observed output variable."
+            )
+
     analyzer = MorrisSensitivityOnLikelihood(
         file_path=file_path,
         observed_data=observed_data,
@@ -415,7 +501,6 @@ def run_morris_analysis(
     )
 
     analyzer.run_analysis()
-    analyzer.export_all_results(save_dir=save_dir)
     analyzer.print_summary()
 
     if export_csv:
@@ -462,10 +547,9 @@ if __name__ == "__main__":
         output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=500,
+        n_trajectories=1000,
         n_levels=20,
         sigma_param_names=sigma_param_names,
-        save_plots=True,
         export_csv=True,
         save_dir=os.path.join(results_data_folder, "morris_analysis_results_jax"),
     )

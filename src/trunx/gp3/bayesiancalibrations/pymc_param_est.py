@@ -328,7 +328,7 @@ def run_pymc_analysis(
 
     priors = load_priors_from_file(file_path, param_to_optimize)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
-    observations = load_observations_from_file(file_path)
+    observations = load_observations_from_file(file_path, site_data=site_data)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]
     if skipped:
@@ -507,7 +507,7 @@ if __name__ == "__main__":
         "nHC",
     ]
 
-    param_names = top_params + error_names
+    # param_names = top_params + error_names
     param_names = r_20_params + error_names
     run_pymc_analysis(
         output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
@@ -515,7 +515,7 @@ if __name__ == "__main__":
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=1000,
+        num_warmup=500,
         num_samples=500,
     )
 
@@ -523,14 +523,14 @@ if __name__ == "__main__":
     print(f"Total runtime: {elapsed_time:.2f} seconds")
 
     # plot_saved_results(
-    #     output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
+    #     output_dir=os.path.join(results_data_folder, "results/pymc_inference_results"),
     #     params=r_20_params,
     #     observations=load_observations_from_file(file_path),
     #     climate=prepare_data(file_path)[1],
     # )
 
-    # output_dir = str(os.path.join(results_data_folder, "pymc_inference_results"))
-    # idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
-    # az.plot_trace(idata, var_names=["pFS20", "aWS"])
-    # az.plot_posterior(idata, var_names=["pFS20", "aWS"])
-    # plt.show()
+    output_dir = str(os.path.join(results_data_folder, "results/pymc_inference_results"))
+    idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
+    az.plot_trace(idata, var_names=["pFS20", "aWS"])
+    az.plot_posterior(idata, var_names=["pFS20", "aWS"])
+    plt.show()

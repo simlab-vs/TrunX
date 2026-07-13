@@ -526,7 +526,7 @@ def run_hmc_analysis(
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
-    observations = load_observations_from_file(file_path)
+    observations = load_observations_from_file(file_path, site_data=site_data)
     print(f"Loaded observations for variables: {list(observations.keys())}")
 
     skipped = [name for name in observations if f"err_{name}" not in priors]

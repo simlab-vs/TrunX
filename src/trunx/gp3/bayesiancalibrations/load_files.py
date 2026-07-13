@@ -164,6 +164,7 @@ def load_param_defaults_from_file(
 
 def load_observations_from_file(
     file_path: str,
+    site_data: SiteData,
 ) -> dict[str, tuple[jnp.ndarray, jnp.ndarray]]:
     """
     Load all observations from observed sheet in Excel file.
@@ -172,6 +173,9 @@ def load_observations_from_file(
     ----------
     file_path : str
         Path to Excel file containing observed sheet
+    site_data : SiteData
+        Site information used to derive month indices. ``year_i`` and
+        ``month_i`` define simulation month 0.
 
     Returns
     -------
@@ -181,7 +185,16 @@ def load_observations_from_file(
     """
     obs_df = pl.read_excel(file_path, sheet_name="observed")
 
-    obs_times = jnp.asarray(obs_df["idx"].to_numpy(), dtype=jnp.int32)
+    if not {"year", "month"}.issubset(obs_df.columns):
+        raise ValueError("Observed sheet must contain year/month columns")
+
+    start_year = int(np.asarray(site_data.year_i).reshape(-1)[0])
+    start_month = int(np.asarray(site_data.month_i).reshape(-1)[0])
+
+    year = obs_df["year"].cast(pl.Int32).to_numpy()
+    month = obs_df["month"].cast(pl.Int32).to_numpy()
+    idx = (year - start_year) * 12 + (month - start_month)
+    obs_times = jnp.asarray(idx, dtype=jnp.int32)
 
     observations = {}
     excluded_cols = {"idx", "month", "year", "date"}
