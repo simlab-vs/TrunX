@@ -1,5 +1,7 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
+import os
+
 import arviz as az
 import jax
 import jax.numpy as jnp
@@ -12,13 +14,14 @@ import polars as pl
 from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS
 
+from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 az.rcParams["plot.backend"] = "matplotlib"
 
-numpyro.set_host_device_count(2)
+numpyro.set_host_device_count(4)  # Set number of chains to run in parallel
 
 
 def load_priors_from_file(
@@ -28,12 +31,12 @@ def load_priors_from_file(
     default_upper_factor: float = 1.2,
 ) -> dict[str, tuple[float, float]]:
     """
-    Load parameter priors from param_bound sheet in Excel file.
+    Load parameter priors from the param_bound and error_param sheets in Excel file.
 
     Parameters
     ----------
     file_path : str
-        Path to Excel file containing param_bound sheet
+        Path to Excel file containing param_bound and error_param sheets
     param_names : list[str] | None
         List of parameter names to load. If None, loads all available parameters.
     default_lower_factor : float
@@ -44,14 +47,27 @@ def load_priors_from_file(
     Returns
     -------
     dict[str, tuple[float, float]]
-        Dictionary mapping parameter names to (min, max) tuples
+        Dictionary mapping parameter names (including sigma parameters such as
+        `err_DBH`) to (min, max) tuples
     """
-    param_bounds_df = pl.read_excel(file_path, sheet_name="param_bound")
-
+    param_bounds_df = pl.concat(
+        [
+            pl.read_excel(file_path, sheet_name="param_bound"),
+            pl.read_excel(file_path, sheet_name="error_param"),
+        ],
+        how="vertical_relaxed",
+    )
     priors = {}
 
     if param_names is None:
-        param_names = param_bounds_df["param_name"].to_list()
+        param_names = param_bounds_df.filter(
+            pl.col("min").is_not_null() & pl.col("max").is_not_null()
+        )["param_name"].to_list()
+
+        if len(param_names) == 0:
+            raise ValueError(
+                "No parameters with specified min/max bounds found in param_bound sheet"
+            )
 
     for param_name in param_names:
         row = param_bounds_df.filter(pl.col("param_name") == param_name)
@@ -73,6 +89,35 @@ def load_priors_from_file(
         priors[param_name] = (float(min_val), float(max_val))
 
     return priors
+
+
+def load_top_sensitive_params(morris_results_path: str, n_top: int = 20) -> list[str]:
+    """
+    Load the N most sensitive physiology parameter names from Morris results.
+
+    Following the r3PG reference vignette, calibration is restricted to the
+    most sensitive parameters (identified via Morris screening on the total
+    log-likelihood) rather than every bounded parameter.
+
+    Parameters
+    ----------
+    morris_results_path : str
+        Path to a Morris results CSV with `Component`, `Parameter`, `mu_star`
+        columns (as produced by the Morris sensitivity analysis scripts).
+    n_top : int
+        Number of top physiology parameters to keep. Error parameters are
+        excluded here since they are added separately as sigma priors.
+
+    Returns
+    -------
+    list[str]
+        Parameter names ranked by `mu_star` on the `total` component, descending.
+    """
+    df = pl.read_csv(morris_results_path)
+    ranked = df.filter(
+        (pl.col("Component") == "total") & ~pl.col("Parameter").str.starts_with("err_")
+    ).sort("mu_star", descending=True)
+    return ranked["Parameter"].head(n_top).to_list()
 
 
 def load_observations_from_file(
@@ -119,7 +164,7 @@ def model(
     species,
     n_species: int,
     fixed_params,
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
     initial_state: State | None = None,
 ):
@@ -138,9 +183,10 @@ def model(
         Number of species
     fixed_params
         Fixed parameters that won't be estimated
-    priors : dict[str, tuple[float, float]] | None
+    priors : dict[str, tuple[float, float]]
         Dictionary mapping parameter names to (min, max) tuples for priors.
-        If None, uses default priors.
+        Includes both physiology parameters and sigma/error parameters
+        (e.g. `err_DBH`), typically loaded together via `load_priors_from_file`.
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
         Variables: DBH, Height, BA, N, WS, WF, WR
@@ -149,44 +195,34 @@ def model(
     """
     assert fixed_params is not None
 
-    # Default priors if none provided
-    if priors is None:
-        priors = {
-            "alphaCx": (0.020, 0.090),
-            "CoeffCond": (0.0001, 0.070),
-            "Y": (0.440, 0.510),
-            "gammaF0": (0.0001, 0.003),
-            "gammaF1": (0.0001, 0.040),
-            "tgammaF": (12.0, 150.0),
-            "tRho": (0.0, 150.0),
-        }
-
     # Sample from priors
     samples = {}
     for param_name, (lower, upper) in priors.items():
         samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
 
-    # Update parameters with sampled values
-    param_updates = {}
-    for param_name in priors:
-        param_updates[param_name] = samples[param_name]
-
+    param_updates = {
+        name: value for name, value in samples.items() if name in fixed_params._fields
+    }
     params = fixed_params._replace(**param_updates)
 
     # Run model simulation
     _, outputs = run_3pg(initial_state, climate, params, site, species, n_species)
 
-    # Observation likelihoods for each variable
+    # Observation likelihoods for each variable.
     if observations is not None:
         for var_name, (obs_times, obs_values) in observations.items():
-            if var_name in outputs:
-                pred_values = outputs[var_name][obs_times]
-                sigma = numpyro.sample(f"sigma_{var_name}", dist.HalfNormal(1.0))
-                numpyro.sample(
-                    f"obs_{var_name}",
-                    dist.StudentT(df=3, loc=pred_values, scale=sigma),
-                    obs=obs_values,
-                )
+            if var_name not in outputs:
+                continue
+            sigma_name = f"err_{var_name}"
+            if sigma_name not in samples:
+                continue
+            pred_values = outputs[var_name][obs_times]
+            numpyro.sample(
+                f"obs_{var_name}",
+                # dist.StudentT(df=3, loc=pred_values, scale=samples[sigma_name]),
+                dist.Normal(loc=pred_values, scale=samples[sigma_name]),
+                obs=obs_values,
+            )
 
 
 def run_hmc_inference(
@@ -286,7 +322,7 @@ def predict_with_uncertainty(
     initial_state: State,
     fixed_params,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     n_predictions: int = 50,
     seed: int = 42,
     include_obs_error: bool = False,
@@ -298,7 +334,7 @@ def predict_with_uncertainty(
     ----------
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]]
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
-    priors : dict[str, tuple[float, float]] | None
+    priors : dict[str, tuple[float, float]]
         Dictionary of parameter priors (used to get parameter names).
 
     Returns
@@ -309,19 +345,7 @@ def predict_with_uncertainty(
     rng_key = random.PRNGKey(seed)
     samples = mcmc.get_samples()
 
-    # Get parameter names from priors if provided
-    if priors is None:
-        param_names = [
-            "alphaCx",
-            "CoeffCond",
-            "Y",
-            "gammaF0",
-            "gammaF1",
-            "tgammaF",
-            "tRho",
-        ]
-    else:
-        param_names = list(priors.keys())
+    param_names = list(priors.keys())
 
     # Randomly select n_predictions samples
     n_total_samples = len(samples[param_names[0]])
@@ -333,8 +357,13 @@ def predict_with_uncertainty(
     all_outputs = []
 
     for idx in indices:
-        # Extract parameters for this sample
-        param_dict = {name: samples[name][idx] for name in param_names if name in samples}
+        # Extract physiology parameters for this sample (sigma/error parameters
+        # such as `err_DBH` are not fields of `fixed_params`)
+        param_dict = {
+            name: samples[name][idx]
+            for name in param_names
+            if name in samples and name in fixed_params._fields
+        }
         params = fixed_params._replace(**param_dict)
 
         # Run simulation
@@ -347,6 +376,8 @@ def predict_with_uncertainty(
             continue
 
         var_series = jnp.stack([output[var_name] for output in all_outputs], axis=0)
+        if n_species == 1:
+            var_series = var_series[..., 0]
         mean_pred = jnp.mean(var_series, axis=0)
         lower_pred = jnp.percentile(var_series, 2.5, axis=0)
         upper_pred = jnp.percentile(var_series, 97.5, axis=0)
@@ -355,58 +386,179 @@ def predict_with_uncertainty(
     return predictions
 
 
-def plot_results(
-    mcmc: MCMC,
-    climate,
-    site,
-    species,
-    n_species: int,
-    initial_state: State,
-    fixed_params,
-    params,
-    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
-    priors: dict[str, tuple[float, float]] | None = None,
-    save_path: str | None = None,
-    show_plots: bool = True,
-    predict_with_uncert: bool = False,
-):
+def save_inference_data(
+    inf_data: az.InferenceData, output_dir: str, filename: str = "inference_data.nc"
+) -> str:
     """
-    Plot MCMC results including trace plots, posterior distributions, and predictions.
+    Save arviz InferenceData (posterior samples, diagnostics) to a NetCDF file.
 
     Parameters
     ----------
-    priors : dict[str, tuple[float, float]] | None
-        Dictionary of parameter priors (used to get parameter names).
+    inf_data : az.InferenceData
+        Inference data produced by ``az.from_numpyro``.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the NetCDF file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    inf_data.to_netcdf(file_path)
+    return file_path
+
+
+def load_inference_data(file_path: str) -> az.InferenceData:
+    """
+    Load arviz InferenceData previously saved with `save_inference_data`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the NetCDF file.
+
+    Returns
+    -------
+    az.InferenceData
+        Loaded inference data.
+    """
+    return az.from_netcdf(file_path)
+
+
+def save_predictions(
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]],
+    output_dir: str,
+    filename: str = "predictions.npz",
+) -> str:
+    """
+    Save prediction uncertainty bands to a compressed .npz file.
+
+    Parameters
+    ----------
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]
+        Dictionary mapping variable names to (mean_pred, lower_pred, upper_pred),
+        as returned by `predict_with_uncertainty`.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the .npz file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    arrays: dict[str, np.ndarray] = {}
+    for var_name, (mean_pred, lower_pred, upper_pred) in predictions.items():
+        arrays[f"{var_name}_mean"] = np.asarray(mean_pred)
+        arrays[f"{var_name}_lower"] = np.asarray(lower_pred)
+        arrays[f"{var_name}_upper"] = np.asarray(upper_pred)
+    np.savez(file_path, **arrays)  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType]
+    return file_path
+
+
+def load_predictions(file_path: str) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Load prediction uncertainty bands previously saved with `save_predictions`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .npz file.
+
+    Returns
+    -------
+    dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]
+        Dictionary mapping variable names to (mean_pred, lower_pred, upper_pred).
+    """
+    data = np.load(file_path)
+    var_names = sorted({key.rsplit("_", 1)[0] for key in data.files})
+    return {
+        var_name: (data[f"{var_name}_mean"], data[f"{var_name}_lower"], data[f"{var_name}_upper"])
+        for var_name in var_names
+    }
+
+
+def save_results(
+    mcmc: MCMC,
+    output_dir: str,
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None = None,
+) -> az.InferenceData:
+    """
+    Save inference data and, if available, prediction uncertainty bands to disk.
+
+    Parameters
+    ----------
+    mcmc : MCMC
+        Fitted MCMC object.
+    output_dir : str
+        Directory to save results in.
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None
+        Prediction uncertainty bands from `predict_with_uncertainty`, if computed.
+
+    Returns
+    -------
+    az.InferenceData
+        The inference data, so callers can reuse it for plotting without recomputing.
     """
     inf_data = az.from_numpyro(mcmc)
+    save_inference_data(inf_data, output_dir)
+    if predictions is not None:
+        save_predictions(predictions, output_dir)
+    return inf_data
 
+
+def plot_results(
+    inf_data: az.InferenceData,
+    params: list[str] | None,
+    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
+    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None = None,
+    climate=None,
+    output_dir: str | None = None,
+):
+    """
+    Plot trace, posterior, and prediction-uncertainty figures.
+
+    Parameters
+    ----------
+    inf_data : az.InferenceData
+        Inference data produced by `az.from_numpyro`.
+    params : list[str] | None
+        Parameter names to plot. If None, plots all posterior variables.
+    predictions : dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] | None
+        Prediction uncertainty bands from `predict_with_uncertainty`. Plotted
+        alongside `observations` when both are given.
+    climate
+        Climate data, needed to determine the prediction time axis when
+        `predictions` is given.
+    output_dir : str | None
+        If given, save each figure as a PNG in this directory.
+    """
     if params is None:
-        params = list(inf_data.posterior.data_vars)
+        params = [str(name) for name in inf_data["posterior"].data_vars]
 
     # Trace plots
     az.plot_trace(inf_data, var_names=params)
+    if output_dir is not None:
+        plt.gcf().savefig(os.path.join(output_dir, "trace_plots.png"))
 
     # Posterior plots
     az.plot_posterior(inf_data, var_names=params)
+    if output_dir is not None:
+        plt.gcf().savefig(os.path.join(output_dir, "posterior_plots.png"))
 
     # Summary diagnostics
     summary = az.summary(inf_data, var_names=params)
     print(summary)
 
-    if predict_with_uncert and observations is not None:
-        # Get predictions
-        predictions = predict_with_uncertainty(
-            mcmc,
-            climate,
-            site,
-            species,
-            n_species,
-            initial_state,
-            fixed_params,
-            observations=observations,
-            priors=priors,
-            n_predictions=min(500, len(mcmc.get_samples()[params[0]])) if params else 50,
-        )
+    if predictions is not None and observations is not None:
+        assert climate is not None, "climate is required to plot predictions"
 
         # Determine number of months
         n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
@@ -453,6 +605,9 @@ def plot_results(
             ax.legend()
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
+            if output_dir is not None:
+                fig.savefig(os.path.join(output_dir, f"prediction_{var_name}.png"))
+
     plt.show()
 
 
@@ -461,14 +616,14 @@ def run_full_analysis(
     climate,
     site,
     species,
+    output_dir: str,
     n_species: int,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     fixed_params,
-    priors: dict[str, tuple[float, float]] | None = None,
+    priors: dict[str, tuple[float, float]],
     num_warmup: int = 1000,
     num_samples: int = 1000,
     num_chains: int = 4,
-    output_dir: str = "./hmc_results",
     seed: int = 42,
     show_plots: bool = True,
     predict_with_uncert: bool = False,
@@ -489,17 +644,6 @@ def run_full_analysis(
         - mcmc: MCMC object with samples
         - samples: Dictionary of posterior samples
     """
-    if priors is None:
-        priors = {
-            "alphaCx": (0.020, 0.090),
-            "CoeffCond": (0.0001, 0.070),
-            "Y": (0.440, 0.510),
-            "gammaF0": (0.0001, 0.003),
-            "gammaF1": (0.0001, 0.040),
-            "tgammaF": (12.0, 150.0),
-            "tRho": (0.0, 150.0),
-        }
-
     param_names = list(priors.keys())
 
     print("Running HMC inference for 3PG model (multi-variable)")
@@ -531,29 +675,40 @@ def run_full_analysis(
     print("R-hat values (should be <= 1.0):")
     mcmc.print_summary()
 
-    # Plot results
-    print("Generating plots...")
+    predictions = None
+    if predict_with_uncert:
+        predictions = predict_with_uncertainty(
+            mcmc,
+            climate,
+            site,
+            species,
+            n_species,
+            initial_state,
+            fixed_params,
+            observations=observations,
+            priors=priors,
+            n_predictions=min(500, len(samples[param_names[0]])) if param_names else 50,
+        )
 
-    plot_results(
-        mcmc=mcmc,
-        climate=climate,
-        site=site,
-        species=species,
-        n_species=n_species,
-        initial_state=initial_state,
-        fixed_params=fixed_params,
-        observations=observations,
-        params=param_names,
-        priors=priors,
-        show_plots=show_plots,
-        predict_with_uncert=predict_with_uncert,
-    )
+    print("Saving results...")
+    inf_data = save_results(mcmc, output_dir, predictions)
+
+    if show_plots:
+        print("Generating plots...")
+        plot_results(
+            inf_data=inf_data,
+            params=param_names,
+            observations=observations,
+            predictions=predictions,
+            climate=climate,
+            output_dir=output_dir,
+        )
 
     return mcmc, samples
 
 
 def run_hmc_analysis(
-    file_path: str = "./data/solling_data.xlsx",
+    file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_names: list[str] | None = None,
     predict_with_uncert: bool = False,
 ):
@@ -574,24 +729,16 @@ def run_hmc_analysis(
         prepare_data(file_path)
     )
 
-    # Load priors from file
-    if param_names is None:
-        param_names = [
-            "alphaCx",
-            "CoeffCond",
-            "Y",
-            "gammaF0",
-            "gammaF1",
-            "tgammaF",
-            "tRho",
-        ]
-
-    priors = load_priors_from_file(file_path, param_names)
+    priors = load_priors_from_file(file_path, param_names=param_names)
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
     observations = load_observations_from_file(file_path)
     print(f"Loaded observations for variables: {list(observations.keys())}")
+
+    skipped = [name for name in observations if f"err_{name}" not in priors]
+    if skipped:
+        print(f"Skipping observations with no matching sigma prior in error_param: {skipped}")
 
     # Run analysis
     mcmc, samples = run_full_analysis(
@@ -603,10 +750,10 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=200,
-        num_samples=200,
-        num_chains=2,
-        output_dir="./data/hmc_results",
+        num_warmup=1000,
+        num_samples=1000,
+        num_chains=4,
+        output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=True,
         predict_with_uncert=predict_with_uncert,
     )
@@ -622,11 +769,19 @@ def run_hmc_analysis(
 
 if __name__ == "__main__":
     # Use solling_data.xlsx by default
-    # Can specify custom parameters to estimate, or use defaults
+
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+
+    # Restrict calibration to the most sensitive physiology parameters.
+    morris_results_path = os.path.join(
+        results_data_folder, "morris_analysis_results_jax", "morris_all_components.csv"
+    )
+    error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+    top_params = load_top_sensitive_params(morris_results_path, n_top=20)
+    param_names = top_params + error_names
+
     run_hmc_analysis(
-        file_path="./data/solling_data.xlsx",
-        # None uses default: ["alphaCx", "CoeffCond", "Y", "gammaF0",
-        # "gammaF1", "tgammaF", "tRho"]
-        param_names=None,
+        file_path=file_path,
+        param_names=param_names,
         predict_with_uncert=True,
     )

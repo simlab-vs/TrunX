@@ -18,6 +18,12 @@ from trunx.gp3.run_3pg import run_3pg
 
 warnings.filterwarnings("ignore")
 
+# If a prediction exceeds this multiple of the observed data's own scale, the
+# model has numerically diverged (e.g. an allometric coefficient sampled at a
+# boundary that divides by ~0) and the resulting likelihood is not meaningful,
+# regardless of which parameter combination caused it.
+PLAUSIBILITY_MULTIPLIER = 100.0
+
 
 def _load_saved_morris_results(results_csv_path: str) -> pd.DataFrame:
     """Load exported Morris results from CSV.
@@ -275,6 +281,11 @@ class MorrisSensitivityOnLikelihood:
                     )
                 sigma = sampled_params[sigma_param_name]
 
+                obs_scale = float(jnp.max(jnp.abs(observations))) + 1e-8
+                if float(jnp.max(jnp.abs(predictions))) >= PLAUSIBILITY_MULTIPLIER * obs_scale:
+                    log_lik_components[var_name] = -np.inf
+                    continue
+
                 # Normal log-likelihood
                 residuals = predictions - observations
                 log_lik = jnp.sum(
@@ -284,9 +295,11 @@ class MorrisSensitivityOnLikelihood:
             else:
                 log_lik_components[var_name] = -np.inf
 
-        # Total log-likelihood is sum of components
-        valid_components = [v for v in log_lik_components.values() if not np.isinf(v)]
-        log_lik_components["total"] = sum(valid_components) if valid_components else -np.inf
+        # Total log-likelihood: any non-finite component poisons the total.
+        total = sum(log_lik_components.values())
+        if np.isnan(total) or total == 0.0:
+            total = -np.inf
+        log_lik_components["total"] = total
 
         return log_lik_components
 

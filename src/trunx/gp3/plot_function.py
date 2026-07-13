@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from trunx.gp3.create_data_inputs import create_weather_input
+from trunx.gp3.weather_processing import create_weather_input
 
 
 def plot_outputs(outputs, start_month, fig_name: str | None = None, show: bool = True):

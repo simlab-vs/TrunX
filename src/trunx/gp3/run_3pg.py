@@ -187,7 +187,6 @@ def model_step(state, climate_month, params, site, species, n_species):
 
     # Recalculate LAI after all updates
     LAI, SLA = compute_lai(params, WF_new, age_months + 1)
-    LAI = jnp.clip(LAI, 0.0, 15.0)
 
     BA = jnp.pi * (DBH_updated / 200.0) ** 2 * N_new  # Basal area in m^2/ha
     competition_total = jnp.sum(wood_density * BA)

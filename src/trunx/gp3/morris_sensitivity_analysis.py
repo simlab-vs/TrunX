@@ -184,7 +184,7 @@ class MorrisSensitivityOnOutputs:
         for var in self.output_vars:
             values = self.all_outputs[var]
 
-            valid_mask = ~np.isnan(values)
+            valid_mask = np.isfinite(values)
             if not np.any(valid_mask):
                 print(f"  No valid values for {var}, skipping")
                 continue
