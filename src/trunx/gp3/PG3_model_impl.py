@@ -10,11 +10,10 @@ import pandas as pd
 import polars as pl
 from jax import config, grad
 
-from trunx.config import clean_data_folder, icp_raw_data_folder, project_root
+from trunx.config import project_root, threepg_data_folder
 
 # config.update("jax_debug_nans", True)  # Enable NaN debugging
-from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
-from trunx.gp3.create_data_inputs import create_input_data, create_weather_input
+from trunx.gp3.create_data_inputs import create_input_data
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
@@ -28,7 +27,6 @@ from trunx.gp3.prepare_climate import prepare_climate
 from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
-from trunx.gp3.run_r3pg import run_comparison_r
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,6 +162,8 @@ def run_threepg_main(
         print(f"{specie}: [∂WS/∂alphaCx, ∂WS/∂CoeffCond, ∂WS/∂Y] = {jacobian[idx]}")
 
     if r_comparison and plot_output:
+        from trunx.gp3.run_r3pg import run_comparison_r
+
         r_outputs = run_comparison_r(file_path)
         df_comp = create_comparison_dataframe(
             r_outputs, outputs, climate.start_month, species_names
@@ -176,6 +176,8 @@ def run_threepg_main(
             show=show_plots,
         )
     elif r_comparison:
+        from trunx.gp3.run_r3pg import run_comparison_r
+
         r_outputs = run_comparison_r(file_path)
         create_comparison_dataframe(r_outputs, outputs, climate.start_month, species_names)
         fig = None
@@ -189,7 +191,7 @@ def run_threepg_main(
 
 def run_threepg_with_icp(plot_id: str = "", plot_output=True, r_comparison=True):
     """Run 3PG model with ICP weather data."""
-    file_path = os.path.join("./data/", "S_weather_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
     if os.path.exists(file_path):
         os.remove(file_path)
         print(f"Deleted: {file_path}")
@@ -211,18 +213,18 @@ def run_threepg_with_icp(plot_id: str = "", plot_output=True, r_comparison=True)
 
 
 if __name__ == "__main__":
-    # file_path = "./data/data_semisynthetic.xlsx"
-    # file_path = "./data/data.input.xlsx"
-    # file_path = "./data/data_sspecies_nothinning.xlsx"
-    # file_path = "./data/data_nothinning.xlsx"
-    # file_path = "./data/S_weather_data.xlsx"
+    # file_path = os.path.join(threepg_data_folder, "data_semisynthetic.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
 
-    # file_path = "./data/solling_data.xlsx"
-    # file_path = "./data/davos_data.xlsx"
-    file_path = "./data/Davos_data_GPP.xlsx"
-    fig, outputs = run_threepg_main(
-        file_path, observed_data=None, plot_output=True, r_comparison=True
-    )
+    # fig, outputs = run_threepg_main(
+    #     file_path, observed_data=None, plot_output=True, r_comparison=False
+    # )
 
-    # plot_id = "50.0018"
-    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
+    plot_id = "04.1205"
+    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

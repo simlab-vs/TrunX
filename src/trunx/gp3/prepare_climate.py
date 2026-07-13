@@ -1,11 +1,14 @@
 """Prepare climate data for 3PG model."""
 
-from datetime import date
+import calendar
+import datetime
+import os
 
 import jax.numpy as jnp
 import numpy as np
 import polars as pl
 
+from trunx.config import threepg_data_folder
 from trunx.gp3.model_inputs import ClimateData
 
 
@@ -30,6 +33,11 @@ def clim_range(climate):
         raise ValueError("Average temperature is greater than maximum temperature!")
 
     if climate.filter(pl.col("tmp_ave") < pl.col("tmp_min")).height > 0:
+        print(
+            climate.filter(pl.col("tmp_ave") < pl.col("tmp_min")).select(
+                "year", "month", "tmp_min", "tmp_ave", "tmp_max"
+            )
+        )
         raise ValueError("Minimum temperature is greater than average temperature!")
 
     # Precipitation
@@ -74,8 +82,8 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
     if climate.select(pl.col(required).null_count()).to_series().sum() > 0:
         raise ValueError("Climate table should not contain NAs")
 
-    from_date = date.fromisoformat(from_ + "-01")
-    to_date = date.fromisoformat(to + "-01")
+    from_date = datetime.date.fromisoformat(from_ + "-01")
+    to_date = datetime.date.fromisoformat(to + "-01")
 
     if from_date >= to_date:
         raise ValueError("The start date is later than the end date")
@@ -117,19 +125,6 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
 
         climate = climate.filter((pl.col("date") >= from_date) & (pl.col("date") <= to_date))
 
-    days_in_month = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31])
-
-    climate = climate.with_columns(
-        pl.when(pl.col("frost_days").is_not_null())
-        .then(
-            pl.struct(["frost_days", "month"]).map_elements(
-                lambda x: min(x["frost_days"], days_in_month[x["month"] - 1])
-            )
-        )
-        .otherwise(pl.col("frost_days"))
-        .alias("frost_days")
-    )
-
     if "tmp_ave" not in climate.columns:
         climate = climate.with_columns(
             ((pl.col("tmp_min") + pl.col("tmp_max")) / 2).alias("tmp_ave")
@@ -146,14 +141,12 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
     if "d13catm" not in climate.columns:
         climate = climate.with_columns(pl.lit(-7.1).alias("d13catm"))
 
-    min_date = climate.select("date").min().item()
-    max_date = climate.select("date").max().item()
+    n_days = []
+    for date in climate.select("date").to_series():
+        _, days = calendar.monthrange(date.year, date.month)
+        n_days.append(days)
 
-    months = (max_date.year - min_date.year) * 12 + (max_date.month - min_date.month) + 1
-    start_month = min_date.month
-    n_years = (months + 11) // 12
-    rotated = jnp.roll(days_in_month, -(start_month - 1))
-    n_days = jnp.tile(rotated, n_years)[:months]
+    n_days = jnp.array(n_days)
 
     climate = climate.select(
         [
@@ -200,7 +193,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
 
 
 if __name__ == "__main__":
-    file_path = "./data/data.input.xlsx"
+    file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
     sheet_name = "climate"
 
     climate = pl.read_excel(file_path, sheet_name=sheet_name)

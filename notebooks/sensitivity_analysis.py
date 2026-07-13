@@ -2,33 +2,31 @@
 
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-
     return
 
 
 @app.cell
 def _():
     import os
-    import sys
-    from pathlib import Path
 
-    sys.path.append(str(Path(__file__).parent.parent))
     import matplotlib.pyplot as plt
     import numpy as np
     import polars as pl
 
-    return np, os, pl, plt
+    from trunx.config import results_data_folder
+
+    return np, os, pl, plt, results_data_folder
 
 
 @app.cell
-def _(np, os, pl, plt):
-    morris_dir = os.path.join("./data", "morris_analysis_results")
+def _(np, os, pl, plt, results_data_folder):
+    morris_dir = os.path.join(results_data_folder, "morris_analysis_results_jax")
 
     sensitivity_df = pl.read_csv(os.path.join(morris_dir, "morris_all_components.csv"))
 

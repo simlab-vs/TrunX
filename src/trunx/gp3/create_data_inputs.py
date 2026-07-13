@@ -1,4 +1,12 @@
-"""Create data input for 3PG model using ICP data."""
+"""Create data input for 3PG model using ICP data.
+
+TODO
+-------
+Adjust the per-hectare scaling to account for the actual plot area
+(currently assumed to be 1 ha). Following it adjust the biomass and LAI calculations
+accordingly.
+
+"""
 
 import logging
 import os
@@ -7,10 +15,16 @@ import jax.numpy as jnp
 import pandas as pd
 import polars as pl
 
-from trunx.config import clean_data_folder, data_folder, icp_raw_data_folder
+from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
+from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
+from trunx.gp3.allometrics import add_allometric_columns, load_forrester_eq3
 
 logger = logging.getLogger(__name__)
+
+# Forrester et al. (2017) eq. 3 coefficients for all species with complete data.
+# Loaded once at import time to avoid repeated Excel reads.
+_FORRESTER_COEFFS = load_forrester_eq3()
 
 
 def dms_to_decimal(dms):
@@ -40,11 +54,24 @@ def create_weather_input(df, plot_id):
         if col.startswith("daily_m"):
             srad_df = srad_df.with_columns((pl.col(col) * 0.0864).alias(col))
 
-    mtemp_df = temp_df.group_by(["month_year"]).agg(
-        pl.col("daily_mean").mean().alias("tmp_ave"),
-        pl.col("daily_min").mean().alias("tmp_min"),
-        pl.col("daily_max").mean().alias("tmp_max"),
-        (pl.col("daily_min") < 0).sum().alias("frost_days"),
+    mtemp_df = (
+        temp_df.group_by(["month_year"])
+        .agg(
+            pl.col("daily_mean").mean().alias("tmp_ave"),
+            pl.col("daily_min").mean().alias("tmp_min"),
+            pl.col("daily_max").mean().alias("tmp_max"),
+            (pl.col("daily_min") < 0).sum().alias("frost_days"),
+        )
+        .with_columns(
+            pl.when(pl.col("tmp_ave") < pl.col("tmp_min"))
+            .then(pl.col("tmp_ave"))
+            .otherwise(pl.col("tmp_min"))
+            .alias("tmp_min"),
+            pl.when(pl.col("tmp_ave") > pl.col("tmp_max"))
+            .then(pl.col("tmp_ave"))
+            .otherwise(pl.col("tmp_max"))
+            .alias("tmp_max"),
+        )
     )
 
     mprcp_df = prcp_df.group_by("month_year").agg(pl.col("daily_mean").sum().alias("prcp"))
@@ -239,7 +266,7 @@ def create_input_params(icp_df):
     """Create parameter data input for 3PG model."""
     input_params = {}
     params_df = pl.read_excel(
-        os.path.join(data_folder, "data.input.xlsx"), sheet_name="parameters"
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="parameters"
     )
     input_params["parameter"] = params_df["parameter"].to_list()
     for specie in icp_df["specie"].unique().to_list():
@@ -256,7 +283,9 @@ def create_input_params(icp_df):
 
 def create_species_data(icp_df):
     """Create species data input for 3PG model."""
-    species_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="species")
+    species_df = pl.read_excel(
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="species"
+    )
 
     print(
         "\n Species found in this location: ",
@@ -271,7 +300,9 @@ def create_species_data(icp_df):
 
 def create_site_data(icp_df, weather_df):
     """Create site data input for 3PG model."""
-    site_df = pl.read_excel(os.path.join(data_folder, "data.input.xlsx"), sheet_name="site")
+    site_df = pl.read_excel(
+        os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="site"
+    )
 
     latitude_value = icp_df["Lat"][0]
     altitude_value = icp_df["plot_altitude"][0]
@@ -292,8 +323,33 @@ def create_site_data(icp_df, weather_df):
     return site_df
 
 
-def update_species_data(icp_df, species_df, input_params_df):
-    """Create species data for 3PG model for specific site."""
+def update_species_data(
+    icp_df: pl.DataFrame,
+    species_df: pl.DataFrame,
+    input_params_df: pl.DataFrame,
+    models: dict[str, tuple[float, float]] | None = None,
+) -> tuple[pl.DataFrame, int]:
+    """Create species data for 3PG model for a specific site.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        ICP level2 data filtered to the target plot.
+    species_df : pl.DataFrame
+        Species template data from the 3PG input file.
+    input_params_df : pl.DataFrame
+        Parameter data for the species present.
+    models : dict[str, tuple[float, float]] | None
+        Per-species power-law coefficients ``(a, b)`` from
+        :func:`trunx.gp3.age_regression.fit_models`. When provided, the
+        ``planted`` date is estimated from DBH at the first common survey
+        year rather than taken from the template.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, int]
+        Updated species DataFrame and the first common survey year.
+    """
     avg_diameter = icp_df.group_by(["specie", "period_end"]).agg(
         pl.col("diameter_end").mean().alias("DBH")
     )
@@ -312,6 +368,55 @@ def update_species_data(icp_df, species_df, input_params_df):
     start_year = common_start["start_year"].item()
 
     avg_diameter = avg_diameter.filter(pl.col("year") == start_year)
+
+    if models is not None:
+        for specie in avg_diameter["specie"].unique().to_list():
+            _raw_age = (
+                icp_df.filter(
+                    (pl.col("period_end").dt.year() == start_year) & (pl.col("specie") == specie)
+                )
+                .select(pl.col("soph_avg_age").cast(pl.Float64).mean())
+                .item()
+            )
+            direct_age: float | None = float(_raw_age) if _raw_age is not None else None
+
+            if direct_age is not None:
+                planting_year = int(start_year - round(direct_age))
+                species_df = species_df.with_columns(
+                    pl.when(pl.col("species") == specie)
+                    .then(pl.lit(f"{planting_year}-01"))
+                    .otherwise(pl.col("planted"))
+                    .alias("planted")
+                )
+                logger.info(
+                    "Direct age for '%s': %d (age %.1f yr at %d)",
+                    specie,
+                    planting_year,
+                    direct_age,
+                    start_year,
+                )
+                continue
+
+            if specie not in models:
+                logger.warning("No age model for '%s', keeping template planted date", specie)
+                continue
+            dbh = avg_diameter.filter(pl.col("specie") == specie)["DBH"].to_numpy()
+            a, b = models[specie]
+            estimated_age = predict_age_from_dbh(dbh, a, b)
+            planting_year = int(start_year - round(estimated_age))
+            species_df = species_df.with_columns(
+                pl.when(pl.col("species") == specie)
+                .then(pl.lit(f"{planting_year}-01"))
+                .otherwise(pl.col("planted"))
+                .alias("planted")
+            )
+            logger.info(
+                "Estimated planting year for '%s': %d (age %.1f yr at %d)",
+                specie,
+                planting_year,
+                estimated_age,
+                start_year,
+            )
 
     num_trees = (
         icp_df.filter(pl.col("specie").is_in(species_df.select("species").to_series().to_list()))
@@ -413,6 +518,48 @@ def update_species_data(icp_df, species_df, input_params_df):
     return species_df, start_year
 
 
+def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
+    """Aggregate per-tree Forrester biomass to survey-date observations.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        Tree-level ICP data with ``diameter_end`` (cm) and ``specie`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (specie, month_year) with columns ``WS``, ``WF``, ``WR``
+        (t ha⁻¹) and ``LAI`` (m² m⁻²).  Rows whose species has no Forrester
+        equation 3 coefficients carry null values.
+
+    Notes
+    -----
+    Per-hectare scaling assumes the ICP plot represents 1 ha.  WS/WF/WR are
+    the sum of per-tree biomass (kg) divided by 1 000.  LAI is the sum of
+    per-tree leaf area (m²) divided by 10 000.
+    """
+    return (
+        add_allometric_columns(
+            icp_df,
+            _FORRESTER_COEFFS,
+            dbh_col="diameter_end",
+            species_col="specie",
+        )
+        .group_by(["specie", "period_end"])
+        .agg(
+            (pl.col("allo_sb_kg").sum() / 1000.0).alias("WS"),
+            (pl.col("allo_fb_kg").sum() / 1000.0).alias("WF"),
+            (pl.col("allo_rb_kg").sum() / 1000.0).alias("WR"),
+            (pl.col("allo_la_m2").sum() / 10000.0).alias("LAI"),
+        )
+        .with_columns(
+            pl.col("period_end").dt.strftime("%m-%Y").alias("month_year"),
+        )
+        .drop("period_end")
+    )
+
+
 def create_observation_data(plot_id, icp_df, weather_df, start_year):
     """Create observed data input for 3PG model."""
     dbh_df = (
@@ -445,18 +592,14 @@ def create_observation_data(plot_id, icp_df, weather_df, start_year):
 
     specie_gpp = pl.concat(specie_gpp)
 
+    biom_df = _allometric_observations(icp_df)
+
     observed_data = (
         specie_gpp.join(dbh_df, on=["specie", "month_year"], how="full")
-        .select(["specie", "month", "year", "Date", "GPP", "DBH"])
+        .join(biom_df, on=["specie", "month_year"], how="left")
+        .select(["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"])
         .join(weather_df, on=["month", "year"], how="full")
-        .select(
-            "specie",
-            "month",
-            "year",
-            "Date",
-            "GPP",
-            "DBH",
-        )
+        .select("specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI")
     )
 
     return observed_data
@@ -471,9 +614,10 @@ def create_input_data(input_data_file, plot_id):
 
     df = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
 
-    # ICP data
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
-    icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
+    # ICP data — load full dataset first for cross-plot age model fitting
+    icp_full = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    age_models = fit_models(icp_full)
+    icp_df = icp_full.filter(pl.col("plot_id") == plot_id)
     icp_df = icp_df.filter(
         pl.col("specie").is_in(
             list(
@@ -508,7 +652,9 @@ def create_input_data(input_data_file, plot_id):
     input_params_df = create_input_params(icp_df)
     logging.info("Created parameter data for plot_id: %s", plot_id)
 
-    input_species_df, start_year = update_species_data(icp_df, input_species_df, input_params_df)
+    input_species_df, start_year = update_species_data(
+        icp_df, input_species_df, input_params_df, models=age_models
+    )
 
     weather_df = weather_df.filter(pl.col("year") >= start_year)
 
@@ -534,40 +680,3 @@ def create_input_data(input_data_file, plot_id):
         print(summary_wdf)
 
     return miss_months, observed_data.to_pandas()
-
-
-if __name__ == "__main__":
-    file_path = os.path.join("./data/", "S_weather_data.xlsx")
-    raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
-    processor = prepare_icp_weather_data(raw_file_path)
-    df = processor.clean_data()
-
-    # miss_months, weather_df = create_weather_input(df, plot_id="50.0018")
-    # print(weather_df.head())
-
-    plot_id = "50.0018"
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
-    icp_df = icp_df.filter(pl.col("plot_id") == plot_id)
-    icp_df = icp_df.filter(
-        pl.col("specie").is_in(
-            list(
-                [
-                    "Picea abies",
-                    "Pinus sylvestris",
-                    "Fagus sylvatica",
-                    "Quercus robur",
-                    "Quercus petraea",
-                ]
-            )
-        )
-    )
-
-    icp_df = icp_df.with_columns(
-        pl.col("plot_latitude").map_elements(dms_to_decimal, return_dtype=pl.Float64).alias("Lat"),
-        pl.col("plot_longitude")
-        .map_elements(dms_to_decimal, return_dtype=pl.Float64)
-        .alias("Lon"),
-    )
-
-    observed_data = create_observation_data(plot_id, icp_df, df, create_species_data(icp_df))
-    print(observed_data)

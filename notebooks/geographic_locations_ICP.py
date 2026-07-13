@@ -2,7 +2,7 @@
 
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
@@ -78,9 +78,7 @@ def _(df, pl):
             specie=pl.col("specie").unique(),
             age=pl.col("soph_avg_age").unique(),
         )
-        .filter(
-            pl.col("num_period_group") == 4  # pl.col("num_period_group").max()
-        )
+        .filter(pl.col("num_period_group") == pl.col("num_period_group").max())
         .group_by(["code_country", "code_plot", "Lat", "Lon", "plot_id"])
         .agg(
             num_trees=pl.col("tree_id").unique().len(),
@@ -88,7 +86,7 @@ def _(df, pl):
             age_values=pl.col("age").unique(),
         )
         .sort("num_trees", descending=True)
-    ).filter(pl.col("code_country") == 50)
+    )
 
     max_number_periods_plot_ids = sorted(max_number_periods_df["plot_id"].to_list())
     print("Plot ids with maximum number of growth periods are: \n", max_number_periods_plot_ids)
@@ -98,8 +96,12 @@ def _(df, pl):
 
 
 @app.cell
-def _(clean_data_folder, os, pl):
+def _():
+    return
 
+
+@app.cell
+def _(clean_data_folder, os, pl):
     # raw_file_path = os.path.join(icp_raw_data_folder, "595_mm_20260227091917/mm_mem.csv")
     # processor = prepare_icp_weather_data(raw_file_path)
     # clean_wdf = processor.clean_data()
@@ -188,9 +190,31 @@ def _(missing_df, plt):
 
 
 @app.cell
-def _(mo):
+def _():
+    return
 
-    # Complete country mapping with integer codes (based on your data)
+
+@app.cell
+def _(df, pl, plt):
+    df_plots = (
+        df.unique(subset="plot_id", keep="last")
+        .group_by("country")
+        .agg(num_plots=pl.col("plot_id").len())
+        .sort("num_plots", descending=False)
+        .with_columns(pl.col("country"))
+    )
+    plt.figure(figsize=(10, 8))
+    plt.barh(df_plots["country"], df_plots["num_plots"], color="blue")
+    plt.ylabel("Country")
+    plt.xlabel("# Plots")
+    plt.yticks(ticks=df_plots["country"], rotation=0)
+    plt.show()
+    return
+
+
+@app.cell
+def _(mo):
+    # Complete country mapping with integer codes
     country_codes = {
         # Western Europe
         "🇫🇷 France (FR, 1)": 1,
@@ -257,7 +281,46 @@ def _(country_codes, country_ui, df, mo, pl):
     )
 
     mo.hstack([country_ui, plot_selector_ui])
-    return (plot_selector_ui,)
+    return plot_selector_ui, selected_country_code
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Tree Analysis
+    """)
+    return
+
+
+@app.cell
+def _(df, pl, selected_country_code):
+    trees_df = (
+        df.filter(pl.col("code_country") == selected_country_code)
+        .unique(subset="tree_id", keep="last")
+        .group_by("plot_id")
+        .agg(num_trees=pl.col("tree_id").len())
+        .sort("num_trees", descending=True)
+    )
+    return (trees_df,)
+
+
+@app.cell
+def _(plt, trees_df):
+    plt.figure(figsize=(len(trees_df) * 0.3, 6))
+    plt.bar(trees_df["plot_id"], trees_df["num_trees"], color="blue")
+    plt.xlabel("Plot ID")
+    plt.ylabel("# Trees")
+    plt.xticks(ticks=trees_df["plot_id"], rotation=45)
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Weather Data
+    """)
+    return
 
 
 @app.cell
@@ -276,12 +339,6 @@ def _(df, pl, plot_selector_ui):
         num_tress=pl.len(),
         age=pl.col("soph_avg_age").mean(),
     )
-    return
-
-
-@app.cell
-def _(pl):
-    pl.read_csv("./data/raw/ICP/595_mm_20260227091917/mm_mem.csv", separator=";")
     return
 
 

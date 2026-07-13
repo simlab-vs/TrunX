@@ -4,6 +4,7 @@ import os
 import warnings
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,116 +18,6 @@ from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 warnings.filterwarnings("ignore")
-
-
-def _load_saved_morris_results(results_csv_path: str) -> pd.DataFrame:
-    """Load exported Morris results from CSV.
-
-    Parameters
-    ----------
-    results_csv_path : str
-        Path to the exported `morris_all_components.csv` file.
-
-    Returns
-    -------
-    pd.DataFrame
-        Morris results table.
-    """
-    if not os.path.exists(results_csv_path):
-        raise FileNotFoundError(f"Results file not found: {results_csv_path}")
-    return pd.read_csv(results_csv_path)
-
-
-def plot_component_comparison_from_results(
-    results_csv_path: str, output_vars: list[str], save_path: str | None = None
-) -> None:
-    """Compare top parameters across all components from saved results.
-
-    Parameters
-    ----------
-    results_csv_path : str
-        Path to the exported `morris_all_components.csv` file.
-    output_vars : list[str]
-        Output variables to include in the comparison.
-    save_path : str | None, optional
-        Path to save the figure.
-    """
-    combined_df = _load_saved_morris_results(results_csv_path)
-    components = [c for c in ["total", *output_vars] if c in combined_df["Component"].unique()]
-    fig, axes = plt.subplots(1, len(components), figsize=(5 * len(components), 8))
-    if len(components) == 1:
-        axes = [axes]
-
-    for ax, comp in zip(axes, components, strict=True):
-        df = combined_df[combined_df["Component"] == comp].nlargest(10, "mu_star")
-        colors = plt.get_cmap("viridis")(df["mu_star"] / df["mu_star"].max())
-        ax.barh(range(len(df)), df["mu_star"], color=colors)
-        ax.set_yticks(range(len(df)))
-        ax.set_yticklabels(df["Parameter"], fontsize=8)
-        ax.set_xlabel(r"$\mu^*$", fontsize=10)
-        ax.set_title(comp.upper(), fontsize=12, fontweight="bold")
-        ax.grid(True, alpha=0.3, axis="x")
-
-    plt.suptitle(
-        "Morris Sensitivity: Parameter Rankings by Component", fontsize=14, fontweight="bold"
-    )
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.show()
-    plt.close(fig)
-
-
-def plot_individual_sensitivity_from_results(
-    results_csv_path: str, component_name: str, save_path: str | None = None
-) -> None:
-    """Plot detailed sensitivity for one component from saved results.
-
-    Parameters
-    ----------
-    results_csv_path : str
-        Path to the exported `morris_all_components.csv` file.
-    component_name : str
-        Component name to plot.
-    save_path : str | None, optional
-        Path to save the figure.
-    """
-    combined_df = _load_saved_morris_results(results_csv_path)
-    df = combined_df[combined_df["Component"] == component_name].nlargest(20, "mu_star")
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, max(6, len(df) * 0.3)))
-
-    ax1.barh(
-        range(len(df)),
-        df["mu_star"],
-        color=plt.get_cmap("RdYlGn_r")(np.linspace(0, 1, len(df))),
-    )
-    ax1.set_yticks(range(len(df)))
-    ax1.set_yticklabels(df["Parameter"], fontsize=9)
-    ax1.set_xlabel(r"$\mu^*$", fontsize=11)
-    ax1.set_title(f"{component_name.upper()} - Sensitivity", fontsize=12, fontweight="bold")
-    ax1.grid(True, alpha=0.3, axis="x")
-
-    all_data = combined_df[combined_df["Component"] == component_name]
-    scatter = ax2.scatter(
-        all_data["mu_star"],
-        all_data["sigma"],
-        c=all_data["mu_star"],
-        cmap="viridis",
-        s=80,
-        alpha=0.7,
-    )
-    ax2.set_xlabel(r"$\mu^*$", fontsize=11)
-    ax2.set_ylabel(r"$\sigma$", fontsize=11)
-    ax2.set_title("Sensitivity vs Interactions", fontsize=12, fontweight="bold")
-    ax2.grid(True, alpha=0.3)
-    plt.colorbar(scatter, ax=ax2, label=r"$\mu^*$")
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.show()
-    plt.close(fig)
 
 
 class MorrisSensitivityOnLikelihood:
@@ -174,6 +65,7 @@ class MorrisSensitivityOnLikelihood:
         ) = prepare_data(file_path)
 
         self.all_param_names = list(dict.fromkeys(self.calib_params + list(self._sigma_param_set)))
+        self._param_index = {name: idx for idx, name in enumerate(self.all_param_names)}
         self.full_param_bounds = {}
         self.par_cal_best = {}
 
@@ -212,6 +104,10 @@ class MorrisSensitivityOnLikelihood:
                     observed_data[var_name].values, dtype=jnp.float32
                 )
 
+        self._batched_log_likelihood = jax.jit(
+            jax.vmap(self._log_likelihood_components, in_axes=0)
+        )
+
         # Store results for each output
         self.results = {}
         self.param_values = None
@@ -242,67 +138,38 @@ class MorrisSensitivityOnLikelihood:
                 return candidate
         return None
 
-    def _output_log_likelihood_components(
-        self, model_outputs: dict, sampled_params: dict[str, float]
-    ) -> dict[str, float]:
-        """Compute log-likelihood for each output variable individually."""
-        log_lik_components = {}
+    def _component_log_likelihood(
+        self,
+        model_values: jnp.ndarray,
+        observations: jnp.ndarray,
+        sigma: float | jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Compute the log-likelihood for one output component (DBH, WS, etc)."""
+        sigma = jnp.asarray(sigma, dtype=jnp.float32)
+        if len(model_values.shape) == 2:
+            model_values = model_values[:, self.species_index]
 
-        for var_name in self.output_vars:
-            if var_name not in self.obs_values:
-                continue
+        predictions = model_values[self.obs_indices]
+        valid_mask = ~(jnp.isnan(predictions) | jnp.isnan(observations))
+        residuals = predictions - observations
+        log_terms = jnp.where(
+            valid_mask,
+            -0.5 * ((residuals / sigma) ** 2) - jnp.log(sigma * jnp.sqrt(2 * jnp.pi)),
+            0.0,
+        )
+        valid_count = jnp.sum(valid_mask)
+        return jnp.where(valid_count > 0, jnp.sum(log_terms), -jnp.inf)
 
-            model_values = model_outputs.get(var_name)
-            if model_values is None:
-                log_lik_components[var_name] = -np.inf
-                continue
-
-            if len(model_values.shape) == 2:
-                model_values = model_values[:, self.species_index]
-
-            predictions = model_values[self.obs_indices]
-            observations = self.obs_values[var_name]
-
-            valid_mask = ~(jnp.isnan(predictions) | jnp.isnan(observations))
-            predictions, observations = predictions[valid_mask], observations[valid_mask]
-
-            if len(predictions) > 0:
-                sigma_param_name = self._infer_sigma_param_name(var_name)
-                if sigma_param_name is None:
-                    raise KeyError(
-                        f"No sigma parameter found for output variable '{var_name}'. "
-                        "Add an entry to sigma_param_names or an 'err_*' param to param_bounds."
-                    )
-                sigma = sampled_params[sigma_param_name]
-
-                # Normal log-likelihood
-                residuals = predictions - observations
-                log_lik = jnp.sum(
-                    -0.5 * ((residuals / sigma) ** 2) - jnp.log(sigma * jnp.sqrt(2 * jnp.pi))
-                )
-                log_lik_components[var_name] = float(log_lik)
-            else:
-                log_lik_components[var_name] = -np.inf
-
-        # Total log-likelihood is sum of components
-        valid_components = [v for v in log_lik_components.values() if not np.isinf(v)]
-        log_lik_components["total"] = sum(valid_components) if valid_components else -np.inf
-
-        return log_lik_components
-
-    def _log_likelihood(self, param_values: np.ndarray) -> dict[str, float]:
-        """Compute log-likelihood for total and each component."""
-        # Update parameters
+    def _log_likelihood_components(self, param_values: jnp.ndarray) -> jnp.ndarray:
+        """Compute component log-likelihoods for one sample on all components with JAX."""
         params_dict = {field: getattr(self.params, field) for field in self.params._fields}
-        sampled_params = dict(zip(self.all_param_names, param_values, strict=True))
 
         for i, param_name in enumerate(self.all_param_names):
             if param_name in self._sigma_param_set:
                 continue
             params_dict[param_name] = param_values[i]
 
-        # Run model
-        final_state, model_outputs = run_3pg(
+        _, model_outputs = run_3pg(
             initial_state=self.initial_state,
             climate=self.climate,
             params=Params(**params_dict),
@@ -311,18 +178,37 @@ class MorrisSensitivityOnLikelihood:
             n_species=self.n_species,
         )
 
-        # Get log-likelihood components
-        log_lik_components = self._output_log_likelihood_components(model_outputs, sampled_params)
+        component_values = []
+        for var_name in self.output_vars:
+            model_values = model_outputs.get(var_name)
+            if model_values is None:
+                component_values.append(jnp.asarray(-jnp.inf, dtype=jnp.float32))
+                continue
 
-        # Likelihood components only
-        likelihood_components = {}
-        for key, log_lik in log_lik_components.items():
-            if np.isinf(log_lik) or np.isnan(log_lik) or log_lik == 0.0:
-                likelihood_components[key] = -np.inf
-            else:
-                likelihood_components[key] = log_lik
+            sigma_param_name = self._infer_sigma_param_name(var_name)
+            if sigma_param_name is None:
+                raise KeyError(
+                    f"No sigma parameter found for output variable '{var_name}'. "
+                    "Add an entry to sigma_param_names or an 'err_*' param to param_bounds."
+                )
 
-        return likelihood_components
+            component_values.append(
+                self._component_log_likelihood(
+                    model_values,
+                    self.obs_values[var_name],
+                    param_values[self._param_index[sigma_param_name]],
+                )
+            )
+
+        component_array = jnp.asarray(component_values, dtype=jnp.float32)
+        total = jnp.sum(jnp.where(jnp.isfinite(component_array), component_array, 0.0))
+        total = jnp.where(jnp.any(jnp.isfinite(component_array)), total, -jnp.inf)
+        return jnp.concatenate([component_array, jnp.asarray([total], dtype=jnp.float32)])
+
+    def _evaluate_batch_samples(self, sample_values: np.ndarray) -> np.ndarray:
+        """Evaluate a batch of Morris samples with JAX."""
+        batch_results = self._batched_log_likelihood(jnp.asarray(sample_values, dtype=jnp.float32))
+        return np.asarray(jax.block_until_ready(batch_results))
 
     def _create_morris_problem(self) -> dict:
         """Create SALib problem definition."""
@@ -352,35 +238,29 @@ class MorrisSensitivityOnLikelihood:
         print(f"Generated {self.param_values.shape[0]} samples")
 
         # Evaluate log-likelihood for all samples
-        print("\nEvaluating log-likelihood for all components...")
+        print("\nEvaluating log-likelihood for all components with JAX batching...")
 
         # Initialize storage for each component
         component_names = self.output_vars + ["total"]
-        component_values = {
-            name: np.zeros(
-                self.param_values.shape[0],
-                dtype=np.float32,
-            )
-            for name in component_names
-        }
+        component_values = {name: np.zeros(self.param_values.shape[0]) for name in component_names}
 
         invalid_samples = {name: [] for name in component_names}
-        for i in range(self.param_values.shape[0]):
-            if i % 100 == 0:
-                print(f"  {i}/{self.param_values.shape[0]}")
-            try:
-                likelihood_components = self._log_likelihood(self.param_values[i])
-                for name in component_names:
-                    value = likelihood_components.get(name, -np.inf)
-                    component_values[name][i] = value
+        batch_size = min(100, self.param_values.shape[0])
+        for start in range(0, self.param_values.shape[0], batch_size):
+            stop = min(start + batch_size, self.param_values.shape[0])
+            batch_results = self._evaluate_batch_samples(self.param_values[start:stop])
+
+            if start % max(100, batch_size) == 0:
+                print(f"  {start}/{self.param_values.shape[0]}")
+
+            for local_idx, global_idx in enumerate(range(start, stop)):
+                values = batch_results[local_idx]
+                for comp_idx, name in enumerate(component_names):
+                    value = float(values[comp_idx])
+                    component_values[name][global_idx] = value
 
                     if not np.isfinite(value):
-                        invalid_samples[name].append(i)
-            except Exception as e:
-                print(f"Error evaluating sample {i}: {e}")
-                for name in component_names:
-                    component_values[name][i] = -np.inf
-                    invalid_samples[name].append(i)
+                        invalid_samples[name].append(global_idx)
 
         # Store all outputs for later use
         self.all_outputs = component_values
@@ -408,7 +288,6 @@ class MorrisSensitivityOnLikelihood:
                 print(f" Handling {len(invalid_indices)} invalid samples for {component_name}...")
 
                 values_clean = values.copy()
-                invalid_idx_set = set(invalid_indices)
                 for idx in invalid_indices:
                     # Find nearest valid index within same trajectory
                     trajectory_size = len(self.all_param_names) + 1
@@ -418,7 +297,7 @@ class MorrisSensitivityOnLikelihood:
                     # Look for valid values in the same trajectory
                     valid_in_trajectory = []
                     for j in range(start_idx, end_idx):
-                        if j not in invalid_idx_set and np.isfinite(values[j]):
+                        if j not in invalid_indices and np.isfinite(values[j]):
                             valid_in_trajectory.append(values[j])
 
                     if valid_in_trajectory:
@@ -461,16 +340,9 @@ class MorrisSensitivityOnLikelihood:
         """Print comprehensive summary for all components."""
         print(" Summary \n ")
         for comp in self.combined_df["Component"].unique():
-            print(
-                f"\nCOMPONENT: {comp.upper()}\n{'Rank':<5} {'Parameter':<25} \
-                    {'mu_star':<20} {'sigma':<20}"
-            )
-            df = self.combined_df[self.combined_df["Component"] == comp]
-            for rank, (_, row) in enumerate(df.head(15).iterrows(), 1):
-                print(
-                    f"{rank:<5} {row['Parameter']:<25} {row['mu_star']:<20.6f} \
-                        {row['sigma']:<20.6f}"
-                )
+            print(f"\nCOMPONENT: {comp.upper()}")
+            df = self.combined_df[self.combined_df["Component"] == comp].reset_index(drop=True)
+            print(df.head(15))
 
     def export_all_results(self, save_dir: str = "morris_results"):
         """Export all results to CSV files."""
@@ -534,25 +406,8 @@ def run_morris_analysis(
     analyzer.export_all_results(save_dir=save_dir)
     analyzer.print_summary()
 
-    if save_plots:
-        os.makedirs(save_dir, exist_ok=True)
-        results_csv_path = os.path.join(save_dir, "morris_all_components.csv")
-
-        # Plot individual components
-        for component in ["total"] + output_vars:
-            if component in analyzer.results:
-                plot_individual_sensitivity_from_results(
-                    results_csv_path,
-                    component,
-                    save_path=f"{save_dir}/morris_{component}.png",
-                )
-
-        # Plot comparison grid
-        plot_component_comparison_from_results(
-            results_csv_path,
-            output_vars,
-            save_path=f"{save_dir}/morris_comparison.png",
-        )
+    if export_csv:
+        analyzer.export_all_results(save_dir)
 
     return analyzer
 
@@ -576,7 +431,7 @@ if __name__ == "__main__":
     calib_params = list(param_bounds.keys())
 
     # Output variables to analyze
-    output_vars = ["DBH", "WS", "WR", "WF", "BA", "Height"]
+    output_vars = ["DBH", "WS", "WR", "WF", "Height", "BA"]
 
     # sigma_param_names maps each model output key to its corresponding err_* parameter
     sigma_param_names = {
@@ -584,8 +439,8 @@ if __name__ == "__main__":
         "WS": "err_WS",
         "WR": "err_WR",
         "WF": "err_WF",
-        "BA": "err_BA",
         "Height": "err_Height",
+        "BA": "err_BA",
     }
 
     analyzer = run_morris_analysis(
@@ -595,10 +450,10 @@ if __name__ == "__main__":
         output_vars=output_vars,
         params_bounds=param_bounds,
         param_best=param_best,
-        n_trajectories=500,
+        n_trajectories=100,
         n_levels=20,
         sigma_param_names=sigma_param_names,
         save_plots=True,
         export_csv=True,
-        save_dir=os.path.join(results_data_folder, "morris_analysis_results"),
+        save_dir=os.path.join(results_data_folder, "morris_analysis_results_jax"),
     )

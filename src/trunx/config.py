@@ -34,7 +34,10 @@ else:
 data_folder = Path(os.path.join(base_dir, "data/"))
 raw_data_folder = Path(os.path.join(base_dir, "data/raw/"))
 clean_data_folder = Path(os.path.join(base_dir, "data/clean/"))
+threepg_data_folder = Path(os.path.join(base_dir, "data/threepg_inputs/"))
 intermediate_data_folder = Path(os.path.join(base_dir, "data/intermediate/"))
+results_data_folder = Path(os.path.join(base_dir, "data/results/"))
+era5_data_folder = Path(os.path.join(base_dir, "data/raw/ERA5/"))
 
 icos_raw_data_folder = raw_data_folder / "ICOS"
 icp_raw_data_folder = raw_data_folder / "ICP"

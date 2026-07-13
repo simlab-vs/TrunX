@@ -337,7 +337,7 @@ def build_predicted_dataframe(
     )
 
     df_data = pd.DataFrame()
-    for var_name in ["DBH", "LAI", "GPP", "WS", "WF", "WR"]:
+    for var_name in ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]:
         pred_fitted = outputs_fitted[var_name]
         if pred_fitted.ndim == 2:
             pred_fitted = pred_fitted[:, config.species_index]
@@ -374,7 +374,7 @@ def plot_observed_vs_predicted(
         ) + pd.offsets.MonthEnd(0)
     observed_data["date"] = observed_dates
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
     if n_vars == 1:
         axes = [axes]
     axes = np.ravel(axes).tolist()
@@ -386,9 +386,13 @@ def plot_observed_vs_predicted(
         "WS": "Stem Biomass (t DM ha⁻¹)",
         "WF": "Foliage Biomass (t DM ha⁻¹)",
         "WR": "Root Biomass (t DM ha⁻¹)",
+        "Height": "Height (m)",
+        "BA": "Basal Area (m² ha⁻¹)",
+        "N": "Stems (n ha⁻¹)",
     }
 
-    for ax, var_name in zip(axes, ["DBH", "LAI", "GPP", "WS", "WF", "WR"], strict=True):
+    plot_vars = ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]
+    for ax, var_name in zip(axes, plot_vars, strict=True):
         pred_fitted_col = f"pred_fitted_{var_name}"
         pred_default_col = f"pred_default_{var_name}"
 
@@ -566,7 +570,7 @@ if __name__ == "__main__":
         file_path="./data/solling_data.xlsx",
         observed_sheet="observed",
         fit_params=fit_params,
-        target_vars=["DBH", "WS", "WF", "WR"],  # Fit to these variables
+        target_vars=["DBH", "WS", "WF", "WR", "Height", "BA", "N"],  # Fit to these variables
         n_steps=500,
         optimizer_name="adam",
         learning_rate=1e-3,
