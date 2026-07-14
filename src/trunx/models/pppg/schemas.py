@@ -4,7 +4,6 @@ Documentation can be found at [https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_
 """
 
 from pydantic import BaseModel, ConfigDict, Field
-from seaborn import despine
 
 type SurfaceBiomass = float  # [t / ha]
 type SurfaceMassRate = float  # [t / month * ha]
@@ -62,8 +61,8 @@ class WeatherData(Params):
 class AllocationRatios(Params):
     """Allocation ratios of the net primary production to the different biomass pools."""
 
-    foliage_ratio: float = Field(ge=0.0, le=0.0, description="foliage allocation ratio")
-    stem_ratio: float = Field(ge=0.0, le=0.0, description="stem allocation ratio")
+    foliage_ratio: float = Field(ge=0.0, le=1.0, description="foliage allocation ratio")
+    stem_ratio: float = Field(ge=0.0, le=1.0, description="stem allocation ratio")
     roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")
 
 
@@ -121,7 +120,7 @@ class SpeciesParameters(Params):
         Field(description="parameters for the dbh to stem mass allometric equation (scaling)"),
     )
     fs_ratio_2: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=2")
-    fs_ratio_20: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=2")
+    fs_ratio_20: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=20")
     specific_area_init: float = Field(gt=0.0, description="specific leaf area at age 0 [m2 / kg]")
     specific_area_mature: float = Field(
         gt=0.0, description="specific leaf area for mature stands [m2 / kg]"

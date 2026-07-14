@@ -8,7 +8,7 @@ conversion_t_per_ha_kg_per_m2 = 0.1  # [tonnes/ha -> kg/m2]
 conversion_t_to_kg = 1000  # [tonnes -> kg]
 
 
-def lea_area_index(foliage_mass: SurfaceBiomass, specific_leaf_area: float) -> float:
+def leaf_area_index(foliage_mass: SurfaceBiomass, specific_leaf_area: float) -> float:
     """Compute leaf area index.
 
     Parameters
