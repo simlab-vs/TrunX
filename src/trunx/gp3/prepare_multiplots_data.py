@@ -129,11 +129,11 @@ def _build_plot_row(
         return None
 
     _, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
-    site_df = create_site_data(icp_df, weather_df)
 
     icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].to_list()))
 
     observed_df = create_observation_data(plot_id, icp_filtered, start_year)
+    site_df = create_site_data(icp_df, weather_df, observed_df)
 
     def _to_nested(df: pl.DataFrame, section: str) -> pl.Series:
         cols = [c for c in SECTION_COLS[section] if c in df.columns]

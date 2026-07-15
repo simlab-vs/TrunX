@@ -223,6 +223,8 @@ def _load_trees(
             "height",
         )
     )
+
+    df = df.with_columns(ba_tree=math.pi * (pl.col("dbh_cm") / 200.0) ** 2)
     return df
 
 

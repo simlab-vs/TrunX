@@ -81,7 +81,7 @@ def create_species_data(
     )
 
     if models is None:
-        models = fit_models(icp_df)
+        models = fit_models()
 
     species_df = (
         _allometric_observations(icp_df)
@@ -156,8 +156,14 @@ def create_species_data(
     return species_df, start_year
 
 
-def create_site_data(icp_df, weather_df):
-    """Create site data input for 3PG model."""
+def create_site_data(icp_df, weather_df, observed_data):
+    """Create site data input for 3PG model.
+
+    The simulation start month ("from") is set to the date of the first
+    observation in ``observed_data`` so simulated and observed timelines
+    align, falling back to the earliest weather month if there are no
+    observations.
+    """
     site_df = pl.read_excel(
         os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="site"
     )
@@ -170,8 +176,12 @@ def create_site_data(icp_df, weather_df):
         [pl.lit(latitude_value).alias("latitude"), pl.lit(altitude_value).alias("altitude")]
     )
 
-    min_year = weather_df["year"].min()
-    min_month = weather_df.filter(pl.col("year") == min_year).select("month").min().item()
+    if observed_data.is_empty():
+        min_year = weather_df["year"].min()
+        min_month = weather_df.filter(pl.col("year") == min_year).select("month").min().item()
+    else:
+        first_obs = observed_data.sort("Date").row(0, named=True)
+        min_year, min_month = first_obs["year"], first_obs["month"]
     site_df = site_df.with_columns([pl.lit(f"{min_year}-{min_month:02d}").alias("from")])
 
     max_year = weather_df["year"].max()
@@ -240,7 +250,11 @@ def create_observation_data(
 
     dbh_df = (
         icp_df.group_by(["specie", "date"])
-        .agg(pl.col("dbh_cm").mean().alias("DBH"))
+        .agg(
+            pl.col("dbh_cm").mean().alias("DBH"),
+            pl.col("height").mean().alias("Height"),
+            (pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()).alias("BA"),
+        )
         .sort("date")
         .with_columns(
             pl.col("date").dt.year().cast(pl.Int64).alias("year"),
@@ -299,7 +313,20 @@ def create_observation_data(
 
     observed_data = (
         observed_data.select(
-            ["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"]
+            [
+                "specie",
+                "month",
+                "year",
+                "Date",
+                "GPP",
+                "DBH",
+                "WS",
+                "WF",
+                "WR",
+                "LAI",
+                "BA",
+                "Height",
+            ]
         )
         .drop_nulls(subset=["specie"])
         .sort("Date")
@@ -358,13 +385,14 @@ def create_input_data(input_data_file, plot_id):
 
     miss_months, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
     logger.info("Filled weather data from start year %d for plot_id: %s", start_year, plot_id)
-    # Site data
-    input_site_df = create_site_data(icp_df, weather_df)
-    logger.info("Created site data for plot_id: %s", plot_id)
 
     icp_df = icp_df.filter(pl.col("specie").is_in(input_species_df["species"].to_list()))
 
     observed_data = create_observation_data(plot_id, icp_df, start_year)
+
+    # Site data
+    input_site_df = create_site_data(icp_df, weather_df, observed_data)
+    logger.info("Created site data for plot_id: %s", plot_id)
 
     if len(miss_months) == 0:
         with pd.ExcelWriter(input_data_file, engine="openpyxl") as writer:

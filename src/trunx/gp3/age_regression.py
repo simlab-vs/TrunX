@@ -32,11 +32,13 @@ def _aggregate_training_data(icp_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def fit_models(icp_df: pl.DataFrame) -> dict[str, tuple[float, float]]:
+def fit_models(icp_df: pl.DataFrame | None = None) -> dict[str, tuple[float, float]]:
     """Fit per-species power-law regression models (age = a * DBH^b).
 
     Uses log-log ordinary least squares: log(age) = log(a) + b * log(DBH).
     """
+    if icp_df is None:
+        icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     train_df = _aggregate_training_data(icp_df)
     models: dict[str, tuple[float, float]] = {}
 
@@ -107,7 +109,7 @@ if __name__ == "__main__":
     icp = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     fitted_models = fit_models(icp)
 
-    plot_id = "50.0013"
+    plot_id = "04.1605"
     ages = estimate_plot_age(plot_id, icp_df=icp, models=fitted_models)
     print(f"\nEstimated ages for plot {plot_id}:")
     for sp, age in ages.items():
