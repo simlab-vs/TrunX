@@ -63,6 +63,15 @@ requires = ["uv_build>=0.9.0,<0.9.26"]
 build-backend = "uv_build"
 
 
+# Pytest configuration
+# ---------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: fast, always-run correctness gate (e.g. gradient smoke test)",
+]
+
+
 # Linting rules
 # -------------
 # Longer than standard 79 char max line length.
