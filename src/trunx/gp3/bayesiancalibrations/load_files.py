@@ -402,7 +402,9 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
         ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
         age=age_months,
         WF_debt=initial_WF_debt,
-        prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
+        prev_month=jnp.full(
+            n_species, 12 if start_month == 1 else start_month - 1, dtype=jnp.int32
+        ),
     )
 
     observations = load_observations_from_section(

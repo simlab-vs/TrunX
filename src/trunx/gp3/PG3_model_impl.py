@@ -95,7 +95,9 @@ def prepare_data(file_path):
         ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
         age=age_months,
         WF_debt=initial_WF_debt,
-        prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
+        prev_month=jnp.full(
+            n_species, 12 if start_month == 1 else start_month - 1, dtype=jnp.int32
+        ),
     )
 
     return initial_state, climate, params, site_data, species_data, n_species, species_names
