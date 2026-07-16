@@ -102,14 +102,17 @@ def model(
     if observations is not None:
         for var_name, (obs_times, obs_values) in observations.items():
             sigma_name = f"err_{var_name}"
+
             if var_name not in outputs or sigma_name not in samples:
                 continue
 
-            pred_values = outputs[var_name][obs_times]
+            pred_values = jnp.asarray(outputs[var_name][obs_times], dtype=jnp.float64).reshape(-1)
+
+            obs_values = jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1)
             numpyro.sample(
                 f"obs_{var_name}",
-                dist.StudentT(df=4, loc=pred_values, scale=samples[sigma_name]),
-                # dist.Normal(loc=pred_values, scale=samples[sigma_name]),
+                # dist.StudentT(df=4, loc=pred_values, scale=samples[sigma_name]),
+                dist.Normal(loc=pred_values, scale=samples[sigma_name]),
                 obs=obs_values,
             )
 
@@ -503,6 +506,7 @@ def run_hmc_analysis(
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_names: list[str] | None = None,
     predict_with_uncert: bool = False,
+    show_plots: bool = False,
 ):
     """
     Run HMC implementation.
@@ -545,11 +549,11 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=50,
-        num_samples=50,
+        num_warmup=100,
+        num_samples=100,
         num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
-        show_plots=False,
+        show_plots=show_plots,
         predict_with_uncert=predict_with_uncert,
         param_defaults=param_defaults,
     )
@@ -568,7 +572,7 @@ if __name__ == "__main__":
 
     # Use solling_data.xlsx by default
 
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "full_solling_data.xlsx")
 
     # Restrict calibration to the most sensitive physiology parameters.
     morris_results_path = os.path.join(
@@ -576,12 +580,37 @@ if __name__ == "__main__":
     )
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
     top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    param_names = top_params + error_names
+    r_20_params = [
+        "pFS20",
+        "aWS",
+        "nWS",
+        "pRn",
+        "Tmin",
+        "Topt",
+        "Tmax",
+        "fN0",
+        "fNn",
+        "MaxAge",
+        "rAge",
+        "gammaN1",
+        "thinPower",
+        "mS",
+        "alphaCx",
+        "rhoMin",
+        "rhoMax",
+        "aH",
+        "nHB",
+        "nHC",
+    ]
+
+    # param_names = top_params + error_names
+    param_names = r_20_params + error_names
 
     run_hmc_analysis(
         file_path=file_path,
         param_names=param_names,
         predict_with_uncert=True,
+        show_plots=True,
     )
 
     elapsed_time = time.perf_counter() - start_time

@@ -225,7 +225,7 @@ def load_and_pack_grid(
 def run_3pg_grid(
     grid_input_path: str = os.path.join(threepg_data_folder, "grid_input.parquet"),
     inference_data_path: str = os.path.join(
-        results_data_folder, "results/pymc_inference_results", "inference_data.nc"
+        results_data_folder, "pymc_inference_results", "inference_data.nc"
     ),
     physiology_file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     num_predictions: int = 5,
@@ -296,7 +296,7 @@ def run_3pg_grid(
 if __name__ == "__main__":
     start_time = time.perf_counter()
 
-    run_3pg_grid(num_predictions=200)
+    run_3pg_grid(num_predictions=100)
 
     elapsed_time = time.perf_counter() - start_time
     print(f"Total runtime: {elapsed_time:.2f} seconds")
