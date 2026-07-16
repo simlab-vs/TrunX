@@ -11,6 +11,10 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    env:
+      # R is not available on the runner, so build rpy2 without it. The tests
+      # never import rpy2, so an ABI-mode build that is never loaded is enough.
+      RPY2_CFFI_MODE: ABI
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
