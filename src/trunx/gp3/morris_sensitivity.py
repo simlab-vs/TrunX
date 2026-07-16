@@ -39,11 +39,14 @@ def prepare_observation_times(site_data, observed_data):
 
 def component_log_likelihood(model_values, observations, sigma, obs_indices, species_index):
     """Compute the log-likelihood for one output component."""
-    sigma = jnp.asarray(sigma, dtype=jnp.float32)
+    sigma = jnp.asarray(sigma, dtype=jnp.float64)
+
     if len(model_values.shape) == 2:
         model_values = model_values[:, species_index]
 
-    predictions = model_values[obs_indices]
+    predictions = jnp.asarray(model_values[obs_indices]).reshape(-1)
+    observations = jnp.asarray(observations).reshape(-1)
+
     valid_mask = ~(jnp.isnan(predictions) | jnp.isnan(observations))
     residuals = predictions - observations
     log_terms = jnp.where(valid_mask, norm.logpdf(residuals, loc=0.0, scale=sigma), 0.0)

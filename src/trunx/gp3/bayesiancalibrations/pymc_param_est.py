@@ -1,6 +1,7 @@
 """Bayesian calibration of 3PG parameters using PyMC and JAX."""
 
 import os
+import shutil
 import time
 from collections.abc import Sequence
 from typing import Any, cast
@@ -9,6 +10,7 @@ import arviz as az
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+import polars as pl
 import pymc as pm
 import pytensor.tensor as pt
 from jax import jit, tree_util, vmap
@@ -102,6 +104,8 @@ class Run3PGLogLikeOp(Op):
             if sigma_name not in param_dict or var_name not in sim_outputs:
                 continue
             pred_values = sim_outputs[var_name][obs_times]
+            pred_values = jnp.asarray(pred_values, dtype=jnp.float64).reshape(-1)
+            obs_values = jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1)
             # log_likelihood = log_likelihood + jnp.sum(
             #     jax_student_t.logpdf(
             #         pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
@@ -304,9 +308,11 @@ def run_pymc_inference(
             # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
             mp_ctx="spawn",
             random_seed=42,
+            # discard_tuned_samples=False, # Saves warmup samples
             return_inferencedata=True,
             progressbar=True,
             compute_convergence_checks=True,
+            # idata_kwargs={"save_warmup": True, "log_likelihood": True},
         )
 
     return trace, model
@@ -475,15 +481,16 @@ def plot_saved_results(
 if __name__ == "__main__":
     start_time = time.perf_counter()
 
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-    morris_results_path = os.path.join(
-        results_data_folder,
-        "morris_analysis_results_jax",
-        "morris_all_components.csv",
-    )
+    file_path = os.path.join(threepg_data_folder, "full_solling_data.xlsx")
+    # morris_results_path = os.path.join(
+    #     results_data_folder,
+    #     "morris_analysis_results_jax",
+    #     "morris_all_components.csv",
+    # )
 
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
-    top_params = load_top_sensitive_params(morris_results_path, n_top=5)
+
+    # top_params = load_top_sensitive_params(morris_results_path, n_top=5)
     r_20_params = [
         "pFS20",
         "aWS",
@@ -509,14 +516,22 @@ if __name__ == "__main__":
 
     # param_names = top_params + error_names
     param_names = r_20_params + error_names
+
+    output_dir = os.path.join(results_data_folder, "pymc_inference_results")
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+
+    os.mkdir(output_dir)
+    shutil.copy(file_path, output_dir)
+
     run_pymc_analysis(
-        output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
+        output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=500,
-        num_samples=500,
+        num_warmup=10000,
+        num_samples=10000,
     )
 
     elapsed_time = time.perf_counter() - start_time
@@ -528,9 +543,3 @@ if __name__ == "__main__":
     #     observations=load_observations_from_file(file_path),
     #     climate=prepare_data(file_path)[1],
     # )
-
-    output_dir = str(os.path.join(results_data_folder, "results/pymc_inference_results"))
-    idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
-    az.plot_trace(idata, var_names=["pFS20", "aWS"])
-    az.plot_posterior(idata, var_names=["pFS20", "aWS"])
-    plt.show()

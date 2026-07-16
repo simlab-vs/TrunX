@@ -128,7 +128,7 @@ def load_priors_from_file(
 
 def load_param_defaults_from_file(
     file_path: str,
-    param_names: list[str],
+    param_names: list[str] | None = None,
 ) -> dict[str, float]:
     """Load each parameter's default value, for seeding MCMC chains at a sensible start.
 
@@ -146,6 +146,11 @@ def load_param_defaults_from_file(
         Parameter names mapped to their `default` column value.
     """
     param_bounds_df = _load_param_bounds_df(file_path)
+
+    if param_names is None or len(param_names) == 0:
+        param_names = param_bounds_df.filter(pl.col("default").is_not_null())[
+            "param_name"
+        ].to_list()
 
     defaults = {}
     for param_name in param_names:
