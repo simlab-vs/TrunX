@@ -106,6 +106,13 @@ class Run3PGLogLikeOp(Op):
             pred_values = sim_outputs[var_name][obs_times]
             pred_values = jnp.asarray(pred_values, dtype=jnp.float64).reshape(-1)
             obs_values = jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1)
+            # Predictions and observations must line up element-for-element;
+            # a mismatch would broadcast into an (n_obs, n_obs) outer product
+            # that silently scores every prediction against every observation.
+            assert pred_values.shape == obs_values.shape, (
+                f"Likelihood shape mismatch for {var_name}: "
+                f"predictions {pred_values.shape} vs observations {obs_values.shape}"
+            )
             # log_likelihood = log_likelihood + jnp.sum(
             #     jax_student_t.logpdf(
             #         pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
