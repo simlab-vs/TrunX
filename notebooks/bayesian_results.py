@@ -23,15 +23,11 @@ def _():
     import polars as pl
 
     from trunx.config import data_folder, results_data_folder, threepg_data_folder
-    from trunx.gp3.bayesiancalibrations.save_load_results import (
-        load_inference_data,
-    )
 
     return (
         az,
         data_folder,
         go,
-        load_inference_data,
         os,
         pl,
         plt,
@@ -73,14 +69,14 @@ def _(mo):
 
 
 @app.cell
-def _(load_inference_data, os, results_data_folder):
-    output_dir = os.path.join(results_data_folder, "results/full_pymc_inference_results_1M_1M")
+def _(os, results_data_folder):
+    output_dir = os.path.join(results_data_folder, "results/pymc_inference_results")
 
-    idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
+    # idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
     # predictions = load_predictions(
     #     os.path.join(output_dir, "predictions.npz")
     # )
-    return idata, output_dir
+    return (output_dir,)
 
 
 @app.cell
@@ -142,40 +138,78 @@ def _(mo):
 
 
 @app.cell
-def _(
-    data_folder,
-    os,
-    output_dir,
-    plt,
-    results_data_folder,
-    threepg_data_folder,
-):
+def _(data_folder, os, output_dir, plt, results_data_folder):
     from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import (
         plot_comparison,
-        plot_convergence_comparison,
     )
 
-    _file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    _file_path = os.path.join(output_dir, "solling_data.xlsx")
 
     _hmc_output_dir = os.path.join(data_folder, "hmc_results")
     _plot_output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
     os.makedirs(_plot_output_dir, exist_ok=True)
 
-    _fig, _metrics_df = plot_comparison(_file_path, output_dir, _hmc_output_dir)
+    _include_gradient_descent = False
+    _include_bayesian = True
+    _include_hmc = False
+
+    _fig, _metrics_df = plot_comparison(
+        _file_path,
+        output_dir,
+        _hmc_output_dir,
+        include_gradient_descent=_include_gradient_descent,
+        include_bayesian=_include_bayesian,
+        include_hmc=_include_hmc,
+    )
 
     _fig.savefig(
         os.path.join(_plot_output_dir, "prediction_comparison.png"), dpi=200, bbox_inches="tight"
     )
 
-    _conv_fig, _conv_df = plot_convergence_comparison(
-        pymc_inference_path=os.path.join(output_dir, "inference_data.nc"),
-        hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
-        pymc_num_warmup=1_000_000,
-        hmc_num_warmup=100,
-    )
+    # _conv_fig, _conv_df = plot_convergence_comparison(
+    #     pymc_inference_path=os.path.join(output_dir, "inference_data.nc"),
+    #     hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
+    #     include_bayesian=_include_bayesian,
+    #     include_hmc = _include_hmc
+    # )
 
-    _conv_fig.savefig(
-        os.path.join(_plot_output_dir, "convergence_comparison.png"), dpi=200, bbox_inches="tight"
+    # _conv_fig.savefig(
+    #     os.path.join(_plot_output_dir, "convergence_comparison.png"),
+    #     dpi=200,
+    #     bbox_inches="tight"
+    # )
+
+    plt.show()
+    return (plot_comparison,)
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(data_folder, os, plot_comparison, plt, results_data_folder):
+    plot_id = "14.0003"
+
+    _bayesian_dir = os.path.join(results_data_folder, f"results/pymc_inference_results_{plot_id}")
+    _file_path = os.path.join(_bayesian_dir, f"{plot_id}_data.xlsx")
+
+    _hmc_output_dir = os.path.join(data_folder, "hmc_results")
+    _plot_output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
+    os.makedirs(_plot_output_dir, exist_ok=True)
+
+    _include_gradient_descent = False
+    _include_bayesian = True
+    _include_hmc = False
+
+    _fig, _metrics_df = plot_comparison(
+        _file_path,
+        _bayesian_dir,
+        _hmc_output_dir,
+        include_gradient_descent=_include_gradient_descent,
+        include_bayesian=_include_bayesian,
+        include_hmc=_include_hmc,
     )
 
     plt.show()

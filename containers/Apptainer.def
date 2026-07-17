@@ -1,42 +1,65 @@
-# Minimal apptainer definition file for a Python project based on uv.
 Bootstrap: docker
-From: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+From: nvidia/cuda:12.2.2-base-ubuntu22.04
+
+%help
+    Minimal container with a CUDA environment and Astral uv.
 
 %labels
-    Maintainer "Cedric Travelletti"
-    Version "0.1"
+    Author Glory Mary Givi
+    Version 1.0
 
-%files 
-  PROJECT_FOLDER="python-base"
-  ../ opt/$PROJECT_FOLDER
+%post -c /bin/bash
+    # Install system dependencies
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+	r-base \
+	r-base-dev \
+	libopenblas-dev \
+	liblapack-dev \
+	libgomp1 \
+	libgl1 \
+        && rm -rf /var/lib/apt/lists/*
 
-%post
-    PROJECT_FOLDER="python-base"
-    PACKAGE_NAME="python-base"
+    # Install uv
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
 
-    echo "**** Installing system dependencies ****"
-    apt-get update && apt-get install -y git curl && apt-get clean
+    # Copy project files and install dependencies
+    mkdir -p /app
+    cd /app
+    
+    python3 -m venv .venv
+    source .venv/bin/activate
+    
+    echo "Installing JAX with CUDA 12 support..."
+    pip install --upgrade pip
+    pip install --upgrade "jax[cuda12]" \
+        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-    echo "**** Cloning project repository ****"
-    cd /opt/$PROJECT_FOLDER
-
-    echo "**** Installing Python dependencies ****"
-
-    uv venv --python 3.12
-    uv sync
-    . .venv/bin/activate
-    uv pip install -e $PACKAGE_NAME
-
-   mkdir /mnt/$PROJECT_FOLDER
+    # Install everything else with uv (skip jax)
+    echo "Installing remaining dependencies with uv..."
+    
+    uv sync --frozen --no-dev --no-cache --no-install-project \
+        --no-install-package jax \
+        --no-install-package jaxlib || true
 
 %environment
-    echo ". /opt/AOSForecast/.venv/bin/activate" >> ~/.bashrc
-    export JUPYTER_PORT="8888"  # default Jupyter port
+    export PATH="/root/.local/bin:$PATH"
+    export VIRTUAL_ENV="/app/.venv"
+    export PATH="$VIRTUAL_ENV/bin:$PATH"
+
+%files
+    # Copy your project files into the container at build time
+    pyproject.toml /app/pyproject.toml
+    uv.lock /app/uv.lock
+    README.md /app/README.md
 
 %runscript
-    PROJECT_FOLDER="python-base"
-    cd /mnt/$PROJECT_FOLDER
-    . /opt/$PROJECT_FOLDER/.venv/bin/activate
-    echo "Starting Jupyter Notebook on port $JUPYTER_PORT ..."
-    . /opt/$PROJECT_FOLDER/.venv/bin/activate
-    uv run jupyter-notebook --ip=0.0.0.0 --port=$JUPYTER_PORT --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+    export PYTHONPATH=/app/src:$PYTHONPATH
+    exec uv run "$@"
+
+%test
+    uv --version --no-cache
+    uv --no-cache run python --version
