@@ -119,7 +119,7 @@ def model(
                 f"obs_{var_name}",
                 # dist.StudentT(df=4, loc=pred_values, scale=samples[sigma_name]),
                 dist.Normal(loc=pred_values, scale=samples[sigma_name]),
-                obs=obs_values
+                obs=obs_flat,
             )
 
 
@@ -555,8 +555,8 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=100,
-        num_samples=100,
+        num_warmup=10,
+        num_samples=10,
         num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=show_plots,
