@@ -4,22 +4,11 @@ import os
 import tempfile
 import time
 
-import boto3
 import cdsapi
 import polars as pl
 import xarray as xr
-from dotenv import load_dotenv
 
-load_dotenv()
-
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
-)
-
-client = cdsapi.Client()
+from trunx.config import clean_data_folder, data_folder
 
 
 def aggregate_to_daily(df: pl.DataFrame, var_col: str) -> pl.DataFrame:
@@ -45,14 +34,20 @@ def aggregate_to_daily(df: pl.DataFrame, var_col: str) -> pl.DataFrame:
     return daily.filter(pl.any_horizontal(pl.col(c).is_not_null() for c in value_cols))
 
 
-def fetch_era5_data(year) -> None:
+def fetch_era5_data(
+    year: str,
+    variables: list[str],
+    target_lats: xr.DataArray,
+    target_lons: xr.DataArray,
+    output_dir: str,
+    client: cdsapi.Client,
+) -> None:
     """Fetch ERA5-Land data, one year at a time, across all variables."""
     os.makedirs(output_dir, exist_ok=True)
 
     for var in variables:
         hours = [f"{h:02d}:00" for h in range(24)] if var == "2m_temperature" else ["00:00"]
         monthly_dfs = []
-        # s3_key = f"data/era5/era5_{var}_{year}.csv"
         months = [f"{m:02d}" for m in range(1, 13)]
         days = [f"{d:02d}" for d in range(1, 32)]
         for month in months:
@@ -119,24 +114,22 @@ def fetch_era5_data(year) -> None:
 
             time.sleep(2)
 
-        # Concatenate all 12 months and write one CSV per variable/year
+        # Concatenate all 12 months and write one Parquet file per variable/year
         if monthly_dfs:
             year_df = pl.concat(monthly_dfs)
-            output_path = os.path.join(output_dir, f"era5_{var}_{year}.csv")
-            year_df.write_csv(output_path)
-            # with open(output_path, "rb") as f:
-            #     s3_client.upload_fileobj(f, "jaxifer", s3_key)
-            # print(f"Successfully uploaded multi-point data to S3: {s3_key}")
-            # print(f"Saved {output_path} — shape: {year_df.shape}")
+            output_path = os.path.join(output_dir, f"era5_{var}_{year}.parquet")
+            year_df.write_parquet(output_path)
         else:
             print(f"No data collected for {var} {year}.")
 
 
 if __name__ == "__main__":
-    icp_locations = pl.read_csv("data/clean/full_icp_plot_locations.csv")
+    icp_locations = pl.read_csv(os.path.join(clean_data_folder, "full_icp_plot_locations.csv"))
     # Regular 0.1-degree ERA5-Land grid points clipped to Switzerland's actual
     # border (not just its bounding box) — see data/clean/switzerland_boundary.gpkg.
-    era5_switzerland_points = pl.read_csv("data/clean/era5_switzerland_points.csv")
+    era5_switzerland_points = pl.read_csv(
+        os.path.join(clean_data_folder, "era5_switzerland_points.csv")
+    )
     all_locations = pl.concat(
         [
             icp_locations.select(pl.col("plot_id").cast(pl.Utf8), "Lat", "Lon"),
@@ -147,18 +140,14 @@ if __name__ == "__main__":
     target_lats = xr.DataArray(all_locations["Lat"].to_list(), dims="point")
     target_lons = xr.DataArray(all_locations["Lon"].to_list(), dims="point")
 
-    variables = [
-        "2m_temperature",
-        "total_precipitation",
-        "surface_solar_radiation_downwards",
-        # "leaf_area_index_high_vegetation",
-        # "leaf_area_index_low_vegetation",
-    ]
+    # Other useful variables: "leaf_area_index_high_vegetation", "leaf_area_index_low_vegetation"
+    variables = ["2m_temperature", "total_precipitation", "surface_solar_radiation_downwards"]
 
-    output_dir = "data/era5"
+    output_dir = os.path.join(data_folder, "era5")
+    client = cdsapi.Client()
 
     # change here the years and variables as needed
-    years = [str(y) for y in range(2000, 2001)]
+    years = [str(y) for y in range(1998, 2025)]
 
     for year in years:
-        fetch_era5_data(year)
+        fetch_era5_data(year, variables, target_lats, target_lons, output_dir, client)

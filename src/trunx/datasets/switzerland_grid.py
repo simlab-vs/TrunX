@@ -49,8 +49,8 @@ def build_era5_grid_for_switzerland(
     """Build the regular ERA5-Land grid points that fall inside a boundary."""
     minx, miny, maxx, maxy = boundary.total_bounds
 
-    lons = np.round(np.arange(np.floor(minx / resolution) * resolution, maxx, resolution), 1)
-    lats = np.round(np.arange(np.floor(miny / resolution) * resolution, maxy, resolution), 1)
+    lons = np.arange(np.floor(minx / resolution) * resolution, maxx, resolution)
+    lats = np.arange(np.floor(miny / resolution) * resolution, maxy, resolution)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
 
     points = gpd.GeoDataFrame(
