@@ -257,7 +257,6 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             pl.col("allo_fb_kg").sum().alias("plot_fb_kg"),
             pl.col("allo_rb_kg").sum().alias("plot_rb_kg"),
             pl.col("allo_la_m2").sum().alias("plot_la_m2"),
-            (math.pi * pl.col("dbh_cm").pow(2) / 40000.0).sum().alias("plot_ba_m2"),
         )
     )
 
@@ -269,7 +268,11 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             (pl.col("plot_fb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_foliage"),
             (pl.col("plot_rb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_root"),
             (pl.col("plot_la_m2") / (pl.col("plot_size_ha") * 10000.0)).alias("lai"),
-            (pl.col("plot_ba_m2") / pl.col("plot_size_ha")).alias("basal_area"),
+        )
+        .with_columns(
+            pl.lit(math.pi)
+            * (pl.col("dbh_cm") / 200.0).pow(2)
+            * pl.col("n_stems").alias("basal_area"),
         )
         .drop("n_count", "plot_sb_kg", "plot_fb_kg", "plot_rb_kg", "plot_la_m2", "plot_ba_m2")
         .sort(["specie", "plot_id", "date"])

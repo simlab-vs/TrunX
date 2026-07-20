@@ -1,6 +1,7 @@
 """Create data input for 3PG model using ICP data."""
 
 import logging
+import math
 import os
 
 import jax.numpy as jnp
@@ -253,7 +254,11 @@ def create_observation_data(
         .agg(
             pl.col("dbh_cm").mean().alias("DBH"),
             pl.col("height").mean().alias("Height"),
-            (pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()).alias("BA"),
+            (pl.len() / pl.col("plot_size_ha").mean()).alias("stems_n"),
+        )
+        # Match model behavior: BA = pi * (DBH / 200)^2 * stems_n.
+        .with_columns(
+            (pl.lit(math.pi) * (pl.col("DBH") / 200.0).pow(2) * pl.col("stems_n")).alias("BA")
         )
         .sort("date")
         .with_columns(
@@ -326,6 +331,7 @@ def create_observation_data(
                 "LAI",
                 "BA",
                 "Height",
+                "stems_n",
             ]
         )
         .drop_nulls(subset=["specie"])
