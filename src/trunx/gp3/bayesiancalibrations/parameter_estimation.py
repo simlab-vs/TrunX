@@ -14,6 +14,7 @@ import polars as pl
 from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     plot_inference_results,
     predict_from_parameter_draws,
@@ -511,28 +512,7 @@ if __name__ == "__main__":
     )
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
     top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    r_20_params = [
-        "pFS20",
-        "aWS",
-        "nWS",
-        "pRn",
-        "Tmin",
-        "Topt",
-        "Tmax",
-        "fN0",
-        "fNn",
-        "MaxAge",
-        "rAge",
-        "gammaN1",
-        "thinPower",
-        "mS",
-        "alphaCx",
-        "rhoMin",
-        "rhoMax",
-        "aH",
-        "nHB",
-        "nHC",
-    ]
+    r_20_params = FIT_PARAMS
 
     # param_names = top_params + error_names
     param_names = r_20_params + error_names
