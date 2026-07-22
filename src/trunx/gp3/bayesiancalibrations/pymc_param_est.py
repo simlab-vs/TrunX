@@ -32,8 +32,10 @@ from trunx.gp3.bayesiancalibrations.load_files import (
     load_top_sensitive_params,
 )
 from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_checkpoint,
     load_inference_data,
     load_predictions,
+    save_checkpoint,
     save_results,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
@@ -256,6 +258,17 @@ def predict_with_uncertainity(
     )
 
 
+def _extract_last_values(
+    idata: az.InferenceData, param_names: Sequence[str]
+) -> list[dict[str, float]]:
+    """Extract each chain's last posterior draw, for use as the next chunk's initvals."""
+    posterior = cast(Any, idata).posterior
+    return [
+        {name: float(posterior[name].isel(chain=chain, draw=-1).values) for name in param_names}
+        for chain in range(posterior.sizes["chain"])
+    ]
+
+
 def run_pymc_inference(
     initial_state: State,
     climate: ClimateData,
@@ -269,6 +282,9 @@ def run_pymc_inference(
     chains: int = 4,
     cores: int | None = None,
     param_defaults: dict[str, float] | None = None,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
@@ -285,6 +301,17 @@ def run_pymc_inference(
         chain at the same point instead of a random prior draw — matching
         the R reference's `createUniformPrior(min, max, best)`. If None,
         PyMC falls back to its default (random) initialization.
+    checkpoint_dir : str | None
+        Directory to save sampling checkpoints to and resume from. If a
+        checkpoint from a previous (possibly interrupted) run is found there,
+        sampling resumes from it instead of starting over. If None, sampling
+        runs in a single pass with no checkpointing.
+    checkpoint_every : int
+        Number of post-tuning draws per chain to sample between checkpoints.
+    resume_tune : int
+        Number of tuning steps used to re-warm the sampler at the start of
+        every chunk after the first (each chunk starts from a fresh
+        `DEMetropolisZ` step, so its proposal scale needs to briefly readapt).
     """
     model = pymc_model(
         climate=climate,
@@ -300,31 +327,54 @@ def run_pymc_inference(
         cores = chains
     _configure_gpu_memory_sharing(cores)
 
-    initvals = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+    param_names = list(priors.keys())
+    idata: az.InferenceData | None = None
+    draws_done = 0
+    initvals: Any = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+
+    if checkpoint_dir is not None:
+        checkpoint = load_checkpoint(checkpoint_dir)
+        if checkpoint is not None:
+            idata, draws_done, initvals = checkpoint
+            assert len(initvals) == chains, (
+                f"Checkpoint has {len(initvals)} chains, but {chains} were requested"
+            )
+            print(f"Resuming from checkpoint: {draws_done}/{num_samples} draws already completed")
 
     with model:
-        step = pm.DEMetropolisZ()
-        # step = pm.HamiltonianMC()
-        # step = pm.NUTS()
-        trace = pm.sample(
-            draws=num_samples,
-            tune=num_warmup,
-            step=step,
-            chains=chains,
-            cores=cores,
-            initvals=initvals,
-            # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
-            # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
-            mp_ctx="spawn",
-            random_seed=42,
-            # discard_tuned_samples=False, # Saves warmup samples
-            return_inferencedata=True,
-            progressbar=True,
-            compute_convergence_checks=True,
-            # idata_kwargs={"save_warmup": True, "log_likelihood": True},
-        )
+        while draws_done < num_samples:
+            chunk_draws = min(checkpoint_every, num_samples - draws_done)
+            chunk_tune = num_warmup if idata is None else resume_tune
+            step = pm.DEMetropolisZ()
+            chunk_trace = pm.sample(
+                draws=chunk_draws,
+                tune=chunk_tune,
+                step=step,
+                chains=chains,
+                cores=cores,
+                initvals=cast(Any, initvals),
+                # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
+                # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
+                mp_ctx="spawn",
+                random_seed=42,
+                return_inferencedata=True,
+                progressbar=True,
+                # Convergence is checked once on the full trace in run_pymc_analysis.
+                compute_convergence_checks=False,
+            )
+            idata = (
+                chunk_trace
+                if idata is None
+                else az.concat(cast(Any, idata), chunk_trace, dim="draw", inplace=False)
+            )
+            draws_done += chunk_draws
+            initvals = _extract_last_values(idata, param_names)
 
-    return trace, model
+            if checkpoint_dir is not None:
+                save_checkpoint(idata, draws_done, initvals, checkpoint_dir)
+                print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
+
+    return cast(az.InferenceData, idata), model
 
 
 def run_pymc_analysis(
@@ -335,8 +385,15 @@ def run_pymc_analysis(
     cores: int | None = None,
     num_warmup: int = 10000,
     num_samples: int = 5000,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ):
-    """Run PyMC inference for Bayesian calibration of 3PG parameters."""
+    """Run PyMC inference for Bayesian calibration of 3PG parameters.
+
+    Sampling is checkpointed to `output_dir` every `checkpoint_every` draws, so
+    calling this again with the same `output_dir` resumes an interrupted run
+    instead of starting over.
+    """
     initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
         file_path
     )
@@ -365,6 +422,9 @@ def run_pymc_analysis(
         chains=chains,
         cores=cores,
         param_defaults=param_defaults,
+        checkpoint_dir=output_dir,
+        checkpoint_every=checkpoint_every,
+        resume_tune=resume_tune,
     )
 
     print("\nConvergence diagnostics:")
@@ -444,11 +504,15 @@ if __name__ == "__main__":
     param_names = FIT_PARAMS + error_names
 
     output_dir = os.path.join(results_data_folder, "pymc_inference_results")
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
 
-    os.mkdir(output_dir)
-    shutil.copy(file_path, output_dir)
+    shutil.rmtree(output_dir)  # To rerun everthing from scratch uncomment this
+
+    if load_checkpoint(output_dir) is None:
+        # No checkpoint to resume from: start clean instead of appending to stale results.
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.mkdir(output_dir)
+        shutil.copy(file_path, output_dir)
 
     run_pymc_analysis(
         output_dir=output_dir,
@@ -456,8 +520,8 @@ if __name__ == "__main__":
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=2000,
-        num_samples=2000,
+        num_warmup=3000,  # If you need to increase the warmup, rerun from scratch.
+        num_samples=3000,  # If you just need to increase the number of samples, adjust here
     )
 
     elapsed_time = time.perf_counter() - start_time
