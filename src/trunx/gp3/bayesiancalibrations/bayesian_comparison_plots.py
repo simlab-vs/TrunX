@@ -389,9 +389,9 @@ if __name__ == "__main__":
 
     _include_bayesian = True
     _include_hmc = False
-    _include_gradient_descent = False
+    _include_gradient_descent = True
 
-    plot_ids = ["solling"]
+    plot_ids = ["04.1605", "14.0003", "14.0019", "14.0012"]
 
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")

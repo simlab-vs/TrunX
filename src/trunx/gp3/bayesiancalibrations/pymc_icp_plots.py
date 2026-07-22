@@ -12,13 +12,13 @@ from trunx.gp3.bayesiancalibrations.load_files import load_priors_from_file
 from trunx.gp3.bayesiancalibrations.pymc_param_est import run_pymc_analysis
 from trunx.gp3.create_data_inputs import create_input_data
 
-# plot_ids = ["01.0038", "01.0037", "04.0506",]
-plot_ids = [
-    "04.1605",
-    "14.0003",
-    "14.0019",
-    "14.0012",
-]
+plot_ids = ["01.0038", "01.0037", "04.0506"]
+# plot_ids = [
+#     "04.1605",
+#     "14.0003",
+#     "14.0019",
+#     "14.0012",
+# ]
 
 
 def get_available_cpus() -> int:
@@ -128,8 +128,8 @@ if __name__ == "__main__":
                 plot_id,
                 chains=chains,
                 cores=chains,
-                num_warmup=1000,
-                num_samples=1000,
+                num_warmup=100,
+                num_samples=100,
             ): plot_id
             for plot_id in plot_ids
         }
