@@ -252,18 +252,18 @@ def create_observation_data(
     dbh_df = (
         icp_df.group_by(["specie", "date"])
         .agg(
-            pl.col("dbh_cm").mean().alias("DBH"),
-            pl.col("height").mean().alias("Height"),
-            ((pl.col("dbh_cm") ** 2).mean().sqrt()).alias("QMD"),
-            (pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()).alias("BA"),
-            pl.len().alias("num_trees"),
-            (pl.len() / pl.col("plot_size_ha").mean()).alias("stems_n"),
+            mean_DBH=pl.col("dbh_cm").mean(),
+            Height=pl.col("height").mean(),
+            DBH=((pl.col("dbh_cm") ** 2).mean().sqrt()), # QMD 
+            BA=(pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()),
+            num_trees=pl.len().alias("num_trees"),
+            stems_n=(pl.len() / pl.col("plot_size_ha").mean()),
         )
         .sort("date")
         .with_columns(
-            pl.col("date").dt.year().cast(pl.Int64).alias("year"),
-            pl.col("date").dt.month().cast(pl.Int64).alias("month"),
-            pl.col("date").dt.strftime("%m-%Y").alias("month_year"),
+            year=pl.col("date").dt.year().cast(pl.Int64),
+            month=pl.col("date").dt.month().cast(pl.Int64),
+            month_year=pl.col("date").dt.strftime("%m-%Y"),
         )
     )
 
@@ -329,7 +329,7 @@ def create_observation_data(
                 "WR",
                 "LAI",
                 "BA",
-                "QMD",
+                "mean_DBH",
                 "Height",
                 "num_trees",
                 "stems_n",
