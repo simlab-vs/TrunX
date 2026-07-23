@@ -254,11 +254,10 @@ def create_observation_data(
         .agg(
             pl.col("dbh_cm").mean().alias("DBH"),
             pl.col("height").mean().alias("Height"),
+            ((pl.col("dbh_cm") ** 2).mean().sqrt()).alias("QMD"),
+            (pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()).alias("BA"),
+            pl.len().alias("num_trees"),
             (pl.len() / pl.col("plot_size_ha").mean()).alias("stems_n"),
-        )
-        # Match model behavior: BA = pi * (DBH / 200)^2 * stems_n.
-        .with_columns(
-            (pl.lit(math.pi) * (pl.col("DBH") / 200.0).pow(2) * pl.col("stems_n")).alias("BA")
         )
         .sort("date")
         .with_columns(
@@ -330,7 +329,9 @@ def create_observation_data(
                 "WR",
                 "LAI",
                 "BA",
+                "QMD",
                 "Height",
+                "num_trees",
                 "stems_n",
             ]
         )
