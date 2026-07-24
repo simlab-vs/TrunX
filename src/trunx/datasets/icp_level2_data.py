@@ -207,6 +207,10 @@ def _load_trees(
             pl.col("code_removal").cast(pl.Int64, strict=False).is_null()
             | ~pl.col("code_removal").cast(pl.Int64, strict=False).gt(10)
         )
+        # Some assessments are submitted under two adjacent survey_year campaigns
+        # Keep one row per tree × date, preferring the survey_year matching the date.
+        .sort("tree_id", "date", "survey_year")
+        .unique(subset=["tree_id", "date"], keep="last")
         .rename({"diameter": "dbh_cm"})
         .select(
             "survey_year",
@@ -247,9 +251,9 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
 
     per_plot = (
         trees.sort("date")
-        .group_by("plot_id", "specie", "survey_year")
+        .group_by("plot_id", "specie", "date")
         .agg(
-            pl.first("date"),
+            # pl.first("date"),
             pl.len().alias("n_count"),
             pl.col("dbh_cm").mean(),
             pl.col("height").mean(),
