@@ -11,7 +11,7 @@ import pandas as pd
 import polars as pl
 from jax import config, grad
 
-from trunx.config import SPECIES_INDICES, project_root, threepg_data_folder
+from trunx.config import SPECIES_INDICES, clean_data_folder, project_root, threepg_data_folder
 
 # config.update("jax_debug_nans", True)  # Enable NaN debugging
 from trunx.gp3.create_data_inputs import create_input_data
@@ -22,6 +22,7 @@ from trunx.gp3.plot_function import (
     plot_combined_3pg_outputs,
     plot_combined_3pg_outputs_obv,
     plot_combined_3pg_outputs_per_species,
+    plot_dbh_distribution,
     plot_outputs,
 )
 from trunx.gp3.prepare_climate import prepare_climate
@@ -183,6 +184,7 @@ def run_threepg_main(
             fig_name=fig_name,
             plot_id=plot_id,
             show=show_plots,
+            plot_metrics=["BA", "DBH", "stems_n", "WS", "WR", "WF", "Height"],
         )
     elif r_comparison:
         from trunx.gp3.run_r3pg import run_comparison_r
@@ -226,14 +228,24 @@ if __name__ == "__main__":
     # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
 
-    fig, outputs = run_threepg_main(
-        file_path, observed_data=None, plot_output=True, r_comparison=True
-    )
+    # fig, outputs = run_threepg_main(
+    #     file_path, observed_data=None, plot_output=True, r_comparison=True
+    # )
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
-    # plot_id = "50.0018"
-    # fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+
+    plot_ids = ["04.1402", "52.0010", "04.1403", "59.0008"]
+
+    for plot_id in plot_ids:
+        plot_dbh_distribution(
+            plot_id=plot_id,
+            file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
+            kind="box",
+            fig_name=f"ICP_{plot_id}_dbh_distribution",
+            show=True,
+        )
+        fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
