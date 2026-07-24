@@ -520,7 +520,11 @@ def plot_combined_3pg_outputs_obv(
         "WS": {"label": "Stem Biomass (t DM ha⁻¹)", "python_col": "WS", "r_col": "r_WS"},
         "WF": {"label": "Foliage Biomass (t DM ha⁻¹)", "python_col": "WF", "r_col": "r_WF"},
         "WR": {"label": "Root Biomass (t DM ha⁻¹)", "python_col": "WR", "r_col": "r_WR"},
-        "stems_n": {"label": "Stems per ha", "python_col": "stems_n", "r_col": "r_stems_n"},
+        "stems_n": {
+            "label": "Stems per ha (# trees)",
+            "python_col": "stems_n",
+            "r_col": "r_stems_n",
+        },
         "BA": {"label": "Basal Area (m² ha⁻¹)", "python_col": "BA", "r_col": "r_BA"},
         "Height": {"label": "Height (m)", "python_col": "Height", "r_col": "r_Height"},
     }
@@ -613,7 +617,7 @@ def plot_combined_3pg_outputs_obv(
         for ax in axes[n_metrics:]:
             ax.axis("off")
 
-        plt.suptitle(f"3-PG Model Outputs: {species}", fontsize=14, fontweight="bold")
+        plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
         plt.tight_layout()
         plt.savefig(
             os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png") if fig_name else None

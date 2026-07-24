@@ -4,7 +4,7 @@ import os
 
 import polars as pl
 
-from trunx.config import clean_data_folder
+from trunx.config import clean_data_folder, raw_data_folder
 
 MAX_RELATIVE_CHANGE = 0.40
 
@@ -12,6 +12,7 @@ MAX_RELATIVE_CHANGE = 0.40
 def find_stable_single_species_plots(
     df: pl.DataFrame,
     specie_col="specie",
+    date_col="date",
     num_obv_required: int = 5,
     max_relative_change: float = MAX_RELATIVE_CHANGE,
 ) -> pl.DataFrame:
@@ -42,7 +43,7 @@ def find_stable_single_species_plots(
 
     stems_by_date = (
         df.join(single_species, on="plot_id", how="inner")
-        .group_by("plot_id", "date")
+        .group_by("plot_id", date_col)
         .agg(
             pl.col(specie_col).first(),
             pl.len().alias("stems_n"),
@@ -53,7 +54,7 @@ def find_stable_single_species_plots(
         stems_by_date.group_by("plot_id")
         .agg(
             pl.col(specie_col).first(),
-            pl.col("date").dt.year().n_unique().alias("n_observations"),
+            pl.col(date_col).dt.year().n_unique().alias("n_observations"),
             pl.col("stems_n").min().alias("stems_n_min"),
             pl.col("stems_n").max().alias("stems_n_max"),
         )
@@ -79,15 +80,27 @@ if __name__ == "__main__":
     if FORESTS == "NFI":
         df = pl.read_parquet(os.path.join(clean_data_folder, "nfi_cleaned.parquet"))
         species_col = "species"
-        print(df.head())
+        date_col = "date"
     elif FORESTS == "ICP":
         df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
         species_col = "specie"
-        print(df.head())
+        date_col = "date"
+    elif FORESTS == "OLD ICP":
+        df = pl.read_parquet(
+            os.path.join(raw_data_folder, "ICP/icpf/03_tidy/cpf-level2_cleaned.parquet")
+        )
+        species_col = "specie"
+        date_col = "period_end"
     else:
         raise ValueError(f"Unsupported forest: {FORESTS}")
 
-    stable_plots = find_stable_single_species_plots(df, specie_col=species_col, num_obv_required=5)
+    stable_plots = find_stable_single_species_plots(
+        df,
+        specie_col=species_col,
+        num_obv_required=4,
+        date_col=date_col,
+        max_relative_change=MAX_RELATIVE_CHANGE,
+    )
     print(
         f"Found {stable_plots.height} single-species plots with stems_n changing "
         f"<={MAX_RELATIVE_CHANGE:.0%}"
