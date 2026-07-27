@@ -8,7 +8,7 @@ from matplotlib.figure import Figure
 
 from trunx.config import clean_data_folder, raw_data_folder
 
-MAX_RELATIVE_CHANGE = 0.50
+MAX_RELATIVE_CHANGE = 0.10
 
 
 def _single_species_plot_ids(df: pl.DataFrame, specie_col: str = "specie") -> pl.DataFrame:
@@ -23,8 +23,9 @@ def _single_species_plot_ids(df: pl.DataFrame, specie_col: str = "specie") -> pl
 
 def find_stable_single_species_plots(
     df: pl.DataFrame,
-    specie_col="specie",
-    date_col="date",
+    specie_col: str = "specie",
+    date_col: str = "date",
+    stems_col: str | None = None,
     num_obv_required: int = 5,
     max_relative_change: float = MAX_RELATIVE_CHANGE,
 ) -> pl.DataFrame:
@@ -33,7 +34,14 @@ def find_stable_single_species_plots(
     Parameters
     ----------
     df : pl.DataFrame
-        Tree-level data with ``plot_id``, ``specie``, ``date`` columns.
+        Data with ``plot_id``, ``specie``, ``date`` columns.
+    stems_col : str | None
+        Column already holding the stem count/density for a
+        ``(plot_id, date)`` row, e.g. ``"n_stems"`` for data that is
+        pre-aggregated to one row per plot per date (such as NFI). If
+        ``None``, stems are counted as the number of tree rows per
+        ``(plot_id, date)`` group, which is only correct for tree-level
+        data (one row per tree, such as ICP).
     num_obv_required : int
         A plot must have more than this many distinct observation years to
         be considered.
@@ -48,13 +56,14 @@ def find_stable_single_species_plots(
         years surveyed, and the min/max/relative change of stems_n.
     """
     single_species = _single_species_plot_ids(df, specie_col)
+    stems_expr = pl.col(stems_col).first() if stems_col is not None else pl.len()
 
     stems_by_date = (
         df.join(single_species, on="plot_id", how="inner")
         .group_by("plot_id", date_col)
         .agg(
             pl.col(specie_col).first(),
-            pl.len().alias("stems_n"),
+            stems_expr.alias("stems_n"),
         )
     )
 
@@ -86,6 +95,7 @@ def plot_max_relative_change(
     df: pl.DataFrame,
     specie_col: str = "specie",
     date_col: str = "date",
+    stems_col: str | None = None,
     num_obv_required: int = 5,
     n_plots: int = 10,
 ) -> Figure:
@@ -98,11 +108,18 @@ def plot_max_relative_change(
     Parameters
     ----------
     df : pl.DataFrame
-        Tree-level data with ``plot_id``, ``specie`` and ``date`` columns.
+        Data with ``plot_id``, ``specie``, ``date`` and ``plot_size_ha`` columns.
     specie_col : str
         Name of the species column in ``df``.
     date_col : str
         Name of the date column in ``df``.
+    stems_col : str | None
+        Column already holding the stem count/density for a
+        ``(plot_id, date)`` row, e.g. ``"n_stems"`` for data that is
+        pre-aggregated to one row per plot per date (such as NFI). If
+        ``None``, trees are counted as the number of rows per
+        ``(plot_id, date)`` group, which is only correct for tree-level
+        data (one row per tree, such as ICP).
     num_obv_required : int
         A plot must have more than this many distinct observation years to
         be considered.
@@ -115,13 +132,14 @@ def plot_max_relative_change(
         Grid of tree-count-over-time subplots, one per plot.
     """
     single_species = _single_species_plot_ids(df, specie_col)
+    tree_count_expr = pl.col(stems_col).first() if stems_col is not None else pl.len()
 
     counts_by_date = (
         df.join(single_species, on="plot_id", how="inner")
         .group_by("plot_id", date_col)
         .agg(
             pl.col(specie_col).first(),
-            pl.len().alias("tree_count"),
+            tree_count_expr.alias("tree_count"),
             pl.col("plot_size_ha").mean().round(2).alias("plot_size_ha"),
         )
     )
@@ -186,22 +204,25 @@ def plot_max_relative_change(
 
 
 if __name__ == "__main__":
-    FORESTS = "ICP"  # "NFI" or "ICP"
+    FORESTS = "NFI"  # "NFI" or "ICP"
 
     if FORESTS == "NFI":
         df = pl.read_parquet(os.path.join(clean_data_folder, "nfi_cleaned.parquet"))
         species_col = "species"
         date_col = "date"
+        stems_col = "n_stems"
     elif FORESTS == "ICP":
         df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
         species_col = "specie"
         date_col = "date"
+        stems_col = None
     elif FORESTS == "OLD ICP":
         df = pl.read_parquet(
             os.path.join(raw_data_folder, "ICP/icpf/03_tidy/cpf-level2_cleaned.parquet")
         )
         species_col = "specie"
         date_col = "period_end"
+        stems_col = None
     else:
         raise ValueError(f"Unsupported forest: {FORESTS}")
 
@@ -210,6 +231,7 @@ if __name__ == "__main__":
         specie_col=species_col,
         num_obv_required=5,
         date_col=date_col,
+        stems_col=stems_col,
         max_relative_change=MAX_RELATIVE_CHANGE,
     )
     print(
@@ -220,8 +242,7 @@ if __name__ == "__main__":
     species_plot = _species_plot("Picea abies", stable_plots, specie_col=species_col)
     print(species_plot)
 
-    max_rel_change_sp = _species_plot("Picea abies", df, specie_col=species_col)
-    plot_max_relative_change(
-        max_rel_change_sp, specie_col=species_col, date_col=date_col, n_plots=10
-    )
+    if FORESTS == "ICP":
+        max_rel_change_sp = _species_plot("Picea abies", df, specie_col=species_col)
+        plot_max_relative_change(df, specie_col=species_col, date_col=date_col, n_plots=15)
     plt.show()

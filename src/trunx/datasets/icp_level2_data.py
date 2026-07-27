@@ -66,6 +66,7 @@ _DEP_NAMES: list[str] = [
     "don",
     "n_no3_plus_n_no2",
 ]
+
 _DEP_NON_CONC: list[str] = ["dep_alk", "dep_ph", "dep_cond"]
 
 _SOIL_NAMES: list[str] = [
@@ -387,6 +388,8 @@ def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
 
     if "code_vsampling" in df.columns:
         df = df.filter(~pl.col("code_vsampling").is_in([2, 3, 4, 7, 9]))
+
+    df = df.filter(~pl.col("code_sampler").eq(8))
 
     dep_cols = [c for c in dep_rename.values() if c in df.columns]
     non_conc = [c for c in _DEP_NON_CONC if c in dep_cols]
