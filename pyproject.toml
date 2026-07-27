@@ -40,6 +40,10 @@ dependencies = [
     "jaxlib; sys_platform == 'linux'",
     "pymc>=5.28.5",
     "rdata>=1.1.0",
+    "cdsapi>=0.7.7",
+    "cfgrib>=0.9.15.1",
+    "scikit-learn>=1.9.0",
+    "eccodes>=2.47.0",
 ]
 
 # Set curent project as a package, with src/ folder.
