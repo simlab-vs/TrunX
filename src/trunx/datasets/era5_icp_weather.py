@@ -74,42 +74,12 @@ def _load_era5() -> pl.DataFrame:
         ``t2m_min``, ``t2m_max``, ``t2m_mean`` (K),
         ``tp`` (m), ``ssrd`` (J m⁻²).
     """
+    t2m_daily = pl.read_parquet(os.path.join(era5_data_folder, "era5_2m_temperature.parquet"))
 
-    def _parse_date(df: pl.DataFrame) -> pl.DataFrame:
-        return (
-            df.drop(["time", "step", "point", "number", "surface"])
-            .with_columns(
-                pl.col("valid_time").str.slice(0, 10).str.to_datetime("%Y-%m-%d").alias("date")
-            )
-            .drop("valid_time")
-        )
+    tp = pl.read_parquet(os.path.join(era5_data_folder, "era5_total_precipitation.parquet"))
 
-    t2m_daily = (
-        _parse_date(pl.read_parquet(os.path.join(era5_data_folder, "era5_2m_temperature.parquet")))
-        .group_by(["date", "latitude", "longitude"])
-        .agg(
-            pl.col("t2m").min().alias("t2m_min"),
-            pl.col("t2m").max().alias("t2m_max"),
-            pl.col("t2m").mean().alias("t2m_mean"),
-        )
-    )
-
-    tp = (
-        _parse_date(
-            pl.read_parquet(os.path.join(era5_data_folder, "era5_total_precipitation.parquet"))
-        )
-        .group_by(["date", "latitude", "longitude"])
-        .agg(pl.col("tp").sum())
-    )
-
-    ssrd = (
-        _parse_date(
-            pl.read_parquet(
-                os.path.join(era5_data_folder, "era5_surface_solar_radiation_downwards.parquet")
-            )
-        )
-        .group_by(["date", "latitude", "longitude"])
-        .agg(pl.col("ssrd").mean())
+    ssrd = pl.read_parquet(
+        os.path.join(era5_data_folder, "era5_surface_solar_radiation_downwards.parquet")
     )
 
     return t2m_daily.join(tp, on=["date", "latitude", "longitude"]).join(
@@ -162,7 +132,7 @@ def prepare_era5_weather(output_path: str | None = None) -> pl.DataFrame:
         output_path = str(os.path.join(clean_data_folder, "era5_weather_icp_plots.parquet"))
 
     icp_locations = pl.read_csv(
-        os.path.join(clean_data_folder, "icp_plot_locations.csv")
+        os.path.join(clean_data_folder, "full_icp_plot_locations.csv")
     ).with_columns(
         pl.col("plot_id").map_elements(_normalize_plot_id, return_dtype=pl.Utf8).alias("plot_id")
     )

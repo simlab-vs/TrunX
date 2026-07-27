@@ -346,7 +346,7 @@ def build_predicted_dataframe(
     )
 
     df_data = pd.DataFrame()
-    for var_name in ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]:
+    for var_name in ["DBH", "WS", "WF", "WR", "Height", "BA"]:
         pred_fitted = outputs_fitted[var_name]
         if pred_fitted.ndim == 2:
             pred_fitted = pred_fitted[:, config.species_index]
@@ -385,7 +385,7 @@ def plot_observed_vs_predicted(
         ) + pd.offsets.MonthEnd(0)
     observed_data["date"] = observed_dates
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 15))
     if n_vars == 1:
         axes = [axes]
     axes = np.ravel(axes).tolist()
@@ -402,7 +402,7 @@ def plot_observed_vs_predicted(
         "N": "Stems (n ha⁻¹)",
     }
 
-    plot_vars = ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]
+    plot_vars = ["DBH", "WS", "WF", "WR", "Height", "BA"]
     for ax, var_name in zip(axes, plot_vars, strict=True):
         pred_fitted_col = f"pred_fitted_{var_name}"
         pred_default_col = f"pred_default_{var_name}"
@@ -598,11 +598,12 @@ if __name__ == "__main__":
         "nHC",
     ]
 
+    file_path = os.path.join(threepg_data_folder, "14.0003_data.xlsx")
     config = GradientDescentConfig(
-        file_path=os.path.join(threepg_data_folder, "solling_data.xlsx"),
+        file_path=file_path,
         observed_sheet="observed",
         fit_params=fit_params,
-        target_vars=["DBH", "WS", "WF", "WR", "Height", "BA", "N"],  # Fit to these variables
+        target_vars=["DBH", "WS", "WF", "WR", "Height", "BA"],  # Fit to these variables
         n_steps=2500,
         optimizer_name="adam",
         learning_rate=1e-3,
