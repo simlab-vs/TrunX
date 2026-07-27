@@ -33,7 +33,7 @@ class ClimateData(NamedTuple):
     co2: jnp.ndarray  # Atmospheric CO2 concentration (ppm)
     d13catm: jnp.ndarray  # Atmospheric d13C value (‰)
     month: jnp.ndarray  # Current month of climate data
-    start_month: np.datetime64  # Start month of climate data
+    # start_month: np.datetime64  # Start month of climate data
 
 
 class SiteData(NamedTuple):
@@ -47,20 +47,21 @@ class SiteData(NamedTuple):
     ASW_min: jnp.ndarray  # Minimum available soil water
     year_i: jnp.ndarray  # Initial year of simulation
     month_i: jnp.ndarray  # Initial month of simulation
-    site_start: np.datetime64  # Start month of simulation
-    site_end: np.datetime64  # End month of simulation
+    # site_start: np.datetime64  # Start month of simulation
+    # site_end: np.datetime64  # End month of simulation
 
 
 class SpeciesData(NamedTuple):
     """Species data information."""
 
-    specie: list[str]  # Species name
+    # specie: tuple[str, ...]  # Species name
+    specie: jnp.ndarray  # Species index
     FR: jnp.ndarray  # initial site fertility rating for a given species
     WF: jnp.ndarray  # Foliage mass
     WR: jnp.ndarray  # Root mass
     WS: jnp.ndarray  # Stem mass
     N: jnp.ndarray  # Stems per hectare
-    planted: list  # Date of planting
+    # planted: tuple  # Date of planting
     year_p: jnp.ndarray  # Planting year
     month_p: jnp.ndarray  # Planting month
 

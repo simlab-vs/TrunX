@@ -167,12 +167,12 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
     clim_range(climate)
 
     n_years = len(climate.select(pl.col("year")).unique())
-    start_month = np.datetime64(
-        str(climate.select(pl.col("year")).min().item())
-        + "-"
-        + str(climate.select(pl.col("month")).min().item()).zfill(2),
-        "M",
-    )
+    # start_month = np.datetime64(
+    #     str(climate.select(pl.col("year")).min().item())
+    #     + "-"
+    #     + str(climate.select(pl.col("month")).min().item()).zfill(2),
+    #     "M",
+    # )
 
     climate_data = ClimateData(
         T_avg=jnp.array(climate["tmp_ave"].to_numpy()),
@@ -185,7 +185,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-11"):
         VPD=jnp.array(climate["vpd_day"].to_numpy()),
         co2=jnp.array(climate["co2"].to_numpy()),
         d13catm=jnp.array(climate["d13catm"].to_numpy()),
-        start_month=start_month,
+        # start_month=start_month,
         month=jnp.array(climate["month"].to_numpy()),
     )
 

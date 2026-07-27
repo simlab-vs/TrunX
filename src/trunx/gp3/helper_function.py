@@ -31,7 +31,7 @@ def f_temperature(params, T_avg: Array) -> Array:
     Tmax : Array
         Maximum temperature for growth.
 
-    If T < Tmin or T > Tmax, fT is set to 0.
+    If T <= Tmin or T >= Tmax, fT is set to 0.
 
     Returns
     -------
@@ -39,10 +39,15 @@ def f_temperature(params, T_avg: Array) -> Array:
         Temperature response function value (fT).
     """
     eps = 1e-8
-    a = jnp.clip((T_avg - params.Tmin) / (params.Topt - params.Tmin + eps), 0.0, None)
-    b = jnp.clip((params.Tmax - T_avg) / (params.Tmax - params.Topt + eps), 0.0, None)
+    out_of_range = (T_avg <= params.Tmin) | (T_avg >= params.Tmax)
+
+    a = (T_avg - params.Tmin) / (params.Topt - params.Tmin + eps)
+    b = (params.Tmax - T_avg) / (params.Tmax - params.Topt + eps)
+    b = jnp.where(b > 0.0, b, 1.0)
     power = (params.Tmax - params.Topt) / (params.Topt - params.Tmin + eps)
-    return jnp.clip(a * (b**power), 0.0, 1.0)
+
+    fT = a * (b**power)
+    return jnp.clip(jnp.where(out_of_range, 0.0, fT), 0.0, 1.0)
 
 
 def f_frost(params, frost_days: Array, days_in_month: Array) -> Array:
@@ -123,7 +128,10 @@ def f_age(
         Age modifier ranging from 0 to 1.
     """
     rAge = jnp.where(params.rAge is None, jnp.asarray(0.95), params.rAge)
-    age_years = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
+
+    age_years = jnp.clip(
+        jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0), 0.0, None
+    )
 
     FAge = age_years / (params.MaxAge + 1e-8)
     f_age = 1.0 / (1.0 + (FAge / (rAge + 1e-8)) ** params.nAge)

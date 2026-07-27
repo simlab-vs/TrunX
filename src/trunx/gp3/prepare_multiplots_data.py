@@ -123,7 +123,7 @@ def _build_plot_row(
 
     _, weather_df = create_weather_input(weather_raw, plot_id)
 
-    species_df, start_year = create_species_data(icp_df)
+    species_df, start_year = create_species_data(icp_df, models=models)
     if species_df.is_empty():
         logger.warning("plot_id %s: no species data — skipping", plot_id)
         return None
@@ -270,3 +270,4 @@ if __name__ == "__main__":
     print(load_section(df, pid, "site"))
     obv = load_section(df, pid, "observed")
     print(obv.drop_nulls(subset=["DBH"]))
+    print(load_section(df, pid, "species"))

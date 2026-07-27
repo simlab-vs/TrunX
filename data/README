@@ -1,6 +1,35 @@
 Put all the data for your project in here. 
 A folder structure that works well is: 
 - data/raw/: raw data files (for reproducibility)
+    - data/raw/ICP
+        Go to http://www.icp-forests.org/data and download the data and save it in this folder
+
+- data/SwissData/: raw data from NFI, EFM, LWF
+    - data/SwissData/NFI
+        - NFI sent me data via email
+    - data/SwissData/EFM
+        - EFM sent me data via email
+    - data/SwissData/LWF
+        - LWF sent me data via email
+
 - data/clean/: cleaned data files
+    - Running `src/trunx/datasets/ICP_weather_data.py` will create a parquet file (`ICP_weather_data.parquet`) with ICP weather data in this folder.
+
+    - Running `src/trunx/datasets/icp_level2_data.py` will create a parquet file (`icp_tree_data.parquet`) with growth data of trees in ICP Forest.
+
+    - Run `src/trunx/datasets/era5_data.py` to download ERA5 data from Switchcloud, then `era5_icp_weather.py` will match era5 and icp locations and generate a parquet file `era5_weather_icp_plots.parquet`. This data will be then used to fill gaps in ICP weather data.
+
+- data/threepg_inputs/: Data for 3PG simulation
+
+    - Default values for parameters are obtained from the excel files here: https://github.com/trotsiuk/r3PG/tree/master/data-raw/
+
+    - Running `notebooks/prepare_solling_data.ipynb` will create a excel file named `solling_data.xlsx` in this folder. Before running it clone (r3PG){https://github.com/trotsiuk/r3PG/tree/master/src} into `models`. 
+    We have used `solling_data.xlsx` for sensitivity analysis and bayesian calibrations.
+
+    - To visualize 3PG simulation on a specific ICP forest plot, set the required plot_id in `src/trunx/gp3/PG3_model_impl.py`, and run the script. Make sure to run the ICP weather processing and ERA5 weather processing before running this script for specific ICP forest site.
+    
 - data/features/: model features (versioned)
-- data/reporting/: data used for reports (results of model runs, ...)
+- data/results/: data used for reports (results of model runs, ...)
+    - Morris sensitivity analysis (`src/trunx/gp3/morris_sensitivity.py`) will be saved in the folder `morris_analysis_results_jax`.
+    
+    - MCMC bayesian results (`src/trunx/gp3/bayesiancalibrations/pymc_param_est.py`) are saved in the folder `pymc_inference_results`

@@ -56,15 +56,32 @@ def create_input_params(icp_df):
     return input_params_df
 
 
-def create_species_data(icp_df: pl.DataFrame) -> tuple[pl.DataFrame, int]:
-    """Create species data input for 3PG model."""
+def create_species_data(
+    icp_df: pl.DataFrame,
+    models: dict[str, tuple[float, float]] | None = None,
+) -> tuple[pl.DataFrame, int]:
+    """Create species data input for 3PG model.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        ICP tree-level data for the target plot(s).
+    models : dict[str, tuple[float, float]] | None
+        Per-species power-law age-vs-DBH models from
+        :func:`trunx.gp3.age_regression.fit_models`, used to estimate the
+        planted date when direct age observations are unavailable. If None,
+        fits a model from `icp_df` alone, which is unreliable for a single
+        plot with few DBH observations — pass a model fit across many plots
+        when calling this for one plot at a time.
+    """
     default_species_df = (
         pl.read_excel(os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="species")
         .filter(pl.col("species").is_in(icp_df.select("specie").unique().to_series().to_list()))
         .select("species", "fertility")
     )
 
-    models = fit_models(icp_df)
+    if models is None:
+        models = fit_models(icp_df)
 
     species_df = (
         _allometric_observations(icp_df)
@@ -111,7 +128,9 @@ def create_species_data(icp_df: pl.DataFrame) -> tuple[pl.DataFrame, int]:
         if specie not in models:
             print("No age model for '%s', keeping template planted date", specie)
             continue
-        dbh = species_df.filter(pl.col("specie") == specie)["DBH"].to_numpy()
+        dbh = icp_df.filter(
+            (pl.col("date").dt.year() == start_year) & (pl.col("specie") == specie)
+        )["dbh_cm"].to_numpy()
         a, b = models[specie]
         estimated_age = predict_age_from_dbh(dbh, a, b)
         planting_year = int(start_year - round(estimated_age))

@@ -66,9 +66,7 @@ def multi_plot_model(
     # between plots due to different campaigns, instruments, or observers.
 
     for i, plot in enumerate(plots):
-        _, outputs = run_3pg(
-            plot.initial_state, plot.climate, params, plot.site, plot.species, plot.n_species
-        )
+        _, outputs = run_3pg(plot.initial_state, plot.climate, params, plot.site, plot.species)
         for var_name, (obs_times, obs_values) in plot.observations.items():
             if var_name not in outputs:
                 continue
