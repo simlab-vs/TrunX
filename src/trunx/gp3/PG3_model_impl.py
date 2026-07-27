@@ -238,7 +238,7 @@ if __name__ == "__main__":
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
 
-    plot_ids = ["04.1402", "52.0010", "04.1403", "59.0008"]
+    plot_ids = ["01.0038", "04.1402", "52.0010", "04.1403", "59.0008"]
 
     for plot_id in plot_ids:
         plot_dbh_distribution(
