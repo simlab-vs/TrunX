@@ -1,9 +1,11 @@
 """Create data input for 3PG model using ICP data."""
 
 import logging
+import math
 import os
 
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import pandas as pd
 import polars as pl
 
@@ -18,6 +20,7 @@ from trunx.gp3.weather_processing import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 # Forrester et al. (2017) eq. 3 coefficients for all species with complete data.
 # Loaded once at import time to avoid repeated Excel reads.
@@ -251,15 +254,18 @@ def create_observation_data(
     dbh_df = (
         icp_df.group_by(["specie", "date"])
         .agg(
-            pl.col("dbh_cm").mean().alias("DBH"),
-            pl.col("height").mean().alias("Height"),
-            (pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()).alias("BA"),
+            mean_DBH=pl.col("dbh_cm").mean(),
+            Height=pl.col("height").mean(),
+            DBH=((pl.col("dbh_cm") ** 2).mean().sqrt()),  # QMD
+            BA=(pl.col("ba_tree").sum() / pl.col("plot_size_ha").mean()),
+            num_trees=pl.len().alias("num_trees"),
+            stems_n=(pl.len() / pl.col("plot_size_ha").mean()),
         )
         .sort("date")
         .with_columns(
-            pl.col("date").dt.year().cast(pl.Int64).alias("year"),
-            pl.col("date").dt.month().cast(pl.Int64).alias("month"),
-            pl.col("date").dt.strftime("%m-%Y").alias("month_year"),
+            year=pl.col("date").dt.year().cast(pl.Int64),
+            month=pl.col("date").dt.month().cast(pl.Int64),
+            month_year=pl.col("date").dt.strftime("%m-%Y"),
         )
     )
 
@@ -325,7 +331,10 @@ def create_observation_data(
                 "WR",
                 "LAI",
                 "BA",
+                "mean_DBH",
                 "Height",
+                "num_trees",
+                "stems_n",
             ]
         )
         .drop_nulls(subset=["specie"])
@@ -409,6 +418,52 @@ def create_input_data(input_data_file, plot_id):
         print(summary_wdf)
 
     return miss_months, observed_data.to_pandas()
+
+
+def plot_observed_data(
+    file_path: str,
+    plot_variables: list[str] | None = None,
+) -> None:
+    """Plot observed data from Excel file."""
+    if plot_variables is None:
+        plot_variables = ["DBH", "Height", "stems_n", "BA", "WS", "WF", "WR", "LAI"]
+
+    observed_df = pd.read_excel(file_path, sheet_name="observed")
+    date_col = "Date" if "Date" in observed_df.columns else "date"
+    observed_df["Date"] = pd.to_datetime(observed_df[date_col])
+
+    observed_df = observed_df.dropna()
+
+    obv_var = ["DBH", "Height", "stems_n"]
+
+    labels = {
+        "DBH": "DBH (cm)",
+        "Height": "Height (m)",
+        "stems_n": "Number of Stems (ha⁻¹)",
+        "BA": "Basal Area (m² ha⁻¹)",
+        "WS": "Stem Biomass (t ha⁻¹)",
+        "WF": "Foliage Biomass (t ha⁻¹)",
+        "WR": "Root Biomass (t ha⁻¹)",
+        "LAI": "Leaf Area Index (m² m⁻²)",
+    }
+
+    rows, col = math.ceil(len(plot_variables) / 3), 3
+    _fig, _ax = plt.subplots(rows, col, figsize=(15, 3 * rows))
+    _ax = _ax.flatten()
+    for idx, var in enumerate(plot_variables):
+        if var in obv_var:
+            _ax[idx].plot(observed_df["Date"], observed_df[var], "o", color="b")
+        else:
+            _ax[idx].plot(observed_df["Date"], observed_df[var], "*", color="r")
+        _ax[idx].set_xlabel("Date")
+        _ax[idx].set_ylabel(labels.get(var, var), rotation=90)
+
+    # Remove empty subplots
+    for j in range(idx + 1, len(_ax)):
+        _ax[j].axis("off")
+
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
