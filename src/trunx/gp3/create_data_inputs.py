@@ -165,7 +165,10 @@ def create_site_data(icp_df, weather_df, observed_data):
     The simulation start month ("from") is set to the date of the first
     observation in ``observed_data`` so simulated and observed timelines
     align, falling back to the earliest weather month if there are no
-    observations.
+    observations. Either way, it's clamped to the earliest month actually
+    present in ``weather_df``, since the simulation can't start before
+    climate data exists (``weather_df`` may already be trimmed to a later
+    start year than the plot's full observation history).
     """
     site_df = pl.read_excel(
         os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="site"
@@ -179,12 +182,20 @@ def create_site_data(icp_df, weather_df, observed_data):
         [pl.lit(latitude_value).alias("latitude"), pl.lit(altitude_value).alias("altitude")]
     )
 
+    weather_min_year = weather_df["year"].min()
+    weather_min_month = (
+        weather_df.filter(pl.col("year") == weather_min_year).select("month").min().item()
+    )
+
     if observed_data.is_empty():
-        min_year = weather_df["year"].min()
-        min_month = weather_df.filter(pl.col("year") == min_year).select("month").min().item()
+        min_year, min_month = weather_min_year, weather_min_month
     else:
         first_obs = observed_data.sort("Date").row(0, named=True)
         min_year, min_month = first_obs["year"], first_obs["month"]
+
+    if (min_year, min_month) < (weather_min_year, weather_min_month):
+        min_year, min_month = weather_min_year, weather_min_month
+
     site_df = site_df.with_columns([pl.lit(f"{min_year}-{min_month:02d}").alias("from")])
 
     max_year = weather_df["year"].max()

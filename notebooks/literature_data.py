@@ -8,15 +8,14 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    return
+    import os
 
-
-@app.cell
-def _():
     import pandas as pd
     import pyreadr
 
-    return pd, pyreadr
+    from trunx.config import threepg_data_folder
+
+    return os, pd, pyreadr, threepg_data_folder
 
 
 @app.cell
@@ -27,45 +26,66 @@ def _(pyreadr):
 
 
 @app.cell
-def _(pd):
+def _(os, pd, threepg_data_folder):
     from docx import Document
 
-    param_default = pd.read_excel("../data/data.default.xlsx")
+    param_default = pd.read_excel(os.path.join(threepg_data_folder, "data.default.xlsx"))
 
-    def docx_tables_to_dfs(file_path):
-        """Extract all tables from a .docx file and return a list of DataFrames."""
-        doc = Document(file_path)
-        all_dfs = []
+    def parse_prior_posterior_table(table):
+        """Parse a Table S3/S4-style docx table (two-row header) into a DataFrame."""
+        rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+        columns = [
+            "parameter",
+            "prior_min",
+            "prior_max",
+            "posterior_2.5%",
+            "posterior_50%",
+            "posterior_97.5%",
+            "reduction_pct",
+            "conv_point_est",
+            "conv_upper_ci",
+        ]
+        # The first two rows are the (merged) header; data starts on row 2.
+        return pd.DataFrame(rows[2:], columns=columns)
 
-        for table in doc.tables:
-            data = []
-            for row in table.rows:
-                row_data = [cell.text.strip() for cell in row.cells]
-                data.append(row_data)
+    file_path = os.path.join("./literature/", "gcb15011-sup-0001-supinfo.docx")
+    doc = Document(file_path)
+    piab_table = parse_prior_posterior_table(doc.tables[2])
+    fasy_table = parse_prior_posterior_table(doc.tables[3])
+    return fasy_table, param_default, piab_table
 
-            # Convert to DataFrame
-            if data:
-                # Assume first row is header
-                df = pd.DataFrame(data[1:], columns=data[0])
-                all_dfs.append(df)
 
-        return all_dfs
-
-    file_path = "../data/gcb15011-sup-0001-supinfo-2.docx"
-    dfs = docx_tables_to_dfs(file_path)
-
+@app.cell
+def _(param_default, pd, piab_table):
     # Species: P. abies
-    param_df = dfs[2]
-    param_df.head()
-    parameter_df = pd.DataFrame(param_df.values[1:], columns=param_df.values[0])[
-        ["Parameter", "50.00%"]
-    ]
-    parameter_df.rename(columns={"50.00%": "piab", "Parameter": "parameter"}, inplace=True)
+    piab_df = piab_table[["parameter", "prior_min", "posterior_50%", "prior_max"]].rename(
+        columns={
+            "prior_min": "min",
+            "posterior_50%": "Picea abies",
+            "prior_max": "max",
+        }
+    )
+    piab_df = pd.merge(param_default, piab_df, on="parameter", how="left")
+    piab_df["Picea abies"] = piab_df["Picea abies"].fillna(piab_df["default"])
+    piab_df = piab_df[["parameter", "min", "Picea abies", "max"]]
 
-    parameter_df = pd.merge(param_default, parameter_df, on="parameter", how="left")
-    parameter_df["piab"] = parameter_df["piab"].fillna(parameter_df["default"])
+    return
 
-    parameter_df = parameter_df[["parameter", "piab"]]
+
+@app.cell
+def _(fasy_table, param_default, pd):
+    # Species: F. sylvatica
+    fasy_df = fasy_table[["parameter", "prior_min", "posterior_50%", "prior_max"]].rename(
+        columns={
+            "prior_min": "min",
+            "posterior_50%": "Fagus sylvatica",
+            "prior_max": "max",
+        }
+    )
+    fasy_df = pd.merge(param_default, fasy_df, on="parameter", how="left")
+    fasy_df["fasy"] = fasy_df["Fagus sylvatica"].fillna(fasy_df["default"])
+    fasy_df = fasy_df[["parameter", "min", "Fagus sylvatica", "max"]]
+
     return
 
 
