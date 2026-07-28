@@ -63,7 +63,7 @@ def prepare_data(file_path):
 
     params_dict = {}
     for i, param_name in enumerate(param_names):
-        params_dict[param_name] = values_matrix[i, :]
+        params_dict[param_name] = jnp.asarray(values_matrix[i, :])
 
     params = Params(**params_dict)
 

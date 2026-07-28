@@ -202,7 +202,7 @@ def load_observations_from_file(
     obs_times = jnp.asarray(idx, dtype=jnp.int32)
 
     observations = {}
-    excluded_cols = {"idx", "month", "year", "date"}
+    excluded_cols = {"idx", "month", "year", "Date", "date", "specie"}
     var_names = [col for col in obs_df.columns if col not in excluded_cols]
 
     for var_name in var_names:
