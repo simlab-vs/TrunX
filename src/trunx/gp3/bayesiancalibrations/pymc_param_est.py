@@ -4,16 +4,15 @@ import os
 import shutil
 import time
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import arviz as az
 import jax
-import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import pymc as pm
 import pytensor.tensor as pt
-from jax import jit, tree_util, vmap
+from jax import jit
 from jax import numpy as jnp
 from jax.scipy.stats import norm
 from jax.scipy.stats import t as jax_student_t
@@ -21,6 +20,11 @@ from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
 
 from trunx.config import results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.calibration_utils import (
+    plot_inference_results,
+    predict_from_parameter_draws,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_observations_from_file,
     load_param_defaults_from_file,
@@ -28,8 +32,10 @@ from trunx.gp3.bayesiancalibrations.load_files import (
     load_top_sensitive_params,
 )
 from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_checkpoint,
     load_inference_data,
     load_predictions,
+    save_checkpoint,
     save_results,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
@@ -37,6 +43,15 @@ from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 jax.config.update("jax_enable_x64", True)
+
+
+class PackedObservation(NamedTuple):
+    """Prepacked observation arrays for one variable."""
+
+    var_name: str
+    sigma_name: str
+    obs_times: jnp.ndarray
+    obs_values: jnp.ndarray
 
 
 class Run3PGLogLikeGrad(Op):
@@ -73,14 +88,25 @@ class Run3PGLogLikeOp(Op):
         observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
         n_species: int,
     ) -> None:
-        self.params_to_optimize = params_to_optimize
+        self.params_to_optimize = tuple(params_to_optimize)
+        self.model_param_names = tuple(
+            name for name in self.params_to_optimize if not name.startswith("err_")
+        )
         self.state = state
         self.climate = climate
         self.site = site
         self.species = species
         self.fixed_params = fixed_params
-        self.observations = observations
         self.n_species = n_species
+        self.observations = tuple(
+            PackedObservation(
+                var_name=var_name,
+                sigma_name=f"err_{var_name}",
+                obs_times=jnp.asarray(obs_times, dtype=jnp.int32).reshape(-1),
+                obs_values=jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1),
+            )
+            for var_name, (obs_times, obs_values) in observations.items()
+        )
 
         self._loglikelihood_jax = jax.jit(self._loglikelihood)
         self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(self._loglikelihood)))
@@ -89,9 +115,7 @@ class Run3PGLogLikeOp(Op):
         """Compute the log-likelihood for a parameter vector (JAX-differentiable)."""
         param_dict = dict(zip(self.params_to_optimize, param_values, strict=True))
         # Update the fixed_params with the new parameter values (excluding error/sigma terms)
-        model_params = {
-            name: value for name, value in param_dict.items() if not name.startswith("err_")
-        }
+        model_params = {name: param_dict[name] for name in self.model_param_names}
         updated_params = self.fixed_params._replace(**model_params)
 
         # Run the 3PG model
@@ -99,19 +123,18 @@ class Run3PGLogLikeOp(Op):
 
         # Compute log-likelihood based on model outputs and observations
         log_likelihood = jnp.array(0.0)
-        for var_name, (obs_times, obs_values) in self.observations.items():
-            sigma_name = f"err_{var_name}"
-            if sigma_name not in param_dict or var_name not in sim_outputs:
+        for observation in self.observations:
+            if observation.sigma_name not in param_dict or observation.var_name not in sim_outputs:
                 continue
-            pred_values = sim_outputs[var_name][obs_times]
-            pred_values = jnp.asarray(pred_values, dtype=jnp.float64).reshape(-1)
-            obs_values = jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1)
+            pred_values = jnp.asarray(
+                sim_outputs[observation.var_name][observation.obs_times]
+            ).reshape(-1)
             # Predictions and observations must line up element-for-element;
             # a mismatch would broadcast into an (n_obs, n_obs) outer product
             # that silently scores every prediction against every observation.
-            assert pred_values.shape == obs_values.shape, (
-                f"Likelihood shape mismatch for {var_name}: "
-                f"predictions {pred_values.shape} vs observations {obs_values.shape}"
+            assert pred_values.shape == observation.obs_values.shape, (
+                f"Likelihood shape mismatch for {observation.var_name}: "
+                f"predictions {pred_values.shape} vs observations {observation.obs_values.shape}"
             )
             # log_likelihood = log_likelihood + jnp.sum(
             #     jax_student_t.logpdf(
@@ -119,7 +142,11 @@ class Run3PGLogLikeOp(Op):
             #     )
             # )
             log_likelihood = log_likelihood + jnp.sum(
-                norm.logpdf(pred_values, loc=obs_values, scale=param_dict[sigma_name])
+                norm.logpdf(
+                    pred_values,
+                    loc=observation.obs_values,
+                    scale=param_dict[observation.sigma_name],
+                )
             )
         return log_likelihood
 
@@ -204,7 +231,6 @@ def predict_with_uncertainity(
     """Run the 3PG model with parameter samples from the posterior to generate predictions."""
     posterior = cast(Any, trace).posterior
     param_to_optimize = list(priors.keys())
-    physiology_names = [name for name in param_to_optimize if not name.startswith("err_")]
 
     n_total = int(posterior.sizes["chain"] * posterior.sizes["draw"])
     n_pick = min(num_predictions, n_total)
@@ -215,43 +241,32 @@ def predict_with_uncertainity(
     )
 
     param_sets = {}
-    for param_name in physiology_names:
-        param_sets[param_name] = posterior[param_name].values[chain_indices, draw_indices]
+    for param_name in param_to_optimize:
+        if param_name in posterior:
+            param_sets[param_name] = posterior[param_name].values[chain_indices, draw_indices]
 
-    # Convert to list of arrays for vmap
-    param_values = [param_sets[name] for name in physiology_names]
+    return predict_from_parameter_draws(
+        parameter_draws=param_sets,
+        param_names=param_to_optimize,
+        initial_state=initial_state,
+        climate=climate,
+        site=site,
+        species=species,
+        fixed_params=fixed_params,
+        observations=observations,
+        n_species=len(species.specie),
+    )
 
-    # Define the model function
-    def run_model(*params):
-        """Run 3PG model with parameters as separate arguments."""
-        param_dict = dict(zip(physiology_names, params, strict=True))
-        params_obj = fixed_params._replace(**param_dict)
-        _, outputs = run_3pg(initial_state, climate, params_obj, site, species)
-        return outputs
 
-    # Vectorize over the first dimension (samples)
-    batched_run = vmap(run_model, in_axes=(0,) * len(physiology_names))
-
-    # Run all simulations
-    all_outputs = batched_run(*param_values)
-
-    # Get variable names from the first output
-    first_outputs = tree_util.tree_map(lambda x: x[0], all_outputs)
-
-    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = {}
-    for var_name in observations:
-        if var_name not in first_outputs:
-            continue
-
-        var_series = all_outputs[var_name]
-        if len(species.specie) == 1:
-            var_series = var_series[..., 0]
-        mean_pred = jnp.mean(var_series, axis=0)
-        lower_pred = jnp.percentile(var_series, 2.5, axis=0)
-        upper_pred = jnp.percentile(var_series, 97.5, axis=0)
-        predictions[var_name] = (mean_pred, lower_pred, upper_pred)
-
-    return predictions
+def _extract_last_values(
+    idata: az.InferenceData, param_names: Sequence[str]
+) -> list[dict[str, float]]:
+    """Extract each chain's last posterior draw, for use as the next chunk's initvals."""
+    posterior = cast(Any, idata).posterior
+    return [
+        {name: float(posterior[name].isel(chain=chain, draw=-1).values) for name in param_names}
+        for chain in range(posterior.sizes["chain"])
+    ]
 
 
 def run_pymc_inference(
@@ -267,6 +282,9 @@ def run_pymc_inference(
     chains: int = 4,
     cores: int | None = None,
     param_defaults: dict[str, float] | None = None,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
@@ -283,6 +301,17 @@ def run_pymc_inference(
         chain at the same point instead of a random prior draw — matching
         the R reference's `createUniformPrior(min, max, best)`. If None,
         PyMC falls back to its default (random) initialization.
+    checkpoint_dir : str | None
+        Directory to save sampling checkpoints to and resume from. If a
+        checkpoint from a previous (possibly interrupted) run is found there,
+        sampling resumes from it instead of starting over. If None, sampling
+        runs in a single pass with no checkpointing.
+    checkpoint_every : int
+        Number of post-tuning draws per chain to sample between checkpoints.
+    resume_tune : int
+        Number of tuning steps used to re-warm the sampler at the start of
+        every chunk after the first (each chunk starts from a fresh
+        `DEMetropolisZ` step, so its proposal scale needs to briefly readapt).
     """
     model = pymc_model(
         climate=climate,
@@ -298,31 +327,54 @@ def run_pymc_inference(
         cores = chains
     _configure_gpu_memory_sharing(cores)
 
-    initvals = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+    param_names = list(priors.keys())
+    idata: az.InferenceData | None = None
+    draws_done = 0
+    initvals: Any = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+
+    if checkpoint_dir is not None:
+        checkpoint = load_checkpoint(checkpoint_dir)
+        if checkpoint is not None:
+            idata, draws_done, initvals = checkpoint
+            assert len(initvals) == chains, (
+                f"Checkpoint has {len(initvals)} chains, but {chains} were requested"
+            )
+            print(f"Resuming from checkpoint: {draws_done}/{num_samples} draws already completed")
 
     with model:
-        step = pm.DEMetropolisZ()
-        # step = pm.HamiltonianMC()
-        # step = pm.NUTS()
-        trace = pm.sample(
-            draws=num_samples,
-            tune=num_warmup,
-            step=step,
-            chains=chains,
-            cores=cores,
-            initvals=initvals,
-            # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
-            # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
-            mp_ctx="spawn",
-            random_seed=42,
-            # discard_tuned_samples=False, # Saves warmup samples
-            return_inferencedata=True,
-            progressbar=True,
-            compute_convergence_checks=True,
-            # idata_kwargs={"save_warmup": True, "log_likelihood": True},
-        )
+        while draws_done < num_samples:
+            chunk_draws = min(checkpoint_every, num_samples - draws_done)
+            chunk_tune = num_warmup if idata is None else resume_tune
+            step = pm.DEMetropolisZ()
+            chunk_trace = pm.sample(
+                draws=chunk_draws,
+                tune=chunk_tune,
+                step=step,
+                chains=chains,
+                cores=cores,
+                initvals=cast(Any, initvals),
+                # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
+                # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
+                mp_ctx="spawn",
+                random_seed=42,
+                return_inferencedata=True,
+                progressbar=True,
+                # Convergence is checked once on the full trace in run_pymc_analysis.
+                compute_convergence_checks=False,
+            )
+            idata = (
+                chunk_trace
+                if idata is None
+                else az.concat(cast(Any, idata), chunk_trace, dim="draw", inplace=False)
+            )
+            draws_done += chunk_draws
+            initvals = _extract_last_values(idata, param_names)
 
-    return trace, model
+            if checkpoint_dir is not None:
+                save_checkpoint(idata, draws_done, initvals, checkpoint_dir)
+                print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
+
+    return cast(az.InferenceData, idata), model
 
 
 def run_pymc_analysis(
@@ -333,8 +385,15 @@ def run_pymc_analysis(
     cores: int | None = None,
     num_warmup: int = 10000,
     num_samples: int = 5000,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ):
-    """Run PyMC inference for Bayesian calibration of 3PG parameters."""
+    """Run PyMC inference for Bayesian calibration of 3PG parameters.
+
+    Sampling is checkpointed to `output_dir` every `checkpoint_every` draws, so
+    calling this again with the same `output_dir` resumes an interrupted run
+    instead of starting over.
+    """
     initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
         file_path
     )
@@ -363,6 +422,9 @@ def run_pymc_analysis(
         chains=chains,
         cores=cores,
         param_defaults=param_defaults,
+        checkpoint_dir=output_dir,
+        checkpoint_every=checkpoint_every,
+        resume_tune=resume_tune,
     )
 
     print("\nConvergence diagnostics:")
@@ -414,75 +476,14 @@ def plot_saved_results(
     predictions_path = os.path.join(output_dir, "predictions.npz")
     predictions = load_predictions(predictions_path) if os.path.exists(predictions_path) else None
 
-    if params is None:
-        params = [str(name) for name in inf_data["posterior"].data_vars]
-
-    # Trace plots
-    az.plot_trace(inf_data, var_names=params)
-    if output_dir is not None:
-        plt.gcf().savefig(os.path.join(output_dir, "trace_plots.png"))
-
-    # Posterior plots
-    az.plot_posterior(inf_data, var_names=params)
-    if output_dir is not None:
-        plt.gcf().savefig(os.path.join(output_dir, "posterior_plots.png"))
-
-    # Summary diagnostics
-    summary = az.summary(inf_data, var_names=params)
-    print(summary)
-
-    if predictions is not None and observations is not None:
-        assert climate is not None, "climate is required to plot predictions"
-
-        # Determine number of months
-        n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
-        time_months = np.arange(n_months)
-
-        for var_name, (mean_pred, lower_pred, upper_pred) in predictions.items():
-            fig, ax = plt.subplots(figsize=(12, 6))
-
-            mean_pred_np = np.asarray(mean_pred)
-            lower_pred_np = np.asarray(lower_pred)
-            upper_pred_np = np.asarray(upper_pred)
-
-            ax.fill_between(
-                time_months,
-                lower_pred_np,
-                upper_pred_np,
-                alpha=0.3,
-                color="tab:blue",
-                label="95% CI",
-            )
-            ax.plot(
-                time_months,
-                mean_pred_np,
-                color="tab:blue",
-                linewidth=2,
-                label="Mean Prediction",
-            )
-
-            obs_times_var, obs_values_var = observations[var_name]
-            ax.scatter(
-                np.asarray(obs_times_var),
-                np.asarray(obs_values_var),
-                color="red",
-                s=50,
-                zorder=5,
-                label="Observations",
-                edgecolors="black",
-                linewidths=1.5,
-            )
-
-            ax.set_xlabel("Time (months)", fontsize=12)
-            ax.set_ylabel(var_name, fontsize=12)
-            ax.set_title(f"3PG Model Predictions with Uncertainty ({var_name})", fontsize=14)
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-            if output_dir is not None:
-                fig.savefig(os.path.join(output_dir, f"prediction_{var_name}.png"))
-
-    plt.show()
+    plot_inference_results(
+        inf_data=inf_data,
+        params=params,
+        observations=observations,
+        predictions=predictions,
+        climate=climate,
+        output_dir=output_dir,
+    )
 
 
 if __name__ == "__main__":
@@ -498,38 +499,20 @@ if __name__ == "__main__":
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
 
     # top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    r_20_params = [
-        "pFS20",
-        "aWS",
-        "nWS",
-        "pRn",
-        "Tmin",
-        "Topt",
-        "Tmax",
-        "fN0",
-        "fNn",
-        "MaxAge",
-        "rAge",
-        "gammaN1",
-        "thinPower",
-        "mS",
-        "alphaCx",
-        "rhoMin",
-        "rhoMax",
-        "aH",
-        "nHB",
-        "nHC",
-    ]
 
     # param_names = top_params + error_names
-    param_names = r_20_params + error_names
+    param_names = FIT_PARAMS + error_names
 
     output_dir = os.path.join(results_data_folder, "pymc_inference_results")
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
 
-    os.mkdir(output_dir)
-    shutil.copy(file_path, output_dir)
+    shutil.rmtree(output_dir)  # To rerun everthing from scratch uncomment this
+
+    if load_checkpoint(output_dir) is None:
+        # No checkpoint to resume from: start clean instead of appending to stale results.
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.mkdir(output_dir)
+        shutil.copy(file_path, output_dir)
 
     run_pymc_analysis(
         output_dir=output_dir,
@@ -537,8 +520,8 @@ if __name__ == "__main__":
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=10000,
-        num_samples=10000,
+        num_warmup=3000,  # If you need to increase the warmup, rerun from scratch.
+        num_samples=3000,  # If you just need to increase the number of samples, adjust here
     )
 
     elapsed_time = time.perf_counter() - start_time

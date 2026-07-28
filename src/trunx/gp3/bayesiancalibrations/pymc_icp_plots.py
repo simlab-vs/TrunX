@@ -12,13 +12,13 @@ from trunx.gp3.bayesiancalibrations.load_files import load_priors_from_file
 from trunx.gp3.bayesiancalibrations.pymc_param_est import run_pymc_analysis
 from trunx.gp3.create_data_inputs import create_input_data
 
-# plot_ids = ["01.0038", "01.0037", "04.0506",]
-plot_ids = [
-    "04.1605",
-    "14.0003",
-    "14.0019",
-    "14.0012",
-]
+plot_ids = ["01.0038", "01.0037", "04.0506"]
+# plot_ids = [
+#     "04.1605",
+#     "14.0003",
+#     "14.0019",
+#     "14.0012",
+# ]
 
 
 def get_available_cpus() -> int:
@@ -54,9 +54,7 @@ def prepare_plot_input(plot_id: str) -> str:
 
     observed_data = pd.read_excel(file_path, sheet_name="observed")
     observed_data = observed_data.rename(columns={"Date": "date"})
-    observed_data = observed_data[
-        ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-    ].dropna()
+    observed_data = observed_data.dropna()
 
     with pd.ExcelWriter(
         file_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
@@ -128,8 +126,8 @@ if __name__ == "__main__":
                 plot_id,
                 chains=chains,
                 cores=chains,
-                num_warmup=1000,
-                num_samples=1000,
+                num_warmup=100,
+                num_samples=100,
             ): plot_id
             for plot_id in plot_ids
         }

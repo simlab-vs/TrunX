@@ -8,16 +8,17 @@ import arviz as az
 import jax
 import jax.numpy as jnp
 import jax.random as random
-import matplotlib.pyplot as plt
-import numpy as np
 import numpyro
 import numpyro.distributions as dist
 import polars as pl
-from jax import jit, tree_util, vmap
-from numpyro.handlers import substitute
 from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.calibration_utils import (
+    plot_inference_results,
+    predict_from_parameter_draws,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_observations_from_file,
     load_param_defaults_from_file,
@@ -27,7 +28,7 @@ from trunx.gp3.bayesiancalibrations.load_files import (
 from trunx.gp3.bayesiancalibrations.save_load_results import save_predictions
 from trunx.gp3.model_inputs import State
 from trunx.gp3.PG3_model_impl import prepare_data
-from trunx.gp3.run_3pg import run_3pg as run_3pg_orig
+from trunx.gp3.run_3pg import run_3pg
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
@@ -38,13 +39,7 @@ jax.config.update("jax_enable_x64", False)
 
 az.rcParams["plot.backend"] = "matplotlib"
 
-numpyro.set_host_device_count(4)  # Set number of chains to run in parallel
-
-print("JIT-compiling run_3pg...")
-run_3pg = jax.jit(
-    run_3pg_orig,
-)
-print("JIT-compiled run_3pg")
+numpyro.set_host_device_count(max(1, min(4, os.cpu_count() or 1)))
 
 
 def model(
@@ -88,7 +83,11 @@ def model(
     # Sample from priors
     samples = {}
     for param_name, (lower, upper) in priors.items():
-        samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
+        # samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
+        scaled_beta = dist.TransformedDistribution(
+            dist.Beta(1.1, 1.1), dist.transforms.AffineTransform(loc=lower, scale=upper - lower)
+        )
+        samples[param_name] = numpyro.sample(param_name, scaled_beta)
 
     param_updates = {
         name: value for name, value in samples.items() if name in fixed_params._fields
@@ -140,9 +139,11 @@ def run_hmc_inference(
     adaptive_warmup: bool = True,
     adapt_step_size: bool = True,
     adapt_mass_matrix: bool = True,
-    target_accept_prob: float = 0.9,
+    target_accept_prob: float = 0.95,
     max_tree_depth: int = 10,
     param_defaults: dict[str, float] | None = None,
+    chain_method: str = "parallel",
+    jit_model_args: bool = True,
 ) -> tuple[MCMC, dict]:
     """
     Run HMC inference using NumPyro's NUTS sampler.
@@ -212,8 +213,8 @@ def run_hmc_inference(
         num_samples=num_samples,
         num_chains=num_chains,
         thinning=thinning,
-        chain_method="parallel",
-        progress_bar=True,
+        chain_method=chain_method,
+        jit_model_args=jit_model_args,
     )
 
     # Run MCMC
@@ -258,8 +259,6 @@ def predict_with_uncertainty(
     samples = mcmc.get_samples()
 
     param_names = list(priors.keys())
-    # Sigma/error parameters (e.g. `err_DBH`) are not fields of `fixed_params`.
-    physiology_names = [name for name in param_names if name in fixed_params._fields]
 
     # Randomly select n_predictions samples
     n_total_samples = len(samples[param_names[0]])
@@ -267,42 +266,19 @@ def predict_with_uncertainty(
         rng_key, n_total_samples, shape=(min(n_predictions, n_total_samples),), replace=False
     )
 
-    param_sets = {name: samples[name][indices] for name in physiology_names}
+    param_sets = {name: samples[name][indices] for name in param_names if name in samples}
 
-    # Convert to list of arrays for vmap
-    param_values = [param_sets[name] for name in physiology_names]
-
-    # Define the model function
-    def run_model(*params):
-        """Run 3PG model with parameters as separate arguments."""
-        param_dict = dict(zip(physiology_names, params, strict=True))
-        params_obj = fixed_params._replace(**param_dict)
-        _, outputs = run_3pg(initial_state, climate, params_obj, site, species)
-        return outputs
-
-    # Vectorize over the first dimension (samples)
-    batched_run = vmap(run_model, in_axes=(0,) * len(physiology_names))
-
-    # Run all simulations
-    all_outputs = batched_run(*param_values)
-
-    # Get variable names from the first output
-    first_outputs = tree_util.tree_map(lambda x: x[0], all_outputs)
-
-    predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = {}
-    for var_name in observations:
-        if var_name not in first_outputs:
-            continue
-
-        var_series = all_outputs[var_name]
-        if n_species == 1:
-            var_series = var_series[..., 0]
-        mean_pred = jnp.mean(var_series, axis=0)
-        lower_pred = jnp.percentile(var_series, 2.5, axis=0)
-        upper_pred = jnp.percentile(var_series, 97.5, axis=0)
-        predictions[var_name] = (mean_pred, lower_pred, upper_pred)
-
-    return predictions
+    return predict_from_parameter_draws(
+        parameter_draws=param_sets,
+        param_names=param_names,
+        initial_state=initial_state,
+        climate=climate,
+        site=site,
+        species=species,
+        fixed_params=fixed_params,
+        observations=observations,
+        n_species=n_species,
+    )
 
 
 def plot_results(
@@ -332,75 +308,14 @@ def plot_results(
     output_dir : str | None
         If given, save each figure as a PNG in this directory.
     """
-    if params is None:
-        params = [str(name) for name in inf_data["posterior"].data_vars]
-
-    # Trace plots
-    az.plot_trace(inf_data, var_names=params)
-    if output_dir is not None:
-        plt.gcf().savefig(os.path.join(output_dir, "trace_plots.png"))
-
-    # Posterior plots
-    az.plot_posterior(inf_data, var_names=params)
-    if output_dir is not None:
-        plt.gcf().savefig(os.path.join(output_dir, "posterior_plots.png"))
-
-    # Summary diagnostics
-    summary = az.summary(inf_data, var_names=params)
-    print(summary)
-
-    if predictions is not None and observations is not None:
-        assert climate is not None, "climate is required to plot predictions"
-
-        # Determine number of months
-        n_months = len(climate.month) if hasattr(climate, "month") else len(climate.T_avg)
-        time_months = np.arange(n_months)
-
-        for var_name, (mean_pred, lower_pred, upper_pred) in predictions.items():
-            fig, ax = plt.subplots(figsize=(12, 6))
-
-            mean_pred_np = np.asarray(mean_pred)
-            lower_pred_np = np.asarray(lower_pred)
-            upper_pred_np = np.asarray(upper_pred)
-
-            ax.fill_between(
-                time_months,
-                lower_pred_np,
-                upper_pred_np,
-                alpha=0.3,
-                color="tab:blue",
-                label="95% CI",
-            )
-            ax.plot(
-                time_months,
-                mean_pred_np,
-                color="tab:blue",
-                linewidth=2,
-                label="Mean Prediction",
-            )
-
-            obs_times_var, obs_values_var = observations[var_name]
-            ax.scatter(
-                np.asarray(obs_times_var),
-                np.asarray(obs_values_var),
-                color="red",
-                s=50,
-                zorder=5,
-                label="Observations",
-                edgecolors="black",
-                linewidths=1.5,
-            )
-
-            ax.set_xlabel("Time (months)", fontsize=12)
-            ax.set_ylabel(var_name, fontsize=12)
-            ax.set_title(f"3PG Model Predictions with Uncertainty ({var_name})", fontsize=14)
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-            if output_dir is not None:
-                fig.savefig(os.path.join(output_dir, f"prediction_{var_name}.png"))
-
-    plt.show()
+    plot_inference_results(
+        inf_data=inf_data,
+        params=params,
+        observations=observations,
+        predictions=predictions,
+        climate=climate,
+        output_dir=output_dir,
+    )
 
 
 def run_full_analysis(
@@ -420,6 +335,9 @@ def run_full_analysis(
     show_plots: bool = True,
     predict_with_uncert: bool = False,
     param_defaults: dict[str, float] | None = None,
+    chain_method: str = "parallel",
+    progress_bar: bool = True,
+    jit_model_args: bool = True,
 ) -> tuple[MCMC, dict]:
     """
     Run complete HMC analysis with diagnostics and plotting.
@@ -465,6 +383,8 @@ def run_full_analysis(
         num_chains=num_chains,
         seed=seed,
         param_defaults=param_defaults,
+        chain_method=chain_method,
+        jit_model_args=jit_model_args,
     )
 
     # Print summary
@@ -513,6 +433,9 @@ def run_hmc_analysis(
     param_names: list[str] | None = None,
     predict_with_uncert: bool = False,
     show_plots: bool = False,
+    chain_method: str = "parallel",
+    progress_bar: bool = True,
+    jit_model_args: bool = True,
 ):
     """
     Run HMC implementation.
@@ -555,13 +478,16 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=10,
-        num_samples=10,
+        num_warmup=200,
+        num_samples=200,
         num_chains=4,
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=show_plots,
         predict_with_uncert=predict_with_uncert,
         param_defaults=param_defaults,
+        chain_method=chain_method,
+        progress_bar=progress_bar,
+        jit_model_args=jit_model_args,
     )
 
     # Print parameter summaries
@@ -586,28 +512,7 @@ if __name__ == "__main__":
     )
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
     top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    r_20_params = [
-        "pFS20",
-        "aWS",
-        "nWS",
-        "pRn",
-        "Tmin",
-        "Topt",
-        "Tmax",
-        "fN0",
-        "fNn",
-        "MaxAge",
-        "rAge",
-        "gammaN1",
-        "thinPower",
-        "mS",
-        "alphaCx",
-        "rhoMin",
-        "rhoMax",
-        "aH",
-        "nHB",
-        "nHC",
-    ]
+    r_20_params = FIT_PARAMS
 
     # param_names = top_params + error_names
     param_names = r_20_params + error_names
