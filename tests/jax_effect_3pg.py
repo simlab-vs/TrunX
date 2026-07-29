@@ -1,11 +1,11 @@
-"""Benchmark `run_3pg`: R (CPU) vs JAX loop (CPU/GPU) vs JAX vmap (CPU/GPU).
+"""Benchmark `run_3pg`: R (CPU, parallel) vs JAX vmap (CPU/GPU).
 
 Runs the same comparison at several problem scales (see `_SCALES`) to show how
 each implementation's wall time and memory footprint change as the number of
 passes grows. For each scale we collect:
   - wall time for a single, non-parallelizable pass
-  - wall time for many passes (sequential for R and the JAX loop, vmapped
-    for JAX)
+  - wall time for many passes (parallel across CPU cores for R, vmapped for
+    JAX)
   - peak/mean process memory (RSS) while running the many-passes case
 
 One-time costs (JAX JIT compilation, R package loading and data reading) are
@@ -14,6 +14,7 @@ reflect the steady-state cost these implementations are actually chosen for.
 
 """
 
+import gc
 import os
 import statistics
 import subprocess
@@ -100,9 +101,10 @@ def _perturb_float_arrays(tree, key: jax.Array, scale: float):
     return tree._replace(**data), key
 
 
-def perturb_inputs(params, climate, site, species, initial_state, scale=0.02, seed=42):
+def perturb_inputs(
+    params, climate, site, species, initial_state, key: jax.Array, scale: float = 0.02
+):
     """Create one perturbed set of float inputs for benchmarking stability."""
-    key = jax.random.PRNGKey(seed)
     params_p, key = _perturb_float_arrays(params, key, scale)
     climate_p, key = _perturb_float_arrays(climate, key, scale * 0.2)
     site_p, key = _perturb_float_arrays(site, key, scale * 0.2)
@@ -111,18 +113,10 @@ def perturb_inputs(params, climate, site, species, initial_state, scale=0.02, se
     return params_p, climate_p, site_p, species_p, state_p
 
 
-def _stack_trees(trees):
-    """Stack a list of identically-shaped NamedTuple pytrees along a new leading axis."""
-    return jax.tree_util.tree_map(lambda *leaves: jnp.stack(leaves), *trees)
-
-
 class ScaleResult(NamedTuple):
     """Benchmark results for one problem scale (number of passes)."""
 
     scale: int
-    loop_total: float
-    loop_peak_mb: float
-    loop_mean_mb: float
     vmap_exec: float
     vmap_peak_mb: float
     vmap_mean_mb: float
@@ -131,39 +125,38 @@ class ScaleResult(NamedTuple):
     r_mean_mb: float
 
 
-def build_perturbed_inputs(params, climate, site_data, species_data, initial_state, n_runs):
-    """Build `n_runs` independently perturbed input sets."""
-    return [
-        perturb_inputs(
-            params, climate, site_data, species_data, initial_state, scale=0.02, seed=42 + num
-        )
-        for num in range(n_runs)
-    ]
+def build_perturbed_inputs(
+    params, climate, site_data, species_data, initial_state, n_runs, seed: int = 42
+):
+    """Vmap `perturb_inputs` over `n_runs` independent keys to build a batch of perturbed inputs.
+
+    Replaces a Python-level loop of `n_runs` unjitted calls (each doing many
+    tiny per-field `jax.random` dispatches) with a single jitted, vectorized
+    computation.
+
+    Returns
+    -------
+    tuple of 5 pytrees
+        (params_batch, climate_batch, site_batch, species_batch, state_batch),
+        each leaf carrying a leading `n_runs` batch dimension.
+    """
+    keys = jax.random.split(jax.random.PRNGKey(seed), n_runs)
+    batched_perturb = jax.jit(
+        jax.vmap(perturb_inputs, in_axes=(None, None, None, None, None, 0, None))
+    )
+
+    start = time.perf_counter()
+    batch = batched_perturb(params, climate, site_data, species_data, initial_state, keys, 0.02)
+    _wait_for_outputs(batch)
+    elapsed = time.perf_counter() - start
+    print(f"  build_perturbed_inputs ({n_runs} runs) compile+exec: {elapsed:.4f}s")
+
+    return batch
 
 
-def run_jax_loop(run_3pg, perturbed_inputs):
-    """Sequential loop over the jitted, unbatched `run_3pg`; returns (total_seconds, mem)."""
-    total = 0.0
-    checkpoint = max(1, len(perturbed_inputs) // 5)
-    with MemorySampler() as mem:
-        for num, (params_p, climate_p, site_p, species_p, state_p) in enumerate(perturbed_inputs):
-            start = time.perf_counter()
-            _, outputs = run_3pg(state_p, climate_p, params_p, site_p, species_p)
-            _wait_for_outputs(outputs)
-            elapsed = time.perf_counter() - start
-            total += elapsed
-            if num % checkpoint == 0:
-                print(f"  [loop] simulation {num}: {elapsed:.4f}s")
-    return total, mem
-
-
-def run_jax_vmap(perturbed_inputs):
+def run_jax_vmap(perturbed_batch):
     """Vmap the batch of perturbed inputs; returns (compile_seconds, exec_seconds, mem)."""
-    params_batch = _stack_trees([p[0] for p in perturbed_inputs])
-    climate_batch = _stack_trees([p[1] for p in perturbed_inputs])
-    site_batch = _stack_trees([p[2] for p in perturbed_inputs])
-    species_batch = _stack_trees([p[3] for p in perturbed_inputs])
-    state_batch = _stack_trees([p[4] for p in perturbed_inputs])
+    params_batch, climate_batch, site_batch, species_batch, state_batch = perturbed_batch
 
     run_3pg_vmapped = jax.jit(jax.vmap(run_3pg_orig))
 
@@ -236,9 +229,6 @@ for scale in _SCALES:
         params, climate, site_data, species_data, initial_state, scale
     )
 
-    loop_total, loop_mem = run_jax_loop(run_3pg, perturbed_inputs)
-    print(f"  JAX loop total ({scale} runs): {loop_total:.4f}s")
-
     vmap_compile, vmap_exec, vmap_mem = run_jax_vmap(perturbed_inputs)
     print(f"  JAX vmap compile+exec: {vmap_compile:.4f}s, exec only: {vmap_exec:.4f}s")
 
@@ -254,9 +244,6 @@ for scale in _SCALES:
     results.append(
         ScaleResult(
             scale=scale,
-            loop_total=loop_total,
-            loop_peak_mb=loop_mem.peak_mb,
-            loop_mean_mb=loop_mem.mean_mb,
             vmap_exec=vmap_exec,
             vmap_peak_mb=vmap_mem.peak_mb,
             vmap_mean_mb=vmap_mem.mean_mb,
@@ -266,11 +253,17 @@ for scale in _SCALES:
         )
     )
 
+    # Release this scale's batched arrays and compiled programs before the
+    # next (larger) scale runs, so peak/mean RSS reflects each scale on its
+    # own instead of accumulating across the whole run.
+    del perturbed_inputs
+    jax.clear_caches()
+    gc.collect()
+
 summary_rows = []
 for r in results:
     for name, total, peak, mean in [
-        ("R (sequential)", r.r_total, r.r_peak_mb, r.r_mean_mb),
-        ("JAX loop (jit)", r.loop_total, r.loop_peak_mb, r.loop_mean_mb),
+        ("R (parallel)", r.r_total, r.r_peak_mb, r.r_mean_mb),
         ("JAX vmap", r.vmap_exec, r.vmap_peak_mb, r.vmap_mean_mb),
     ]:
         summary_rows.append(
