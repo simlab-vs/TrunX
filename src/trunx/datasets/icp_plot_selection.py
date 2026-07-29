@@ -269,7 +269,7 @@ def plot_plot_locations(selected: pl.DataFrame, icp_df: pl.DataFrame) -> go.Figu
             "center": {"lat": plotted["lat"].mean(), "lon": plotted["lon"].mean()},
         },
         margin={"r": 0, "t": 30, "l": 0, "b": 0},
-        title="Selected ICP plot locations by dominant species",
+        title="Selected ICP plot locations by species",
         legend={"x": 0, "y": 1},
     )
 

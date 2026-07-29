@@ -1,4 +1,8 @@
-"""Check for stand management information in the ICP Level I data (y1_st1)."""
+"""Check for stand management information in the ICP Level I data (y1_st1).
+
+url: https://icp-forests.org/documentation/Surveys/Y1/ST1.html
+
+"""
 
 import os
 
@@ -48,7 +52,8 @@ if __name__ == "__main__":
     for col in MANAGEMENT_COLS:
         n_rows = stand_df[col].drop_nulls().len()
         n_plots = stand_df.filter(pl.col(col).is_not_null())["plot_id"].n_unique()
-        print(f"{col}: {n_rows} rows ({n_plots} plots) with a value")
+        plot_ids = stand_df.filter(pl.col(col).is_not_null())["plot_id"].unique().to_list()
+        print(f"{col}: {n_rows} rows ({n_plots} plots [{', '.join(plot_ids)}]) with a value")
 
     has_management = stand_df.filter(
         pl.any_horizontal(pl.col(col).is_not_null() for col in MANAGEMENT_COLS)
@@ -58,3 +63,7 @@ if __name__ == "__main__":
         "have at least one management field populated"
     )
     print(has_management.select("plot_id", "Lat", "Lon", "survey_year", *MANAGEMENT_COLS).head(20))
+
+    # Select only the unmanaged plots (code_manage_type == 1).
+    has_management = has_management.filter(pl.col("code_manage_type").eq("1"))
+    print(has_management.select("plot_id").n_unique())

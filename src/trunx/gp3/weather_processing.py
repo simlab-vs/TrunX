@@ -121,7 +121,7 @@ def create_weather_input(df: pl.DataFrame, plot_id: str) -> tuple[list, pl.DataF
             .select("year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad")
         )
 
-    weather_df = weather_df.sort(["year", "month"]).drop_nulls()
+    weather_df = weather_df.sort(["year", "month"])
 
     # Check for gaps
     weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))

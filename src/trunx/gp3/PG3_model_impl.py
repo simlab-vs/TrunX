@@ -242,11 +242,6 @@ if __name__ == "__main__":
     #         file_path, observed_data=None, plot_output=True, r_comparison=True
     #     )
 
-    plot_id = "04.0303"
-    fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
-
-    # plot_ids = ["01.0038", "04.1402", "52.0010", "04.1403", "59.0008"]
-
     species_plot_ids = {
         "Pinus sylvestris": [
             "01.0082",
@@ -283,7 +278,7 @@ if __name__ == "__main__":
         ],
     }
 
-    plot_ids = species_plot_ids["Picea abies"]
+    plot_ids = species_plot_ids["Pinus sylvestris"]
 
     for plot_id in plot_ids:
         plot_dbh_distribution(
