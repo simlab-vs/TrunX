@@ -12,7 +12,6 @@ from typing import Literal
 
 import camelot
 import polars as pl
-import pyreadr
 from docx import Document
 from docx.table import Table
 
@@ -146,12 +145,6 @@ FRN_PARAMETERS = [
     "nHLC",
     "nHLrh",
 ]
-
-
-def explore_solling_data() -> None:
-    """Print the variable names available in the r3PG solling.rda dataset."""
-    data = pyreadr.read_r(SOLLING_RDA_PATH)
-    print(list(data.keys()))
 
 
 def parse_prior_posterior_table(table: Table) -> pl.DataFrame:
@@ -542,8 +535,6 @@ def fill_remaining_defaults(
 
 
 if __name__ == "__main__":
-    explore_solling_data()
-
     params = list(Params._fields)
     param_default = pl.read_excel(os.path.join(threepg_data_folder, "data.default.xlsx"))
     piab_table, fasy_table = load_trotsiuk_tables()
