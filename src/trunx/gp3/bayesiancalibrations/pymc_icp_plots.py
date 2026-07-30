@@ -1,5 +1,6 @@
 """Prepare ICP plot input files and run Bayesian calibration for each, in parallel."""
 
+import argparse
 import os
 import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -142,9 +143,46 @@ def run_bayesian_for_plot(
     return plot_id
 
 
-if __name__ == "__main__":
-    chains = 3
+def run_bayesian_calibration(
+    plot_ids: list[str], chains: int = 3, num_warmup: int = 100, num_samples: int = 100
+) -> None:
+    """Run Bayesian calibration for multiple ICP plots in parallel.
 
+    Parameters
+    ----------
+    plot_ids : list[str]
+        List of ICP plot identifiers.
+    chains, cores, num_warmup, num_samples
+        Passed through to `run_pymc_analysis`.
+    """
+    available_cpus = get_available_cpus()
+    max_workers = max(1, min(len(plot_ids), available_cpus // chains))
+    print(
+        f"Available CPUs: {available_cpus}, chains per plot: {chains}, max_workers: {max_workers}"
+    )
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                run_bayesian_for_plot,
+                plot_id,
+                chains=chains,
+                cores=chains,
+                num_warmup=num_warmup,
+                num_samples=num_samples,
+            ): plot_id
+            for plot_id in plot_ids
+        }
+        for future in as_completed(futures):
+            plot_id = futures[future]
+            try:
+                future.result()
+            except Exception:
+                print(f"Bayesian calibration failed for plot_id={plot_id}")
+                raise
+
+
+if __name__ == "__main__":
     species_plot_ids = {
         "Pinus sylvestris": [
             "01.0082",
@@ -181,30 +219,26 @@ if __name__ == "__main__":
         ],
     }
 
-    plot_ids = [plot_id for plot_list in species_plot_ids.values() for plot_id in plot_list]
+    plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species][0:5]
 
-    available_cpus = get_available_cpus()
-    max_workers = max(1, min(len(plot_ids), available_cpus // chains))
-    print(
-        f"Available CPUs: {available_cpus}, chains per plot: {chains}, max_workers: {max_workers}"
+    # Add argument parser
+    parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
+    parser.add_argument(
+        "--plot-ids", nargs="+", required=False, help="Space-separated list of plot IDs"
     )
+    parser.add_argument("--chains", type=int, default=3, help="Number of MCMC chains")
+    parser.add_argument("--warmup", type=int, default=100, help="Number of warmup samples")
+    parser.add_argument("--samples", type=int, default=100, help="Number of posterior samples")
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                run_bayesian_for_plot,
-                plot_id,
-                chains=chains,
-                cores=chains,
-                num_warmup=100,
-                num_samples=100,
-            ): plot_id
-            for plot_id in plot_ids
-        }
-        for future in as_completed(futures):
-            plot_id = futures[future]
-            try:
-                future.result()
-            except Exception:
-                print(f"Bayesian calibration failed for plot_id={plot_id}")
-                raise
+    args = parser.parse_args()
+
+    if args.plot_ids is None:
+        args.plot_ids = plot_ids
+
+    print(f"Processing plots: {args.plot_ids}")
+    run_bayesian_calibration(
+        plot_ids=args.plot_ids,
+        chains=args.chains,
+        num_warmup=args.warmup,
+        num_samples=args.samples,
+    )
