@@ -29,7 +29,7 @@ SOLLING_RDA_PATH = os.path.join(
 # gammaF1 for deciduous species) but do have a Table 4 "#" posterior
 # estimate. "forrester" keeps that species-specific Forrester value;
 # "default" instead falls back to param_default's single generic value.
-FILL_NON_PRIOR_SOURCE: Literal["forrester", "default"] = "default"
+FILL_NON_PRIOR_SOURCE: Literal["forrester", "default"] = "forrester"
 
 FORRESTER_SPECIES = [
     "Abies alba",
@@ -513,8 +513,8 @@ def fill_remaining_defaults(
     missing = set(params) - set(forrester_prior_df["parameter"].unique().to_list())
     if missing:
         print(
-            f"Parameters without a forrester literature source: {missing}, filling \
-            from param_default"
+            f"Parameters without a forrester literature source: {missing}, \
+filling from default values"
         )
     else:
         print("All Params fields have a forrester literature source.")
@@ -532,6 +532,33 @@ def fill_remaining_defaults(
         ]
     )
     return combine_parameter_tables(forrester_prior_df, remaining_default_df)
+
+
+def _inset_defaults_from_bounds(param_df: pl.DataFrame, epsilon: float = 1e-4) -> pl.DataFrame:
+    """Nudge any default sitting exactly on its own min/max bound slightly inward.
+
+    Parameters
+    ----------
+    param_df : pl.DataFrame
+        Columns: parameter, species, min, max, default.
+    epsilon : float
+        Fraction of the (max - min) range to nudge a boundary default by.
+
+    Returns
+    -------
+    pl.DataFrame
+        `param_df` with degenerate defaults nudged inward.
+    """
+    has_range = pl.col("min").is_not_null() & pl.col("max").is_not_null()
+    inset = epsilon * (pl.col("max") - pl.col("min"))
+    return param_df.with_columns(
+        pl.when(has_range & (pl.col("default") == pl.col("min")))
+        .then(pl.col("min") + inset)
+        .when(has_range & (pl.col("default") == pl.col("max")))
+        .then(pl.col("max") - inset)
+        .otherwise(pl.col("default"))
+        .alias("default")
+    )
 
 
 if __name__ == "__main__":
@@ -574,6 +601,7 @@ if __name__ == "__main__":
     param_df = fill_remaining_defaults(
         forrester_prior_df, param_default, params, FORRESTER_SPECIES
     )
+    param_df = _inset_defaults_from_bounds(param_df)
 
     output_path = os.path.join(
         threepg_data_folder, f"literature_params_forrester_{FILL_NON_PRIOR_SOURCE}.parquet"
@@ -582,4 +610,22 @@ if __name__ == "__main__":
 
     print(f"Saved param_df to {output_path}")
 
-    print(param_df.height)
+    param_pivot_df = param_df.pivot(on="species", index="parameter", values="default")
+
+    param_pivot_df = param_pivot_df.join(param_default, on="parameter", how="inner")
+
+    print(param_pivot_df)
+
+    if FILL_NON_PRIOR_SOURCE == "forrester":
+        param_pivot_df.to_pandas().to_excel(
+            os.path.join(threepg_data_folder, "data.forrester.forrester.xlsx"),
+            sheet_name="parameters",
+            index=False,
+        )
+
+    else:
+        param_pivot_df.to_pandas().to_excel(
+            os.path.join(threepg_data_folder, "data.forrester.default.xlsx"),
+            sheet_name="parameters",
+            index=False,
+        )
