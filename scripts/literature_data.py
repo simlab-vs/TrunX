@@ -21,9 +21,7 @@ from trunx.gp3.model_inputs import Params
 LITERATURE_FOLDER = os.path.join(project_root, "literature")
 FORRESTER_PDF_PATH = os.path.join(LITERATURE_FOLDER, "s10342-021-01370-3.pdf")
 TROTSIUK_DOCX_PATH = os.path.join(LITERATURE_FOLDER, "gcb15011-sup-0001-supinfo.docx")
-SOLLING_RDA_PATH = os.path.join(
-    project_root, "models/r3PG/vignettes_build/vignette_data/solling.rda"
-)
+INPUT_OLD_XLSX_PATH = os.path.join(threepg_data_folder, "data.input_old.xlsx")
 
 # Some (parameter, species) pairs have no Table 2 prior range at all (e.g.
 # gammaF1 for deciduous species) but do have a Table 4 "#" posterior
@@ -123,13 +121,17 @@ STAR_PARAMETERS = [
 
 # Table 4 parameters marked "‡": point values calculated from EFM/FRN data
 # (regression analyses), one value per species.
+#
+# aH/nHB/nHC are excluded here: Forrester's Table 4 fits them to a
+# different (exponential) height equation than the power law
+# `H = aH * DBH^nHB * competition^nHC` that `run_3pg` uses, so plugging
+# them in directly makes `H` explode. They are instead sourced from
+# `data.input_old.xlsx` (already power-law-compatible) via
+# `load_input_old_height_params`, below.
 FRN_PARAMETERS = [
     "mF",
     "mR",
     "mS",
-    "aH",
-    "nHB",
-    "nHC",
     "aV",
     "nVB",
     "nVH",
@@ -145,6 +147,9 @@ FRN_PARAMETERS = [
     "nHLC",
     "nHLrh",
 ]
+
+# aH/nHB/nHC — power-law height parameters sourced from data.input_old.xlsx.
+HEIGHT_POWER_LAW_PARAMETERS = ["aH", "nHB", "nHC"]
 
 
 def parse_prior_posterior_table(table: Table) -> pl.DataFrame:
@@ -211,6 +216,28 @@ def build_species_param_df(
     species_df = species_df.with_columns(pl.col(species_name).fill_null(pl.col("default")))
     species_df = species_df.select("parameter", "min", species_name, "max")
     return species_df.filter(pl.col("parameter").is_in(params))
+
+
+def _species_long_format(species_df: pl.DataFrame, species_name: str) -> pl.DataFrame:
+    """Reshape a `build_species_param_df` wide table into long form.
+
+    Parameters
+    ----------
+    species_df : pl.DataFrame
+        Columns: parameter, min, <species_name>, max.
+    species_name : str
+        Name of the column holding that species' posterior-median values.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns: parameter, species, min, max, default.
+    """
+    return (
+        species_df.rename({species_name: "default"})
+        .with_columns(pl.lit(species_name).alias("species"))
+        .select("parameter", "species", "min", "max", "default")
+    )
 
 
 def _parse_range_token(token: str) -> tuple[float, float] | None:
@@ -494,6 +521,54 @@ def fill_missing_gammaF1(
     return combine_parameter_tables(forrester_prior_df, fill_df)
 
 
+def load_input_old_height_params() -> pl.DataFrame:
+    """Load per-species aH/nHB/nHC power-law height parameters.
+
+    Sourced from `data.input_old.xlsx` instead of Forrester Table 4, since
+    Forrester's values are fitted to a different (exponential) height
+    equation than the power law `run_3pg` uses.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns: parameter, species, default. Covers only the species
+        present in `data.input_old.xlsx`'s parameters sheet.
+    """
+    df = pl.read_excel(INPUT_OLD_XLSX_PATH, sheet_name="parameters")
+    df = df.filter(pl.col("parameter").is_in(HEIGHT_POWER_LAW_PARAMETERS))
+    species_columns = [c for c in df.columns if c != "parameter"]
+    return df.unpivot(
+        index="parameter", on=species_columns, variable_name="species", value_name="default"
+    )
+
+
+def fill_missing_height_species(
+    forrester_prior_df: pl.DataFrame, param_default: pl.DataFrame, species: list[str]
+) -> pl.DataFrame:
+    """Fill aH/nHB/nHC for species not covered by `data.input_old.xlsx`.
+
+    Returns
+    -------
+    pl.DataFrame
+        `forrester_prior_df` with any missing (parameter, species) height
+        rows added from `param_default`.
+    """
+    fill_rows = []
+    for param in HEIGHT_POWER_LAW_PARAMETERS:
+        present = set(forrester_prior_df.filter(pl.col("parameter") == param)["species"].to_list())
+        missing_species = set(species) - present
+        if not missing_species:
+            continue
+        default_value = param_default.filter(pl.col("parameter") == param)["default"].item()
+        fill_rows.extend(
+            {"parameter": param, "species": sp, "default": default_value} for sp in missing_species
+        )
+
+    if not fill_rows:
+        return forrester_prior_df
+    return combine_parameter_tables(forrester_prior_df, pl.DataFrame(fill_rows))
+
+
 def fill_remaining_defaults(
     forrester_prior_df: pl.DataFrame,
     param_default: pl.DataFrame,
@@ -561,15 +636,45 @@ def _inset_defaults_from_bounds(param_df: pl.DataFrame, epsilon: float = 1e-4) -
     )
 
 
-if __name__ == "__main__":
+def build_trotsiuk_param_df(param_default: pl.DataFrame) -> pl.DataFrame:
+    """Build the long-format Trotsiuk parameter table.
+
+    Covers Picea abies and Fagus sylvatica only.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns: parameter, species, min, max, default.
+    """
     params = list(Params._fields)
-    param_default = pl.read_excel(os.path.join(threepg_data_folder, "data.default.xlsx"))
     piab_table, fasy_table = load_trotsiuk_tables()
     piab_df = build_species_param_df(piab_table, param_default, "Picea abies", params)
     fasy_df = build_species_param_df(fasy_table, param_default, "Fagus sylvatica", params)
     print(piab_df)
     print(fasy_df)
 
+    trotsiuk_df = pl.concat(
+        [
+            _species_long_format(piab_df, "Picea abies"),
+            _species_long_format(fasy_df, "Fagus sylvatica"),
+        ]
+    )
+    return _inset_defaults_from_bounds(trotsiuk_df)
+
+
+def build_forrester_param_df(param_default: pl.DataFrame) -> pl.DataFrame:
+    """Build the long-format Forrester parameter table.
+
+    Covers all `FORRESTER_SPECIES` (12 species). See `FILL_NON_PRIOR_SOURCE`
+    for how (parameter, species) pairs with a posterior default but no
+    Table 2 prior range are handled.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns: parameter, species, min, max, default.
+    """
+    params = list(Params._fields)
     table4_rows = load_table4_rows()
     forrester_min_max_df = parse_forrester_prior_ranges(FORRESTER_SPECIES)
     forrester_posterior_default_df = parse_forrester_posterior_defaults(
@@ -598,34 +703,30 @@ if __name__ == "__main__":
             forrester_prior_df, param_default, FORRESTER_SPECIES
         )
 
+    forrester_prior_df = combine_parameter_tables(
+        forrester_prior_df, load_input_old_height_params()
+    )
+    forrester_prior_df = fill_missing_height_species(
+        forrester_prior_df, param_default, FORRESTER_SPECIES
+    )
+
     param_df = fill_remaining_defaults(
         forrester_prior_df, param_default, params, FORRESTER_SPECIES
     )
-    param_df = _inset_defaults_from_bounds(param_df)
+    return _inset_defaults_from_bounds(param_df)
 
+
+if __name__ == "__main__":
+    param_default = pl.read_excel(os.path.join(threepg_data_folder, "data.default.xlsx"))
+
+    trotsiuk_df = build_trotsiuk_param_df(param_default)
+    trotsiuk_output_path = os.path.join(threepg_data_folder, "literature_params_trotsiuk.parquet")
+    trotsiuk_df.write_parquet(trotsiuk_output_path)
+    print(f"Saved trotsiuk param_df to {trotsiuk_output_path}")
+
+    param_df = build_forrester_param_df(param_default)
     output_path = os.path.join(
         threepg_data_folder, f"literature_params_forrester_{FILL_NON_PRIOR_SOURCE}.parquet"
     )
     param_df.write_parquet(output_path)
-
     print(f"Saved param_df to {output_path}")
-
-    param_pivot_df = param_df.pivot(on="species", index="parameter", values="default")
-
-    param_pivot_df = param_pivot_df.join(param_default, on="parameter", how="inner")
-
-    print(param_pivot_df)
-
-    if FILL_NON_PRIOR_SOURCE == "forrester":
-        param_pivot_df.to_pandas().to_excel(
-            os.path.join(threepg_data_folder, "data.forrester.forrester.xlsx"),
-            sheet_name="parameters",
-            index=False,
-        )
-
-    else:
-        param_pivot_df.to_pandas().to_excel(
-            os.path.join(threepg_data_folder, "data.forrester.default.xlsx"),
-            sheet_name="parameters",
-            index=False,
-        )
