@@ -1,5 +1,6 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
+import gc
 import os
 import time
 from typing import Any
@@ -11,6 +12,7 @@ import jax.random as random
 import numpyro
 import numpyro.distributions as dist
 import polars as pl
+from numpyro.distributions.transforms import AffineTransform, ComposeTransform, SigmoidTransform
 from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
@@ -34,12 +36,12 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 # jax.config.update('jax_log_compiles', True)
 
 az.rcParams["plot.backend"] = "matplotlib"
 
-numpyro.set_host_device_count(max(1, min(4, os.cpu_count() or 1)))
+numpyro.set_host_device_count(max(1, min(8, os.cpu_count() or 1)))
 
 
 def model(
@@ -49,6 +51,7 @@ def model(
     n_species: int,
     fixed_params,
     priors: dict[str, tuple[float, float]],
+    param_defaults: dict[str, float] | None = None,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
     initial_state: State | None = None,
 ):
@@ -81,19 +84,33 @@ def model(
     assert fixed_params is not None
 
     # Sample from priors
+
     samples = {}
     for param_name, (lower, upper) in priors.items():
         # samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
-        scaled_beta = dist.TransformedDistribution(
-            dist.Beta(1.1, 1.1), dist.transforms.AffineTransform(loc=lower, scale=upper - lower)
+        # Transform to unconstrained space
+        transform = ComposeTransform(
+            [SigmoidTransform(), AffineTransform(loc=lower, scale=upper - lower)]
         )
-        samples[param_name] = numpyro.sample(param_name, scaled_beta)
+
+        # Use Gaussian prior in unconstrained space
+        if param_defaults and param_name in param_defaults:
+            p = (param_defaults[param_name] - lower) / (upper - lower)
+            p = jnp.clip(p, 1e-6, 1 - 1e-6)
+            mu = jnp.log(p / (1 - p))
+            sigma = (upper - lower) / 6
+        else:
+            mu = 0.0
+            sigma = (upper - lower) / 6
+
+        samples[param_name] = numpyro.sample(
+            param_name, dist.TransformedDistribution(dist.Normal(mu, sigma), transform)
+        )
 
     param_updates = {
         name: value for name, value in samples.items() if name in fixed_params._fields
     }
     params = fixed_params._replace(**param_updates)
-
     # Run model simulation
     _, outputs = run_3pg(initial_state, climate, params, site, species)
 
@@ -114,12 +131,18 @@ def model(
                 f"Likelihood shape mismatch for {var_name}: "
                 f"predictions {pred_values.shape} vs observations {obs_flat.shape}"
             )
-            numpyro.sample(
-                f"obs_{var_name}",
-                # dist.StudentT(df=4, loc=pred_values, scale=samples[sigma_name]),
-                dist.Normal(loc=pred_values, scale=samples[sigma_name]),
-                obs=obs_flat,
-            )
+
+            # numpyro.sample(
+            #     f"obs_{var_name}",
+            #     # dist.StudentT(df=4, loc=pred_values, scale=samples[sigma_name]),
+            #     dist.Normal(loc=pred_values, scale=samples[sigma_name]),
+            #     obs=obs_flat,
+            # )
+            log_prob = dist.Normal(
+                loc=pred_values,
+                scale=samples[sigma_name],
+            ).log_prob(obs_flat)
+            numpyro.factor(f"obs_{var_name}", jnp.sum(log_prob))
 
 
 def run_hmc_inference(
@@ -139,11 +162,12 @@ def run_hmc_inference(
     adaptive_warmup: bool = True,
     adapt_step_size: bool = True,
     adapt_mass_matrix: bool = True,
-    target_accept_prob: float = 0.95,
+    target_accept_prob: float = 0.9,
     max_tree_depth: int = 10,
     param_defaults: dict[str, float] | None = None,
     chain_method: str = "parallel",
     jit_model_args: bool = True,
+    progress_bar: bool = False,
 ) -> tuple[MCMC, dict]:
     """
     Run HMC inference using NumPyro's NUTS sampler.
@@ -165,6 +189,9 @@ def run_hmc_inference(
         chain at the same point instead of a random prior draw — matching
         the R reference's `createUniformPrior(min, max, best)`. If None,
         NumPyro falls back to its default init strategy (a random prior draw).
+    progress_bar : bool
+        Whether NumPyro prints a per-sample progress bar. Disabling this
+        removes real per-step overhead, especially with `chain_method="vectorized"`.
 
     Returns
     -------
@@ -184,6 +211,7 @@ def run_hmc_inference(
         n_species,
         fixed_params,
         priors,
+        param_defaults,
         observations,
         initial_state,
     )
@@ -215,6 +243,7 @@ def run_hmc_inference(
         thinning=thinning,
         chain_method=chain_method,
         jit_model_args=jit_model_args,
+        progress_bar=progress_bar,
     )
 
     # Run MCMC
@@ -268,7 +297,7 @@ def predict_with_uncertainty(
 
     param_sets = {name: samples[name][indices] for name in param_names if name in samples}
 
-    return predict_from_parameter_draws(
+    result = predict_from_parameter_draws(
         parameter_draws=param_sets,
         param_names=param_names,
         initial_state=initial_state,
@@ -279,6 +308,10 @@ def predict_with_uncertainty(
         observations=observations,
         n_species=n_species,
     )
+
+    del samples  # Free memory
+    gc.collect()
+    return result
 
 
 def plot_results(
@@ -328,16 +361,17 @@ def run_full_analysis(
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     fixed_params,
     priors: dict[str, tuple[float, float]],
-    num_warmup: int = 1000,
-    num_samples: int = 1000,
+    num_warmup: int = 100,
+    num_samples: int = 100,
     num_chains: int = 4,
     seed: int = 42,
     show_plots: bool = True,
     predict_with_uncert: bool = False,
     param_defaults: dict[str, float] | None = None,
     chain_method: str = "parallel",
-    progress_bar: bool = True,
+    progress_bar: bool = False,
     jit_model_args: bool = True,
+    max_tree_depth: int = 10,
 ) -> tuple[MCMC, dict]:
     """
     Run complete HMC analysis with diagnostics and plotting.
@@ -385,6 +419,8 @@ def run_full_analysis(
         param_defaults=param_defaults,
         chain_method=chain_method,
         jit_model_args=jit_model_args,
+        max_tree_depth=max_tree_depth,
+        progress_bar=progress_bar,
     )
 
     # Print summary
@@ -434,8 +470,11 @@ def run_hmc_analysis(
     predict_with_uncert: bool = False,
     show_plots: bool = False,
     chain_method: str = "parallel",
-    progress_bar: bool = True,
+    progress_bar: bool = False,
     jit_model_args: bool = True,
+    max_tree_depth: int = 10,
+    num_warmup: int = 100,
+    num_samples: int = 100,
 ):
     """
     Run HMC implementation.
@@ -466,8 +505,6 @@ def run_hmc_analysis(
     if skipped:
         print(f"Skipping observations with no matching sigma prior in error_param: {skipped}")
 
-    print(f"Fixed parameters: {fixed_params}")
-
     # Run analysis
     mcmc, samples = run_full_analysis(
         initial_state=initial_state,
@@ -478,9 +515,9 @@ def run_hmc_analysis(
         observations=observations,
         fixed_params=fixed_params,
         priors=priors,
-        num_warmup=200,
-        num_samples=200,
-        num_chains=4,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=8,
         output_dir=os.path.join(data_folder, "hmc_results"),
         show_plots=show_plots,
         predict_with_uncert=predict_with_uncert,
@@ -488,6 +525,7 @@ def run_hmc_analysis(
         chain_method=chain_method,
         progress_bar=progress_bar,
         jit_model_args=jit_model_args,
+        max_tree_depth=max_tree_depth,
     )
 
     # Print parameter summaries
@@ -504,7 +542,7 @@ if __name__ == "__main__":
 
     # Use solling_data.xlsx by default
 
-    file_path = os.path.join(threepg_data_folder, "full_solling_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
 
     # Restrict calibration to the most sensitive physiology parameters.
     morris_results_path = os.path.join(
@@ -522,6 +560,11 @@ if __name__ == "__main__":
         param_names=param_names,
         predict_with_uncert=True,
         show_plots=True,
+        chain_method="parallel",
+        progress_bar=True,
+        max_tree_depth=10,
+        num_warmup=100,
+        num_samples=100,
     )
 
     elapsed_time = time.perf_counter() - start_time
