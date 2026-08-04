@@ -191,6 +191,11 @@ def model_step(state, climate_month, params, site, species):
     BA = jnp.pi * (DBH_updated / 200.0) ** 2 * N_new  # Basal area in m^2/ha
     competition_total = jnp.sum(wood_density * BA)
     H = params.aH * DBH_updated**params.nHB * competition_total**params.nHC  # Height in m
+
+    # Forrester et al. (2021) height equation with 1.3 m offset for breast height
+    # H = 1.3 + params.aH * jnp.exp(-params.nHB / DBH_updated) + \
+    # params.nHC * competition_total * DBH_updated
+
     V = params.aV * DBH_updated**params.nVB * H**params.nVH  # Volume in m^3/ha
 
     new_state = State(

@@ -313,6 +313,7 @@ def run_pymc_inference(
         every chunk after the first (each chunk starts from a fresh
         `DEMetropolisZ` step, so its proposal scale needs to briefly readapt).
     """
+    checkpoint_every = max(500, num_samples // 10)
     model = pymc_model(
         climate=climate,
         site=site,
@@ -346,6 +347,7 @@ def run_pymc_inference(
             chunk_draws = min(checkpoint_every, num_samples - draws_done)
             chunk_tune = num_warmup if idata is None else resume_tune
             step = pm.DEMetropolisZ()
+            # step = pm.NUTS(target_accept=0.9)  # Use NUTS for better sampling efficiency
             chunk_trace = pm.sample(
                 draws=chunk_draws,
                 tune=chunk_tune,
