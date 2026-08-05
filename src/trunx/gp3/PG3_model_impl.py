@@ -26,6 +26,7 @@ from trunx.gp3.plot_function import (
     plot_outputs,
 )
 from trunx.gp3.prepare_climate import prepare_climate
+from trunx.gp3.prepare_monthlydata import prepare_monthlydata
 from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
@@ -46,8 +47,11 @@ def prepare_data(file_path):
     d_site = pl.read_excel(file_path, sheet_name="site")
     site_data, site_start, site_end = prepare_site(d_site)
 
-    d_climate = pl.read_excel(file_path, sheet_name="climate")
-    climate = prepare_climate(d_climate, str(site_start), str(site_end))
+    # d_climate = pl.read_excel(file_path, sheet_name="climate")
+    # climate = prepare_climate(d_climate, str(site_start), str(site_end))
+
+    d_month = pl.read_excel(file_path, sheet_name="climate")
+    climate = prepare_monthlydata(d_month, str(site_start), str(site_end))
 
     d_species = pl.read_excel(file_path, sheet_name="species")
     species_data = prepare_species(d_species)
@@ -239,8 +243,8 @@ if __name__ == "__main__":
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
     # fig, outputs = run_threepg_main(
-    #         file_path, observed_data=None, plot_output=True, r_comparison=True
-    #     )
+    #     file_path, observed_data=None, plot_output=True, r_comparison=True
+    # )
 
     species_plot_ids = {
         "Pinus sylvestris": [
