@@ -1,6 +1,7 @@
 """Run the 3PG model."""
 
 import os
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -262,6 +263,19 @@ def model_step(state, climate_month, params, site, species):
 
 def run_3pg(initial_state, climate, params, site, species):
     """Run 3PG model."""
+    dep_n_tot = getattr(climate, "dep_n_tot", None)
+    dep_s_so4 = getattr(climate, "dep_s_so4", None)
+
+    if dep_n_tot is None or dep_s_so4 is None:
+        warnings.warn(
+            "Climate input missing deposition fields (dep_n_tot and/or dep_s_so4); "
+            "running 3PG without deposition effects using zeros.",
+            UserWarning,
+            stacklevel=2,
+        )
+        dep_n_tot = jnp.zeros_like(climate.T_avg, dtype=float)
+        dep_s_so4 = jnp.zeros_like(climate.T_avg, dtype=float)
+
     climate_stack = jnp.stack(
         [
             climate.T_avg,
@@ -273,8 +287,8 @@ def run_3pg(initial_state, climate, params, site, species):
             climate.co2,
             climate.n_days,
             climate.month,
-            climate.dep_n_tot,
-            climate.dep_s_so4,
+            dep_n_tot,
+            dep_s_so4,
         ],
         axis=-1,
     )
