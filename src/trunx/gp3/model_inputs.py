@@ -36,6 +36,30 @@ class ClimateData(NamedTuple):
     # start_month: np.datetime64  # Start month of climate data
 
 
+class DepositionData(NamedTuple):
+    """Deposition data information."""
+
+    dep_n_tot: jnp.ndarray  # Total nitrogen deposition (kg/ha/month)
+    dep_s_so4: jnp.ndarray  # Sulfate deposition (kg/ha/month)
+
+
+class MonthlyData(NamedTuple):
+    """Monthly data information."""
+
+    T_avg: jnp.ndarray  # Average monthly temperature (°C)
+    T_max: jnp.ndarray  # Maximum monthly temperature (°C)
+    VPD: jnp.ndarray  # Vapor pressure deficit (kPa)
+    precip: jnp.ndarray  # Monthly precipitation (mm)
+    solar_rad: jnp.ndarray  # Monthly solar radiation (MJ/m²)
+    frost_days: jnp.ndarray  # Number of frost days in a month
+    n_days: jnp.ndarray  # Number of days in each month
+    co2: jnp.ndarray  # Atmospheric CO2 concentration (ppm)
+    d13catm: jnp.ndarray  # Atmospheric d13C value (‰)
+    month: jnp.ndarray  # Current month of climate data
+    dep_n_tot: jnp.ndarray  # Total nitrogen deposition (kg/ha/month)
+    dep_s_so4: jnp.ndarray  # Sulfate deposition (kg/ha/month)
+
+
 class SiteData(NamedTuple):
     """Site data information."""
 

@@ -36,7 +36,20 @@ from trunx.gp3.model_inputs import State
 
 def model_step(state, climate_month, params, site, species):
     """Compute one model step."""
-    T_avg, T_max, VPD, precip, solar_rad, frost_days, co2, n_days, month = climate_month
+    (
+        T_avg,
+        T_max,
+        VPD,
+        precip,
+        solar_rad,
+        frost_days,
+        co2,
+        n_days,
+        month,
+        dep_n_tot,
+        dep_s_so4,
+    ) = climate_month
+
     WF, WR, WS, N, ASW, age_months, WF_debt, prev_month = state
 
     # Check if dormant
@@ -171,8 +184,6 @@ def model_step(state, climate_month, params, site, species):
     WR_new = WR_stress
     N_new = N_stress
 
-    # Self-thinning with R/Fortran logic (iterative solver + mortality factors)
-    # Built-in dormancy gating: only thins in growing season
     WS_thinned, WF_thinned, WR_thinned, N_thinned, mort_count = (
         apply_self_thinning_with_mortality_factors(params, WS_new, WF_new, WR_new, N_new, dormant)
     )
@@ -262,6 +273,8 @@ def run_3pg(initial_state, climate, params, site, species):
             climate.co2,
             climate.n_days,
             climate.month,
+            climate.dep_n_tot,
+            climate.dep_s_so4,
         ],
         axis=-1,
     )

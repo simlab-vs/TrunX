@@ -18,7 +18,6 @@ from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
 from trunx.gp3.bayesiancalibrations.save_load_results import load_predictions
 from trunx.gp3.gradient_descent import (
@@ -118,10 +117,10 @@ def _obs_indices_in_time_series(
 
 def plot_comparison(
     file_path: str,
+    fit_params: list[str],
     bayesian_output_dir: str | None = None,
     hmc_output_dir: str | None = None,
     plot_variables: list[str] = PLOT_VARIABLES,
-    fit_params: list[str] = FIT_PARAMS,
     include_gradient_descent: bool = False,
     include_bayesian: bool = False,
     include_hmc: bool = False,
@@ -288,6 +287,7 @@ def load_convergence_summary(inference_data_path: str, param_names: list[str]) -
 
 
 def plot_convergence_comparison(
+    fit_params: list[str],
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
@@ -324,7 +324,7 @@ def plot_convergence_comparison(
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
     if param_names is None:
-        param_names = FIT_PARAMS + [f"err_{var}" for var in PLOT_VARIABLES]
+        param_names = fit_params + [f"err_{var}" for var in PLOT_VARIABLES]
 
     colors = {}
     summaries = []
@@ -391,7 +391,16 @@ if __name__ == "__main__":
     _include_hmc = False
     _include_gradient_descent = True
 
-    plot_ids = ["04.1605", "14.0003", "14.0019", "14.0012"]
+    plot_ids = [
+        "01.0082",
+        "04.0302",
+        "04.1402",
+        "04.1403",
+        "14.0017",
+        "52.0010",
+        "53.0701",
+        "59.0008",
+    ]
 
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
@@ -407,8 +416,13 @@ if __name__ == "__main__":
 
         _file_path = os.path.join(_bayesian_output_dir, f"{plot_id}_data.xlsx")
 
+        _df = pl.read_excel(_file_path, sheet_name="param_bound")
+        _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
+        fit_params = _df["param_name"].to_list()
+
         _fig, _metrics_df = plot_comparison(
             _file_path,
+            fit_params,
             _bayesian_output_dir,
             _hmc_output_dir,
             include_gradient_descent=_include_gradient_descent,
@@ -427,6 +441,7 @@ if __name__ == "__main__":
             hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
             include_bayesian=_include_bayesian,
             include_hmc=_include_hmc,
+            fit_params=fit_params,
         )
         # print(_conv_df)
         _conv_fig.savefig(
@@ -436,4 +451,4 @@ if __name__ == "__main__":
         )
         print(f"Saved plots to {_plot_output_dir}")
 
-        plt.show()
+        # plt.show()

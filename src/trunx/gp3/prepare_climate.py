@@ -69,7 +69,7 @@ def clim_range(climate):
         print("Warning: VPD outside plausible range (0–40).")
 
 
-def prepare_climate(climate, from_="2001-01", to="2010-11"):
+def prepare_climate(climate, from_="2001-01", to="2010-12"):
     """Prepare climate table for 3-PG simulation."""
     required = ["tmp_min", "tmp_max", "prcp", "srad", "frost_days"]
     missing = [c for c in required if c not in climate.columns]

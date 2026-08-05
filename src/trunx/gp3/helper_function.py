@@ -1015,12 +1015,13 @@ def f_exp_foliage(params, age_months: Array) -> Array:
     eps = 1e-8
     kg = 12.0 * jnp.log(1.0 + params.gammaF1 / (params.gammaF0 + eps)) / (params.tgammaF + eps)
     age_year = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
+
+    denom = params.gammaF0 + (params.gammaF1 - params.gammaF0) * jnp.exp(-kg * age_year)
+    denom = jnp.where(jnp.abs(denom) < eps, jnp.ones_like(denom), denom)
     out = jnp.where(
         (params.tgammaF * params.gammaF1) < eps,
         params.gammaF1,
-        params.gammaF1
-        * params.gammaF0
-        / (params.gammaF0 + (params.gammaF1 - params.gammaF0) * jnp.exp(-kg * age_year)),
+        params.gammaF1 * params.gammaF0 / denom,
     )
 
     return out
