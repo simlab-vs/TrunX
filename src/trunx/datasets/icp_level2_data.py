@@ -66,6 +66,7 @@ _DEP_NAMES: list[str] = [
     "don",
     "n_no3_plus_n_no2",
 ]
+
 _DEP_NON_CONC: list[str] = ["dep_alk", "dep_ph", "dep_cond"]
 
 _SOIL_NAMES: list[str] = [
@@ -207,6 +208,10 @@ def _load_trees(
             pl.col("code_removal").cast(pl.Int64, strict=False).is_null()
             | ~pl.col("code_removal").cast(pl.Int64, strict=False).gt(10)
         )
+        # Some assessments are submitted under two adjacent survey_year campaigns
+        # Keep one row per tree × date, preferring the survey_year matching the date.
+        .sort("tree_id", "date", "survey_year")
+        .unique(subset=["tree_id", "date"], keep="last")
         .rename({"diameter": "dbh_cm"})
         .select(
             "survey_year",
@@ -247,9 +252,9 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
 
     per_plot = (
         trees.sort("date")
-        .group_by("plot_id", "specie", "survey_year")
+        .group_by("plot_id", "specie", "date")
         .agg(
-            pl.first("date"),
+            # pl.first("date"),
             pl.len().alias("n_count"),
             pl.col("dbh_cm").mean(),
             pl.col("height").mean(),
@@ -257,6 +262,7 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             pl.col("allo_fb_kg").sum().alias("plot_fb_kg"),
             pl.col("allo_rb_kg").sum().alias("plot_rb_kg"),
             pl.col("allo_la_m2").sum().alias("plot_la_m2"),
+            (math.pi * pl.col("dbh_cm").pow(2) / 40000.0).sum().alias("plot_ba_m2"),
         )
     )
 
@@ -268,11 +274,10 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             (pl.col("plot_fb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_foliage"),
             (pl.col("plot_rb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_root"),
             (pl.col("plot_la_m2") / (pl.col("plot_size_ha") * 10000.0)).alias("lai"),
+            (pl.col("plot_ba_m2") / pl.col("plot_size_ha")).alias("basal_area"),
         )
         .with_columns(
-            pl.lit(math.pi)
-            * (pl.col("dbh_cm") / 200.0).pow(2)
-            * pl.col("n_stems").alias("basal_area"),
+            basal_area=pl.lit(math.pi) * (pl.col("dbh_cm") / 200.0).pow(2) * pl.col("n_stems"),
         )
         .drop("n_count", "plot_sb_kg", "plot_fb_kg", "plot_rb_kg", "plot_la_m2")
         .sort(["specie", "plot_id", "date"])
@@ -383,6 +388,8 @@ def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
 
     if "code_vsampling" in df.columns:
         df = df.filter(~pl.col("code_vsampling").is_in([2, 3, 4, 7, 9]))
+
+    df = df.filter(~pl.col("code_sampler").eq(8))
 
     dep_cols = [c for c in dep_rename.values() if c in df.columns]
     non_conc = [c for c in _DEP_NON_CONC if c in dep_cols]

@@ -54,9 +54,7 @@ def prepare_plot_input(plot_id: str) -> str:
 
     observed_data = pd.read_excel(file_path, sheet_name="observed")
     observed_data = observed_data.rename(columns={"Date": "date"})
-    observed_data = observed_data[
-        ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-    ].dropna()
+    observed_data = observed_data.dropna()
 
     with pd.ExcelWriter(
         file_path, engine="openpyxl", mode="a", if_sheet_exists="replace"

@@ -9,7 +9,7 @@ import numpy as np
 from jax import numpy as jnp
 from jax import tree_util, vmap
 
-from trunx.gp3.model_inputs import ClimateData, State
+from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.run_3pg import run_3pg
 
 
@@ -17,10 +17,10 @@ def predict_from_parameter_draws(
     parameter_draws: dict[str, Any],
     param_names: list[str],
     initial_state: State,
-    climate: Any,
-    site: Any,
-    species: Any,
-    fixed_params: Any,
+    climate: ClimateData,
+    site: SiteData,
+    species: SpeciesData,
+    fixed_params: Params,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     n_species: int,
 ) -> dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]:

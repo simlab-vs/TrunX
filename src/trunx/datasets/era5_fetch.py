@@ -123,6 +123,19 @@ def fetch_era5_data(
             print(f"No data collected for {var} {year}.")
 
 
+def merge_weather(raw_dir: str, variables: list[str], years: list[str]):
+    """Merge weather data into a single parquet file."""
+    for variable in variables:
+        full_df = []
+        for year in years:
+            full_df.append(
+                pl.read_parquet(os.path.join(raw_dir, f"era5_{variable}_{year}.parquet"))
+            )
+        full_df = pl.concat(full_df)
+        full_df.write_parquet(os.path.join(raw_dir, f"era5_{variable}.parquet"))
+        print(f"Saved {os.path.join(raw_dir, f'era5_{variable}.parquet')}")
+
+
 if __name__ == "__main__":
     icp_locations = pl.read_csv(os.path.join(clean_data_folder, "full_icp_plot_locations.csv"))
     # Regular 0.1-degree ERA5-Land grid points clipped to Switzerland's actual
@@ -143,11 +156,11 @@ if __name__ == "__main__":
     # Other useful variables: "leaf_area_index_high_vegetation", "leaf_area_index_low_vegetation"
     variables = ["2m_temperature", "total_precipitation", "surface_solar_radiation_downwards"]
 
-    output_dir = os.path.join(data_folder, "era5")
+    output_dir = os.path.join(data_folder, "raw/ERA5")
     client = cdsapi.Client()
+    years = [str(y) for y in range(1980, 2027)]
 
-    # change here the years and variables as needed
-    years = [str(y) for y in range(1998, 2025)]
+    # for year in years:
+    #     fetch_era5_data(year, variables, target_lats, target_lons, output_dir, client)
 
-    for year in years:
-        fetch_era5_data(year, variables, target_lats, target_lons, output_dir, client)
+    merge_weather(output_dir, variables, years)
