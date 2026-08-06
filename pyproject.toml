@@ -22,7 +22,6 @@ dependencies = [
     "pyarrow>=23.0.1",
     "pyreadr>=0.5.4",
     "openpyxl>=3.1.5",
-    "salib>=1.5.2",
     "nbstripout>=0.9.1",
     "marimo>=0.23.6",
     "rasterio>=1.5.0",
@@ -36,6 +35,15 @@ dependencies = [
     "boto3>=1.43.31",
     "geopandas>=1.1.3",
     "pypdf>=6.14.2",
+    "salib>=1.5.2",
+    "jax[cuda12]; sys_platform == 'linux'",
+    "jaxlib; sys_platform == 'linux'",
+    "pymc>=5.28.5",
+    "rdata>=1.1.0",
+    "cdsapi>=0.7.7",
+    "cfgrib>=0.9.15.1",
+    "scikit-learn>=1.9.0",
+    "eccodes>=2.47.0",
 ]
 
 # Set curent project as a package, with src/ folder.
@@ -57,6 +65,15 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.9.0,<0.9.26"]
 build-backend = "uv_build"
+
+
+# Pytest configuration
+# ---------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: fast, always-run correctness gate (e.g. gradient smoke test)",
+]
 
 
 # Linting rules

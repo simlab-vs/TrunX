@@ -124,7 +124,7 @@ def add_allometric_columns(
     df: pl.DataFrame,
     coefficients: CoefficientsDict,
     dbh_col: str = "dbh_cm",
-    species_col: str = "species",
+    species_col: str = "specie",
 ) -> pl.DataFrame:
     """Add per-tree allometric biomass and leaf area columns.
 

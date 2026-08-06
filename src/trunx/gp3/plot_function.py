@@ -9,8 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
+from matplotlib.figure import Figure
 
-from trunx.gp3.create_data_inputs import create_weather_input
+from trunx.config import clean_data_folder
+from trunx.gp3.weather_processing import create_weather_input
 
 
 def plot_outputs(outputs, start_month, fig_name: str | None = None, show: bool = True):
@@ -492,7 +494,7 @@ def plot_combined_3pg_outputs_per_species(
 
 def plot_combined_3pg_outputs_obv(
     df,
-    metrics_to_plot=None,
+    plot_metrics=None,
     observed_data=None,
     fig_name=None,
     plot_id="",
@@ -508,15 +510,34 @@ def plot_combined_3pg_outputs_obv(
         observed_data["date"] = pd.to_datetime(observed_data["date"])
 
     species_list = df["species"].unique()
+    if plot_metrics is None:
+        plot_metrics = ["DBH", "LAI", "GPP", "WS", "WF", "WR"]
 
-    metrics_to_plot = {
+    metrics_labels = {
         "DBH": {"label": "DBH (cm)", "python_col": "DBH", "r_col": "r_DBH"},
         "LAI": {"label": "LAI", "python_col": "LAI", "r_col": "r_LAI"},
         "GPP": {"label": "GPP (mol C m⁻²)", "python_col": "GPP", "r_col": "r_GPP"},
         "WS": {"label": "Stem Biomass (t DM ha⁻¹)", "python_col": "WS", "r_col": "r_WS"},
         "WF": {"label": "Foliage Biomass (t DM ha⁻¹)", "python_col": "WF", "r_col": "r_WF"},
         "WR": {"label": "Root Biomass (t DM ha⁻¹)", "python_col": "WR", "r_col": "r_WR"},
+        "stems_n": {
+            "label": "Stems per ha (# trees)",
+            "python_col": "stems_n",
+            "r_col": "r_stems_n",
+        },
+        "BA": {"label": "Basal Area (m² ha⁻¹)", "python_col": "BA", "r_col": "r_BA"},
+        "Height": {"label": "Height (m)", "python_col": "Height", "r_col": "r_Height"},
     }
+
+    metrics_to_plot = {
+        metric: metrics_labels[metric] for metric in plot_metrics if metric in metrics_labels
+    }
+
+    # DBH, stems_n and Height are measured directly in the field; the others
+    # (WS, WF, WR, BA, LAI, GPP) are derived from those via allometric
+    # equations or remote sensing, so they get a distinct observed-data color.
+    measured_metrics = {"DBH", "stems_n", "Height"}
+    observed_colors = {"measured": "tab:red", "derived": "tab:purple"}
 
     # Setup subplots
     n_metrics = len(metrics_to_plot)
@@ -530,9 +551,13 @@ def plot_combined_3pg_outputs_obv(
 
         species_data = df[df["species"] == species].sort_values("Dates")
 
-        for idx, (_metric, config) in enumerate(metrics_to_plot.items()):
+        for idx, (metric, config) in enumerate(metrics_to_plot.items()):
             if idx >= len(axes):
                 break
+
+            is_derived = metric not in measured_metrics
+            obs_color = observed_colors["derived" if is_derived else "measured"]
+            obs_label = "D. Observed" if is_derived else "Observed"
 
             # Plot Python
             if config["python_col"] in df.columns:
@@ -564,11 +589,11 @@ def plot_combined_3pg_outputs_obv(
                     obs[config["python_col"]],
                     s=20,
                     marker="s",
-                    color="red",
-                    label="Observed",
+                    color=obs_color,
+                    label=obs_label,
                 )
 
-                axes[idx].plot(obs["Date"], obs[config["python_col"]], alpha=0.6)
+                axes[idx].plot(obs["Date"], obs[config["python_col"]], alpha=0.6, color=obs_color)
 
             if (
                 observed_data is not None
@@ -580,21 +605,125 @@ def plot_combined_3pg_outputs_obv(
                     observed_data[config["python_col"]],
                     s=20,
                     marker="s",
-                    color="red",
-                    label="Observed",
+                    color=obs_color,
+                    label=obs_label,
                 )
 
             axes[idx].set_ylabel(config["label"])
             axes[idx].set_title(config["label"].split("(")[0].strip())
             axes[idx].grid(True, alpha=0.3)
-            if idx == 0:
-                axes[idx].legend()
+            axes[idx].legend()
 
-        plt.suptitle(f"3-PG Model Outputs: {species}", fontsize=14, fontweight="bold")
+        for ax in axes[n_metrics:]:
+            ax.axis("off")
+
+        plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
         plt.tight_layout()
         plt.savefig(
             os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png") if fig_name else None
         )
+        figures.append(fig)
+
+    if show:
+        plt.show()
+
+    return figures
+
+
+def plot_dbh_distribution(
+    plot_id: str,
+    file_path: str = os.path.join(clean_data_folder, "icp_tree_data.parquet"),
+    kind: str = "box",
+    fig_name: str | None = None,
+    show: bool = True,
+) -> list[Figure]:
+    """Plot per-tree DBH distribution over survey dates with key stand statistics.
+
+    Parameters
+    ----------
+    icp_df : pl.DataFrame
+        Tree-level ICP data with ``specie``, ``date`` and ``dbh_cm`` columns.
+    kind : str
+        "box" for a boxplot of tree diameters per survey date, or "scatter"
+        for individual tree diameters plotted per date.
+    fig_name : str | None
+        Base name used to save each species' figure under ``./images/``.
+    show : bool
+        Whether to call ``plt.show()``.
+
+    Returns
+    -------
+    list[Figure]
+        One figure per species, each showing the diameter distribution
+        alongside its coefficient of variation, arithmetic and quadratic
+        (QMD) mean, and skewness over time.
+    """
+    icp_df = pl.read_parquet(file_path)
+    icp_df = icp_df.filter(pl.col("plot_id") == plot_id).select(["specie", "date", "dbh_cm"])
+
+    if kind not in {"box", "scatter"}:
+        raise ValueError("kind must be 'box' or 'scatter'")
+
+    stats = (
+        icp_df.group_by(["specie", "date"])
+        .agg(
+            mean_dbh=pl.col("dbh_cm").mean(),
+            qmd=(pl.col("dbh_cm") ** 2).mean().sqrt(),
+            cv=pl.col("dbh_cm").std() / pl.col("dbh_cm").mean() * 100.0,
+            skewness=pl.col("dbh_cm").skew(),
+        )
+        .sort(["specie", "date"])
+    )
+
+    figures = []
+    for specie in icp_df["specie"].unique().sort().to_list():
+        specie_trees = icp_df.filter(pl.col("specie") == specie).sort("date")
+        specie_stats = stats.filter(pl.col("specie") == specie)
+        dates = specie_stats["date"].to_list()
+        x = list(range(len(dates)))
+        date_labels = [d.strftime("%Y-%m") for d in dates]
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+
+        dist_ax = axes[0, 0]
+        if kind == "box":
+            per_date = [
+                specie_trees.filter(pl.col("date") == d)["dbh_cm"].to_numpy() for d in dates
+            ]
+            dist_ax.boxplot(per_date, positions=x, widths=0.6)
+        else:
+            for i, d in zip(x, dates, strict=True):
+                values = specie_trees.filter(pl.col("date") == d)["dbh_cm"].to_numpy()
+                dist_ax.scatter(np.full(len(values), i), values, alpha=0.5, s=15, color="tab:blue")
+        dist_ax.set_ylabel("DBH (cm)")
+        dist_ax.set_title("Diameter distribution")
+
+        axes[0, 1].plot(x, specie_stats["mean_dbh"], "o-", label="Arithmetic mean")
+        axes[0, 1].plot(x, specie_stats["qmd"], "o-", label="Quadratic mean (QMD)")
+        axes[0, 1].set_ylabel("DBH (cm)")
+        axes[0, 1].set_title("Mean vs. quadratic mean")
+        axes[0, 1].legend()
+
+        axes[1, 0].plot(x, specie_stats["cv"], "o-", color="tab:orange")
+        axes[1, 0].set_ylabel("CV (%)")
+        axes[1, 0].set_title("Coefficient of variation")
+
+        axes[1, 1].plot(x, specie_stats["skewness"], "o-", color="tab:green")
+        axes[1, 1].axhline(0.0, color="grey", linewidth=0.8, linestyle="--")
+        axes[1, 1].set_ylabel("Skewness")
+        axes[1, 1].set_title("Skewness")
+
+        for ax in axes.flat:
+            ax.set_xticks(x)
+            ax.set_xticklabels(date_labels, rotation=45, ha="right")
+            ax.grid(True, alpha=0.3)
+
+        fig.suptitle(
+            f"DBH distribution over time — {specie} ({plot_id})", fontsize=14, fontweight="bold"
+        )
+        plt.tight_layout()
+        if fig_name is not None:
+            plt.savefig(os.path.join("./images/", f"{fig_name}_{specie}.png"))
         figures.append(fig)
 
     if show:

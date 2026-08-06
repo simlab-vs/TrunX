@@ -25,18 +25,20 @@ def _aggregate_training_data(icp_df: pl.DataFrame) -> pl.DataFrame:
         icp_df.filter(pl.col("soph_avg_age").is_not_null())
         .group_by(["tree_id", "specie"])
         .agg(
-            pl.col("diameter_end").mean().alias("mean_dbh"),
+            pl.col("dbh_cm").mean().alias("mean_dbh"),
             pl.col("soph_avg_age").mean().alias("age"),
         )
         .drop_nulls()
     )
 
 
-def fit_models(icp_df: pl.DataFrame) -> dict[str, tuple[float, float]]:
+def fit_models(icp_df: pl.DataFrame | None = None) -> dict[str, tuple[float, float]]:
     """Fit per-species power-law regression models (age = a * DBH^b).
 
     Uses log-log ordinary least squares: log(age) = log(a) + b * log(DBH).
     """
+    if icp_df is None:
+        icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     train_df = _aggregate_training_data(icp_df)
     models: dict[str, tuple[float, float]] = {}
 
@@ -89,7 +91,7 @@ def estimate_plot_age(
             logger.warning("No model available for species '%s', skipping", specie)
             continue
 
-        dbh = plot_df.filter(pl.col("specie") == specie)["diameter_end"].drop_nulls().to_numpy()
+        dbh = plot_df.filter(pl.col("specie") == specie)["dbh_cm"].drop_nulls().to_numpy()
         if dbh.size == 0:
             continue
 
@@ -104,10 +106,10 @@ def estimate_plot_age(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    icp = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     fitted_models = fit_models(icp)
 
-    plot_id = "50.0013"
+    plot_id = "04.1605"
     ages = estimate_plot_age(plot_id, icp_df=icp, models=fitted_models)
     print(f"\nEstimated ages for plot {plot_id}:")
     for sp, age in ages.items():

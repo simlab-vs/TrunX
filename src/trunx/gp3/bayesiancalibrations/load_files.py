@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from trunx.config import SPECIES_INDICES
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -74,15 +75,28 @@ def load_plot_ids_from_file(plot_file: str) -> list[str]:
     return plot_ids
 
 
+def _load_param_bounds_df(file_path: str) -> pl.DataFrame:
+    """Load the raw param_bound(+error_param) table shared by priors and defaults."""
+    if file_path.lower().endswith(".parquet"):
+        return pl.read_parquet(file_path)
+    if file_path.lower().endswith(".xlsx"):
+        return pl.concat(
+            [
+                pl.read_excel(file_path, sheet_name="param_bound"),
+                pl.read_excel(file_path, sheet_name="error_param"),
+            ],
+            how="vertical_relaxed",
+        )
+    raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
+
+
 def load_priors_from_file(
     file_path: str,
     param_names: list[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """Load parameter priors from a parquet file."""
-    if not file_path.lower().endswith(".parquet"):
-        raise ValueError(f"Expected parquet file for priors, got: {file_path}")
+    param_bounds_df = _load_param_bounds_df(file_path)
 
-    param_bounds_df = pl.read_parquet(file_path)
     priors = {}
 
     if param_names is None:
@@ -110,6 +124,98 @@ def load_priors_from_file(
         priors[param_name] = (float(min_val), float(max_val))
 
     return priors
+
+
+def load_param_defaults_from_file(
+    file_path: str,
+    param_names: list[str] | None = None,
+) -> dict[str, float]:
+    """Load each parameter's default value, for seeding MCMC chains at a sensible start.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    param_names : list[str]
+        Parameter names to load defaults for (typically the same names passed
+        to `load_priors_from_file`).
+
+    Returns
+    -------
+    dict[str, float]
+        Parameter names mapped to their `default` column value.
+    """
+    param_bounds_df = _load_param_bounds_df(file_path)
+
+    if param_names is None or len(param_names) == 0:
+        param_names = param_bounds_df.filter(pl.col("default").is_not_null())[
+            "param_name"
+        ].to_list()
+
+    defaults = {}
+    for param_name in param_names:
+        row = param_bounds_df.filter(pl.col("param_name") == param_name)
+        if len(row) == 0:
+            raise ValueError(f"Parameter {param_name} not found in param_bound sheet")
+
+        default_val = row["default"][0]
+        if default_val is None:
+            raise ValueError(f"Parameter {param_name} has no default value in param_bound sheet")
+
+        defaults[param_name] = float(default_val)
+
+    return defaults
+
+
+def load_observations_from_file(
+    file_path: str,
+    site_data: SiteData,
+) -> dict[str, tuple[jnp.ndarray, jnp.ndarray]]:
+    """
+    Load all observations from observed sheet in Excel file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to Excel file containing observed sheet
+    site_data : SiteData
+        Site information used to derive month indices. ``year_i`` and
+        ``month_i`` define simulation month 0.
+
+    Returns
+    -------
+    dict[str, tuple[jnp.ndarray, jnp.ndarray]]
+        Dictionary mapping variable names to (obs_times, obs_values) tuples.
+        Variables included: DBH, Height, BA, N, WS, WF, WR
+    """
+    obs_df = pl.read_excel(file_path, sheet_name="observed")
+
+    if not {"year", "month"}.issubset(obs_df.columns):
+        raise ValueError("Observed sheet must contain year/month columns")
+
+    start_year = int(np.asarray(site_data.year_i).reshape(-1)[0])
+    start_month = int(np.asarray(site_data.month_i).reshape(-1)[0])
+
+    year = obs_df["year"].cast(pl.Int32).to_numpy()
+    month = obs_df["month"].cast(pl.Int32).to_numpy()
+    idx = (year - start_year) * 12 + (month - start_month)
+    obs_times = jnp.asarray(idx, dtype=jnp.int32)
+
+    observations = {}
+    excluded_cols = {"idx", "month", "year", "Date", "date", "specie"}
+    var_names = [col for col in obs_df.columns if col not in excluded_cols]
+
+    for var_name in var_names:
+        values_np = obs_df[var_name].to_numpy()
+        valid_mask = ~np.isnan(values_np)
+        if not np.any(valid_mask):
+            continue
+
+        var_obs_times = obs_times[valid_mask]
+        obs_values = jnp.asarray(values_np[valid_mask], dtype=jnp.float32)
+        observations[var_name] = (var_obs_times, obs_values)
+
+    return observations
 
 
 def _load_section_from_parquet(plot_df: pl.DataFrame, plot_id: str, section: str) -> pl.DataFrame:
@@ -219,7 +325,13 @@ def load_params_from_file(params_file: str, species_names: list[str]) -> Params:
     params_df = pl.read_parquet(params_file)
     param_names = params_df["param_name"].to_list()
     values_matrix = params_df["default"].to_numpy()
-    params_dict = {name: jnp.asarray(values_matrix[i]) for i, name in enumerate(param_names)}
+    # Error/sigma priors (e.g. `err_DBH`) may share this file but are not model
+    # physiology parameters, so they are not fields of `Params`.
+    params_dict = {
+        name: jnp.asarray(values_matrix[i])
+        for i, name in enumerate(param_names)
+        if name in Params._fields
+    }
     return Params(**params_dict)
 
 
@@ -256,14 +368,16 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     species_df = _load_section_from_parquet(plot_df, plot_id, "species")
     observed_df = _load_section_from_parquet(plot_df, plot_id, "observed")
 
-    site_data = prepare_site(site_df)
-    climate = prepare_climate(climate_df, str(site_data.site_start), str(site_data.site_end))
+    site_data, site_start, site_end = prepare_site(site_df)
+    climate = prepare_climate(climate_df, str(site_start), str(site_end))
     species_data = prepare_species(species_df)
+    index_to_species = {value: key for key, value in SPECIES_INDICES.items()}
+    species_names = [index_to_species[int(idx)] for idx in species_data.specie.tolist()]
 
     n_species = len(species_data.specie)
 
     # Shared parameters from species file
-    fixed_params = load_params_from_file(params_file, species_data.specie)
+    fixed_params = load_params_from_file(params_file, species_names)
 
     # Build initial state — same logic as prepare_data in PG3_model_impl.py
     start_month = site_data.month_i
@@ -276,26 +390,27 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     )
     initial_ASW = jnp.clip(site_data.ASW, asw_min, site_data.ASW_max)
 
-    climate_dt = pd.to_datetime(climate.start_month)
-    age_months = (climate_dt.year - species_data.year_p) * 12 + (
-        climate_dt.month - species_data.month_p
-    )
+    climate_year = int(site_data.year_i[0])
+    climate_month = int(site_data.month_i[0])
+    age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
 
     initial_state = State(
         WF=initial_WF,
         WR=species_data.WR,
         WS=species_data.WS,
         N=species_data.N,
-        ASW=jnp.full(n_species, initial_ASW, dtype=jnp.float32),
+        ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
         age=age_months,
         WF_debt=initial_WF_debt,
-        prev_month=jnp.full(n_species, 12 if start_month == 1 else start_month - 1),
+        prev_month=jnp.full(
+            n_species, 12 if start_month == 1 else start_month - 1, dtype=jnp.int32
+        ),
     )
 
     observations = load_observations_from_section(
         observed_df=observed_df,
         climate_df=climate_df,
-        species_names=species_data.specie,
+        species_names=species_names,
     )
 
     plot = PlotData(
@@ -308,3 +423,28 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
         observations=observations,
     )
     return plot, fixed_params
+
+
+def load_top_sensitive_params(morris_results_path: str, n_top: int = 20) -> list[str]:
+    """
+    Load the N most sensitive physiology parameter names from Morris results.
+
+    Parameters
+    ----------
+    morris_results_path : str
+        Path to a Morris results CSV with `Component`, `Parameter`, `mu_star`
+        columns (as produced by the Morris sensitivity analysis scripts).
+    n_top : int
+        Number of top physiology parameters to keep. Error parameters are
+        excluded here since they are added separately as sigma priors.
+
+    Returns
+    -------
+    list[str]
+        Parameter names ranked by `mu_star` on the `total` component, descending.
+    """
+    df = pl.read_csv(morris_results_path)
+    ranked = df.filter(
+        (pl.col("Component") == "total") & ~pl.col("Parameter").str.starts_with("err_")
+    ).sort("mu_star", descending=True)
+    return ranked["Parameter"].head(n_top).to_list()

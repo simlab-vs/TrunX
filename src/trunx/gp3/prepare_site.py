@@ -7,7 +7,7 @@ import polars as pl
 from trunx.gp3.model_inputs import SiteData
 
 
-def prepare_site(site: pl.DataFrame) -> SiteData:
+def prepare_site(site: pl.DataFrame) -> tuple[SiteData, np.datetime64, np.datetime64]:
     """Check the site data for consistency."""
     # Ensure Polars DataFrame
     if not isinstance(site, pl.DataFrame):
@@ -86,15 +86,17 @@ def prepare_site(site: pl.DataFrame) -> SiteData:
         latitude=jnp.asarray([row["latitude"]]),
         altitude=jnp.asarray([row["altitude"]]),
         soil_class=jnp.asarray([row["soil_class"]]),
-        ASW=jnp.asarray([row["asw_i"]]),
-        ASW_max=jnp.asarray([row["asw_max"]]),
-        ASW_min=jnp.asarray([row["asw_min"]]),
+        ASW=jnp.asarray([row["asw_i"]], dtype=float),
+        ASW_max=jnp.asarray([row["asw_max"]], dtype=float),
+        ASW_min=jnp.asarray([row["asw_min"]], dtype=float),
         year_i=jnp.asarray([year_i]),
         month_i=jnp.asarray([month_i]),
-        site_start=np.datetime64(row["from"]),
-        site_end=np.datetime64(row["to"]),
+        # site_start=np.datetime64(row["from"]),
+        # site_end=np.datetime64(row["to"]),
     )
-    return site_data
+
+    site_start, site_end = np.datetime64(row["from"]), np.datetime64(row["to"])
+    return site_data, site_start, site_end
 
 
 if __name__ == "__main__":

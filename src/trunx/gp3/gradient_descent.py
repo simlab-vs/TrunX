@@ -15,6 +15,7 @@ import pandas as pd
 from jax import grad, jit, value_and_grad
 from tqdm import tqdm
 
+from trunx.config import threepg_data_folder
 from trunx.gp3.model_inputs import Params, SiteData, SpeciesData, State
 from trunx.gp3.PG3_model_impl import prepare_data, run_threepg_main
 from trunx.gp3.run_3pg import run_3pg
@@ -41,7 +42,7 @@ class GradientDescentConfig:
     species_index: int = 0  # Index of the species to fit parameters for
     optimizer_name: str = "adam"
     learning_rate: float = 1e-3
-    n_steps: int = 500
+    n_steps: int = 5000
     print_every: int = 50
     standardize_targets = (True,)
     global_clip_norm: float = 1.0  # For gradient clipping
@@ -49,15 +50,18 @@ class GradientDescentConfig:
     image_dir: str = "./images/gradient_descent_results"
 
 
-def build_observation_indices(observed_data: pd.DataFrame):
-    """Build observation indices from the observed data table."""
-    print("Building observation indices...")
-    if "idx" in observed_data.columns:
-        idx_values = observed_data["idx"].to_numpy(dtype=np.int32)
-        return jnp.asarray(idx_values, dtype=jnp.int32)
-    else:
-        print("Warning: 'idx' column not found in observed data.")
-        return jnp.array([], dtype=jnp.int32)
+def build_observation_indices(observed_data: pd.DataFrame, site_data: SiteData) -> jnp.ndarray:
+    """Build observation month indices relative to the simulation start month."""
+    if not {"year", "month"}.issubset(observed_data.columns):
+        raise ValueError("Observed sheet must contain year and month columns")
+
+    start_year = int(np.asarray(site_data.year_i).reshape(-1)[0])
+    start_month = int(np.asarray(site_data.month_i).reshape(-1)[0])
+
+    year = observed_data["year"].to_numpy(dtype=np.int32)
+    month = observed_data["month"].to_numpy(dtype=np.int32)
+    idx_values = (year - start_year) * 12 + (month - start_month)
+    return jnp.asarray(idx_values, dtype=jnp.int32)
 
 
 def make_loss_function(
@@ -97,9 +101,15 @@ def make_loss_function(
             params=Params(**params_dict),
             site=site_data,
             species=species_data,
-            n_species=n_species,
         )
-
+        variable_weights = {
+            "BA": 1.0,
+            "DBH": 5.0,  # 5x more weight to DBH
+            "Height": 1.0,
+            "WF": 1.0,
+            "WS": 1.0,
+            "WR": 1.0,
+        }
         total_squared_error = jnp.asarray(0.0, dtype=jnp.float32)
         for var_name in target_vars:
             pg3_predictions = pg3_outputs[var_name][obs_indices]
@@ -111,7 +121,8 @@ def make_loss_function(
             mask = ~(jnp.isnan(observed_values) | jnp.isnan(pg3_predictions))
             residuals = (pg3_predictions - observed_values) / scale
             squared = jnp.where(mask, residuals**2, 0.0)
-            total_squared_error += jnp.sum(squared)
+            weight = variable_weights.get(var_name, 1.0)
+            total_squared_error += weight * jnp.sum(squared)
 
         return total_squared_error / jnp.asarray(n_obs, dtype=jnp.float32)
 
@@ -164,7 +175,7 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
         prepare_data(config.file_path)
     )
 
-    obs_indices = build_observation_indices(observed_data)
+    obs_indices = build_observation_indices(observed_data, site_data)
 
     obs_values: dict[str, jnp.ndarray] = {}
     obs_scales: dict[str, jnp.ndarray] = {}
@@ -324,7 +335,6 @@ def build_predicted_dataframe(
         params=fitted_model_params,
         site=site_data,
         species=species_data,
-        n_species=n_species,
     )
 
     _, outputs_default = run_3pg(
@@ -333,11 +343,10 @@ def build_predicted_dataframe(
         params=params,
         site=site_data,
         species=species_data,
-        n_species=n_species,
     )
 
     df_data = pd.DataFrame()
-    for var_name in ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]:
+    for var_name in ["DBH", "WS", "WF", "WR", "Height", "BA"]:
         pred_fitted = outputs_fitted[var_name]
         if pred_fitted.ndim == 2:
             pred_fitted = pred_fitted[:, config.species_index]
@@ -350,7 +359,9 @@ def build_predicted_dataframe(
         df_data[f"pred_default_{var_name}"] = np.asarray(pred_default)
         df_data[f"pred_{var_name}"] = np.asarray(pred_fitted)
 
-    start_date = pd.Timestamp(year=int(site_data.year_i), month=int(site_data.month_i), day=1)
+    start_date = pd.Timestamp(
+        year=int(site_data.year_i[0]), month=int(site_data.month_i[0]), day=1
+    )
     df_data["date"] = pd.date_range(start=start_date, periods=len(df_data), freq="ME")
     return pd.DataFrame(df_data)
 
@@ -374,7 +385,7 @@ def plot_observed_vs_predicted(
         ) + pd.offsets.MonthEnd(0)
     observed_data["date"] = observed_dates
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 15))
     if n_vars == 1:
         axes = [axes]
     axes = np.ravel(axes).tolist()
@@ -391,7 +402,7 @@ def plot_observed_vs_predicted(
         "N": "Stems (n ha⁻¹)",
     }
 
-    plot_vars = ["DBH", "LAI", "GPP", "WS", "WF", "WR", "Height", "BA", "N"]
+    plot_vars = ["DBH", "WS", "WF", "WR", "Height", "BA"]
     for ax, var_name in zip(axes, plot_vars, strict=True):
         pred_fitted_col = f"pred_fitted_{var_name}"
         pred_default_col = f"pred_default_{var_name}"
@@ -564,14 +575,36 @@ def save_loss_history(loss_history: list[float], save_path: str) -> None:
 
 
 if __name__ == "__main__":
-    fit_params = ["alphaCx", "Y", "CoeffCond", "aWS", "nWS", "Tmin", "rAge"]
+    fit_params = [
+        "pFS20",
+        "aWS",
+        "nWS",
+        "pRn",
+        "Tmin",
+        "Topt",
+        "Tmax",
+        "fN0",
+        "fNn",
+        "MaxAge",
+        "rAge",
+        "gammaN1",
+        "thinPower",
+        "mS",
+        "alphaCx",
+        "rhoMin",
+        "rhoMax",
+        "aH",
+        "nHB",
+        "nHC",
+    ]
 
+    file_path = os.path.join(threepg_data_folder, "14.0003_data.xlsx")
     config = GradientDescentConfig(
-        file_path="./data/solling_data.xlsx",
+        file_path=file_path,
         observed_sheet="observed",
         fit_params=fit_params,
-        target_vars=["DBH", "WS", "WF", "WR", "Height", "BA", "N"],  # Fit to these variables
-        n_steps=500,
+        target_vars=["DBH", "WS", "WF", "WR", "Height", "BA"],  # Fit to these variables
+        n_steps=2500,
         optimizer_name="adam",
         learning_rate=1e-3,
         global_clip_norm=1.0,

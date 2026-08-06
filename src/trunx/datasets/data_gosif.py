@@ -18,7 +18,7 @@ base_url = "https://data.globalecology.unh.edu/data/GOSIF-GPP_v2/Monthly/Mean/"
 
 def get_icp_data():
     """Load ICP data, filter for relevant species, and convert coordinates."""
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     icp_df = icp_df.filter(
         pl.col("specie").is_in(
             list(

@@ -75,6 +75,7 @@ class PackedSiteData(NamedTuple):
 class PackedSpeciesData(NamedTuple):
     """Species arrays stacked across all plots."""
 
+    specie: jnp.ndarray  # shape:(n_plots, n_species)
     FR: jnp.ndarray  # shape:(n_plots, n_species)
     WF: jnp.ndarray  # shape:(n_plots, n_species)
     WR: jnp.ndarray  # shape:(n_plots, n_species)
@@ -102,7 +103,7 @@ class PackedPlotBatch(NamedTuple):
     species: PackedSpeciesData
     observations: dict[str, PackedObservationData]
     species_names: tuple[str, ...]
-    species_planted: tuple[object, ...]
+    # species_planted: tuple[object, ...]
     n_plots: int
     n_species: int
     max_months: int
@@ -248,6 +249,7 @@ def _pack_plots_with_padding(plots: list[PlotData]) -> PackedPlotBatch:
         N=jnp.stack([plot.species.N for plot in plots], axis=0),
         year_p=jnp.stack([plot.species.year_p for plot in plots], axis=0),
         month_p=jnp.stack([plot.species.month_p for plot in plots], axis=0),
+        specie=jnp.stack([plot.species.specie for plot in plots], axis=0),
     )
 
     observations = _pack_observations(plots, n_species)
@@ -260,7 +262,7 @@ def _pack_plots_with_padding(plots: list[PlotData]) -> PackedPlotBatch:
         species=species,
         observations=observations,
         species_names=tuple(plots[0].species.specie),
-        species_planted=tuple(plots[0].species.planted),
+        # species_planted=tuple(plots[0].species.planted),
         n_plots=len(plots),
         n_species=n_species,
         max_months=max_months,
@@ -285,7 +287,7 @@ def _select_single_plot(
         co2=batch.climate.co2[idx],
         d13catm=batch.climate.d13catm[idx],
         month=batch.climate.month[idx],
-        start_month=_DUMMY_MONTH,
+        # start_month=_DUMMY_MONTH,
     )
 
     site = SiteData(
@@ -297,18 +299,18 @@ def _select_single_plot(
         ASW_min=batch.site.ASW_min[idx],
         year_i=batch.site.year_i[idx],
         month_i=batch.site.month_i[idx],
-        site_start=_DUMMY_MONTH,
-        site_end=_DUMMY_MONTH,
+        # site_start=_DUMMY_MONTH,
+        # site_end=_DUMMY_MONTH,
     )
 
     species = SpeciesData(
-        specie=list(batch.species_names),
+        specie=batch.species.specie[idx],
         FR=batch.species.FR[idx],
         WF=batch.species.WF[idx],
         WR=batch.species.WR[idx],
         WS=batch.species.WS[idx],
         N=batch.species.N[idx],
-        planted=list(batch.species_planted),
+        # planted=list(batch.species_planted),
         year_p=batch.species.year_p[idx],
         month_p=batch.species.month_p[idx],
     )
@@ -316,12 +318,12 @@ def _select_single_plot(
     return state, climate, site, species
 
 
-def _run_packed_plots_forward(batch: PackedPlotBatch, params: Params) -> dict[str, jnp.ndarray]:
+def run_packed_plots_forward(batch: PackedPlotBatch, params: Params) -> dict[str, jnp.ndarray]:
     """Run all plots in parallel using one vmapped forward pass."""
 
     def run_one_plot(idx: jax.Array) -> dict[str, jnp.ndarray]:
         state, climate, site, species = _select_single_plot(batch, idx)
-        _, outputs = run_3pg(state, climate, params, site, species, batch.n_species)
+        _, outputs = run_3pg(state, climate, params, site, species)
         return outputs
 
     return jax.vmap(run_one_plot)(jnp.arange(batch.n_plots, dtype=jnp.int32))
@@ -343,7 +345,7 @@ def multi_plot_model(
     params = fixed_params._replace(**sampled_params)
 
     # Pack plots and run model in parallel across plots using JAX vmap.
-    outputs = _run_packed_plots_forward(packed_plots, params)
+    outputs = run_packed_plots_forward(packed_plots, params)
 
     for var_name, obs in packed_plots.observations.items():
         if var_name not in outputs:
@@ -372,22 +374,32 @@ def multi_plot_model(
         )
 
 
-def run_multi_plot_analysis(
+def load_and_pack_plots(
     params_file: str,
     plot_files: list[tuple[str, str]],
-    param_names: list[str] | None = None,
-    num_warmup: int = 1000,
-    num_samples: int = 1000,
-    num_chains: int = 4,
-    seed: int = 42,
-) -> tuple[MCMC, dict]:
-    """Run shared-parameter HMC inference across many plots."""
-    priors = load_priors_from_file(params_file, param_names)
+) -> tuple[PackedPlotBatch, Params]:
+    """Load, validate, and pack multiple plots into one batch for shared-parameter analysis.
+
+    Parameters
+    ----------
+    params_file : str
+        Parquet file with shared physiology parameters, used to load each plot's
+        fixed parameters.
+    plot_files : list[tuple[str, str]]
+        (plot_file, plot_id) pairs identifying each plot to include.
+
+    Returns
+    -------
+    PackedPlotBatch
+        All plots packed into one padded batch for vmap-parallel evaluation.
+    Params
+        Shared fixed (non-estimated) parameters, loaded from the first plot.
+    """
     if len(plot_files) == 0:
         raise ValueError("plot_files must contain at least one (file_path, plot_id) entry")
 
     plots: list[PlotData] = []
-    fixed_params = None
+    fixed_params: Params | None = None
     for file_path, plot_id in plot_files:
         plot, fp = load_plot_data(file_path, plot_id, params_file)
         plots.append(plot)
@@ -419,6 +431,23 @@ def run_multi_plot_analysis(
         f"max={int(packed_plots.climate.lengths.max())}, "
         f"padded_to={packed_plots.max_months}"
     )
+
+    assert fixed_params is not None
+    return packed_plots, fixed_params
+
+
+def run_multi_plot_analysis(
+    params_file: str,
+    plot_files: list[tuple[str, str]],
+    param_names: list[str] | None = None,
+    num_warmup: int = 1000,
+    num_samples: int = 1000,
+    num_chains: int = 4,
+    seed: int = 42,
+) -> tuple[MCMC, dict]:
+    """Run shared-parameter HMC inference across many plots."""
+    priors = load_priors_from_file(params_file, param_names)
+    packed_plots, fixed_params = load_and_pack_plots(params_file, plot_files)
 
     rng_key = random.PRNGKey(seed)
     _, subkey = random.split(rng_key)

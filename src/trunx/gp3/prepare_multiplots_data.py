@@ -13,7 +13,6 @@ observed data available in each plot.
 
 TODO:
 - Add option to include multi-species plots, with per-species columns for observations.
-- Get weather data form other sources.
 
 """
 
@@ -26,14 +25,12 @@ import polars as pl
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.gp3.age_regression import fit_models
 from trunx.gp3.create_data_inputs import (
-    create_input_params,
     create_observation_data,
     create_site_data,
     create_species_data,
-    create_weather_input,
     dms_to_decimal,
-    update_species_data,
 )
+from trunx.gp3.weather_processing import create_weather_input, fill_weather_with_era5
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +55,7 @@ SECTION_COLS: dict[str, list[str]] = {
         "biom_root",
         "biom_foliage",
     ],
-    "observed": ["specie", "month", "year", "Date", "GPP", "DBH"],
+    "observed": ["specie", "month", "year", "Date", "GPP", "DBH", "WS", "WF", "WR", "LAI"],
 }
 
 
@@ -126,33 +123,29 @@ def _build_plot_row(
 
     _, weather_df = create_weather_input(weather_raw, plot_id)
 
-    base_species_df = create_species_data(icp_df)
-    if base_species_df.is_empty():
+    species_df, start_year = create_species_data(icp_df, models=models)
+    if species_df.is_empty():
         logger.warning("plot_id %s: no species data — skipping", plot_id)
         return None
 
-    input_params_df = create_input_params(icp_df)
-    species_df, start_year = update_species_data(
-        icp_df, base_species_df, input_params_df, models=models
-    )
+    _, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
 
-    weather_df = weather_df.filter(pl.col("year") >= start_year)
-    site_df = create_site_data(icp_df, weather_df)
+    icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].to_list()))
 
-    icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].implode()))
-    observed_df = create_observation_data(plot_id, icp_filtered, weather_df, start_year)
+    observed_df = create_observation_data(plot_id, icp_filtered, start_year)
+    site_df = create_site_data(icp_df, weather_df, observed_df)
 
-    def _to_records(df: pl.DataFrame, section: str) -> list[dict]:
+    def _to_nested(df: pl.DataFrame, section: str) -> pl.Series:
         cols = [c for c in SECTION_COLS[section] if c in df.columns]
-        return df.select(cols).to_dicts()
+        return df.select(cols).to_struct(name=section).implode()
 
     return pl.DataFrame(
         {
             "plot_id": [plot_id],
-            "climate": [_to_records(weather_df, "climate")],
-            "site": [_to_records(site_df, "site")],
-            "species": [_to_records(species_df, "species")],
-            "observed": [_to_records(observed_df, "observed")],
+            "climate": _to_nested(weather_df, "climate"),
+            "site": _to_nested(site_df, "site"),
+            "species": _to_nested(species_df, "species"),
+            "observed": _to_nested(observed_df, "observed"),
         }
     )
 
@@ -211,7 +204,9 @@ def prepare_data_bayesian_opt(output_dir: Path | str) -> None:
     output_dir = Path(output_dir)
 
     weather_raw = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
-    icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    # icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_level2_cleaned.parquet"))
+    icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
+    icp_raw = icp_raw.filter(pl.col("specie").is_in(SUPPORTED_SPECIES))
     age_models = fit_models(icp_raw)
 
     plots_by_species = _get_single_species_plots(icp_raw)
@@ -270,6 +265,9 @@ if __name__ == "__main__":
 
     # Example: read climate data for one plot from the Picea abies file
     df = pl.read_parquet(os.path.join(threepg_data_folder, "icp_plot_data_Picea_abies.parquet"))
-    pid = "04.1401"
+    pid = "50.0018"
     print(load_section(df, pid, "climate").head())
     print(load_section(df, pid, "site"))
+    obv = load_section(df, pid, "observed")
+    print(obv.drop_nulls(subset=["DBH"]))
+    print(load_section(df, pid, "species"))
