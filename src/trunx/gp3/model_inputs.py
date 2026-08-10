@@ -230,3 +230,10 @@ class Params(NamedTuple):
     # Constants
     gDM_mol: jnp.ndarray  # Molecular weight of dry matter
     molPAR_MJ: jnp.ndarray  # Conversion of solar radiation to PAR
+
+
+class ExtendedParams(NamedTuple):
+    """Extended parameter information."""
+
+    # Additional parameters for extended model
+    poly_params: jnp.ndarray  # Weights for polynomial nutritional modifier

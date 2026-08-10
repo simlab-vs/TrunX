@@ -13,7 +13,7 @@ import numpyro
 import numpyro.distributions as dist
 import polars as pl
 from numpyro.distributions.transforms import AffineTransform, ComposeTransform, SigmoidTransform
-from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
+from numpyro.infer import HMC, MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
@@ -226,12 +226,12 @@ def run_hmc_inference(
         else init_to_uniform
     )
 
-    kernel = NUTS(
+    kernel = HMC(
         model,
         adapt_step_size=use_step_size_adaptation,
         adapt_mass_matrix=use_mass_matrix_adaptation,
         target_accept_prob=target_accept_prob,
-        max_tree_depth=max_tree_depth,
+        # max_tree_depth=max_tree_depth,
         init_strategy=init_strategy,
     )
 

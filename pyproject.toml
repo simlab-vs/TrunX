@@ -59,6 +59,9 @@ dev = [
     "ty>=0.0.13",
     "pytest>=8.0.0",
     "responses>=0.25.0",
+    "nbclient>=0.11.0",
+    "ipykernel>=7.3.0",
+    "jupyter-client>=8.9.1",
 ]
 
 # Build backend

@@ -11,11 +11,10 @@ import pandas as pd
 import polars as pl
 from jax import config, grad
 
-from trunx.config import SPECIES_INDICES, clean_data_folder, project_root, threepg_data_folder
+from trunx.config import SPECIES_INDICES, project_root, threepg_data_folder
 
 # config.update("jax_debug_nans", True)  # Enable NaN debugging
 from trunx.gp3.create_data_inputs import create_input_data
-from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
     create_comparison_dataframe,
@@ -25,14 +24,11 @@ from trunx.gp3.plot_function import (
     plot_dbh_distribution,
     plot_outputs,
 )
-from trunx.gp3.prepare_climate import prepare_climate
-from trunx.gp3.prepare_monthlydata import prepare_monthlydata
-from trunx.gp3.prepare_site import prepare_site
-from trunx.gp3.prepare_species import prepare_species
+from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg, ws_final, ws_final_vector
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -40,73 +36,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 os.chdir(project_root)
-
-
-def prepare_data(file_path):
-    """Prepare data and initial state for 3PG model."""
-    d_site = pl.read_excel(file_path, sheet_name="site")
-    site_data, site_start, site_end = prepare_site(d_site)
-
-    # d_climate = pl.read_excel(file_path, sheet_name="climate")
-    # climate = prepare_climate(d_climate, str(site_start), str(site_end))
-
-    d_month = pl.read_excel(file_path, sheet_name="climate")
-    climate = prepare_monthlydata(d_month, str(site_start), str(site_end))
-
-    d_species = pl.read_excel(file_path, sheet_name="species")
-    species_data = prepare_species(d_species)
-
-    logging.info("Pre-processed species data for %d species", len(species_data.specie))
-
-    params_df = pl.read_excel(file_path, sheet_name="parameters")
-
-    param_names = params_df["parameter"].to_list()
-    # species_names = [col for col in params_df.columns if col != "parameter"]
-    species_indices = species_data.specie
-    index_to_species = {index: name for name, index in SPECIES_INDICES.items()}
-    species_names = [index_to_species[int(index)] for index in species_indices]
-    values_matrix = params_df[species_names].to_numpy()
-
-    params_dict = {}
-    for i, param_name in enumerate(param_names):
-        params_dict[param_name] = jnp.asarray(values_matrix[i, :])
-
-    params = Params(**params_dict)
-
-    # Check if start month is dormant
-    start_month = site_data.month_i
-    start_dormant = is_dormant(start_month, params.leafgrow, params.leaffall)
-    initial_WF = jnp.where(start_dormant, jnp.asarray(0.0), species_data.WF)
-    initial_WF_debt = jnp.where(start_dormant, species_data.WF, jnp.asarray(0.0))
-
-    asw_min = jnp.where(
-        site_data.ASW_min > site_data.ASW_max, site_data.ASW_max, site_data.ASW_min
-    )
-    asw_max = site_data.ASW_max
-
-    # Clip ASW to [asw_min, asw_max] for each species
-    initial_ASW = jnp.clip(site_data.ASW, asw_min, asw_max)
-
-    n_species = len(species_data.specie)
-    climate_year = int(site_data.year_i[0])
-    climate_month = int(site_data.month_i[0])
-
-    age_months = (climate_year - species_data.year_p) * 12 + (climate_month - species_data.month_p)
-
-    initial_state = State(
-        WF=initial_WF,
-        WR=species_data.WR,
-        WS=species_data.WS,
-        N=species_data.N,
-        ASW=jnp.full(n_species, initial_ASW, dtype=initial_ASW.dtype),
-        age=age_months,
-        WF_debt=initial_WF_debt,
-        prev_month=jnp.full(
-            n_species, 12 if start_month == 1 else start_month - 1, dtype=jnp.int32
-        ),
-    )
-
-    return initial_state, climate, params, site_data, species_data, n_species, species_names
 
 
 def run_threepg_main(
@@ -189,7 +118,7 @@ def run_threepg_main(
             fig_name=fig_name,
             plot_id=plot_id,
             show=show_plots,
-            plot_metrics=["BA", "DBH", "stems_n", "WS", "WR", "WF", "Height"],
+            plot_metrics=["BA", "DBH", "Height", "WF", "WS", "WR"],
         )
     elif r_comparison:
         from trunx.gp3.run_r3pg import run_comparison_r
@@ -233,7 +162,7 @@ if __name__ == "__main__":
     # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
 
@@ -242,54 +171,55 @@ if __name__ == "__main__":
     # )
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    # fig, outputs = run_threepg_main(
-    #     file_path, observed_data=None, plot_output=True, r_comparison=True
-    # )
+    fig, outputs = run_threepg_main(
+        file_path, observed_data=None, plot_output=True, r_comparison=True
+    )
 
-    species_plot_ids = {
-        "Pinus sylvestris": [
-            "01.0082",
-            "04.1303",
-            "51.0015",
-            "53.0109",
-            "53.0112",
-            "53.0114",
-            "53.0302",
-            "53.0306",
-            "53.0311",
-            "53.0312",
-            "53.0313",
-            "53.0316",
-            "53.0407",
-            "53.0501",
-            "53.0513",
-            "53.0603",
-            "53.0617",
-            "53.0618",
-            "53.0623",
-            "59.0001",
-            "59.0003",
-        ],
-        "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
-        "Picea abies": [
-            "04.0302",
-            "04.1402",
-            "04.1403",
-            "14.0017",
-            "52.0010",
-            "53.0701",
-            "59.0008",
-        ],
-    }
+    # species_plot_ids = {
+    #     "Pinus sylvestris": [
+    #         "01.0082",
+    #         "04.1303",
+    #         "51.0015",
+    #         "53.0109",
+    #         "53.0112",
+    #         "53.0114",
+    #         "53.0302",
+    #         "53.0306",
+    #         "53.0311",
+    #         "53.0312",
+    #         "53.0313",
+    #         "53.0316",
+    #         "53.0407",
+    #         "53.0501",
+    #         "53.0513",
+    #         "53.0603",
+    #         "53.0617",
+    #         "53.0618",
+    #         "53.0623",
+    #         "59.0001",
+    #         "59.0003",
+    #     ],
+    #     "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
+    #     "Picea abies": [
+    #         "04.0302",
+    #         "04.1402",
+    #         "04.1403",
+    #         "14.0017",
+    #         "52.0010",
+    #         "53.0701",
+    #         "59.0008",
+    #     ],
+    # }
 
-    plot_ids = species_plot_ids["Pinus sylvestris"]
+    # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    for plot_id in plot_ids:
-        plot_dbh_distribution(
-            plot_id=plot_id,
-            file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
-            kind="box",
-            fig_name=f"ICP_{plot_id}_dbh_distribution",
-            show=True,
-        )
-        fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    # plot_ids = ["04.1402"]
+    # for plot_id in plot_ids:
+    #     # plot_dbh_distribution(
+    #     #     plot_id=plot_id,
+    #     #     file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
+    #     #     kind="box",
+    #     #     fig_name=f"ICP_{plot_id}_dbh_distribution",
+    #     #     show=True,
+    #     # )
+    #     fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
