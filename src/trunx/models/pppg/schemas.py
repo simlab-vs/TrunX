@@ -9,6 +9,7 @@ type SurfaceBiomass = float  # [t / ha]
 type SurfaceMassRate = float  # [t / month * ha]
 type EnergyFlow = float  # [MJ / day * m2]
 type MassPerEnergy = float  # [g / MJ]
+type Modifier = float  # [0-1]
 
 
 class Params(BaseModel):
@@ -38,7 +39,8 @@ class SiteFactors(Params):
         le=1.0,
         description="site fertilitiy rating, from concrete (0), to non-limited by nutrients (1)",
     )
-    max_asw: float = Field(gt=0.0, description="maximum plant-available soil water [mm]")
+    asw_min: float = Field(ge=0.0, description="Minimum available soil water [mm]")
+    asw_max: float = Field(ge=0.0, description="Maximum available soil water [mm]")
 
 
 class WeatherData(Params):
@@ -53,7 +55,8 @@ class WeatherData(Params):
     average_radiation: float = Field(
         ge=0.0, description="monthly average daily solar radiation [MJ/m2*day]"
     )
-    total_rainfall: float = Field(ge=0.0, description="total monthly rainfall [mm/month]")
+    rainfall: float = Field(ge=0.0, description="total monthly rainfall [mm/month]")
+    irrigation: float = Field(ge=0.0, description="total monthly irrigation [mm/month]")
     n_rain_days: float = Field(ge=0.0, le=31.0, description="number of rain days in the month")
     n_frost_days: float = Field(ge=0.0, le=30.0, description="number of frost days in the month")
 
@@ -141,3 +144,17 @@ class TurnoverRates(Params):
     stem_number_rate: float = Field(
         ge=0.0, le=1.0, description="monthly stem number turnover rate (mortality) [1/month]"
     )
+
+
+class WaterParameters(Params):
+    """Parameters of the water model."""
+
+    interception_rate_max: float = Field(
+        ge=0.0, le=1.0, description="Maximum rainfall interception rate"
+    )
+    lai_at_max_interception: float = Field(
+        ge=0.0, description="LAI at maximum rainfall interception"
+    )
+    lai_at_max_conductance: float = Field(ge=0.0, description="LAI at maximal canopy conductance")
+    conductance_at_lai0: float = Field(ge=0.0, description="Canopy conductance at 0 LAI")
+    conductance_max: float = Field(ge=0.0, description="Maximal canopy conductance")
