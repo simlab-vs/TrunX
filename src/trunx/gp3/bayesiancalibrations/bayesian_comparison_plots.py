@@ -18,7 +18,11 @@ from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.load_files import (
+    load_param_defaults_from_file,
+    load_priors_from_file,
+)
 from trunx.gp3.bayesiancalibrations.save_load_results import load_predictions
 from trunx.gp3.gradient_descent import (
     GradientDescentConfig,
@@ -36,7 +40,7 @@ LABEL_MAP = {
     "Height": "Height",
     "WS": "Stem biomass",
     "WR": "Root biomass",
-    "WF": "Stem foliage",
+    "WF": "Foliage biomass",
 }
 
 
@@ -286,6 +290,55 @@ def load_convergence_summary(inference_data_path: str, param_names: list[str]) -
     return summary
 
 
+def plot_trace_and_posterior(
+    inference_data_path: str,
+    param_names: list[str],
+    priors: dict[str, tuple[float, float]],
+) -> tuple[Figure, Figure]:
+    """Plot MCMC trace and posterior distributions, with prior ranges marked.
+
+    Parameters
+    ----------
+    inference_data_path : str
+        Path to a saved `inference_data.nc` (PyMC) or `numpyro_inference_data.nc` (HMC).
+    param_names : list[str]
+        Parameter names to plot.
+    priors : dict[str, tuple[float, float]]
+        Prior (lower, upper) bounds per parameter, drawn as red lines. Parameters
+        without a matching entry are plotted without prior lines.
+
+    Returns
+    -------
+    tuple[Figure, Figure]
+        The trace figure and the posterior figure.
+    """
+    idata = az.from_netcdf(inference_data_path)
+
+    trace_axes = np.atleast_2d(az.plot_trace(idata, var_names=param_names))
+    for row, param_name in zip(trace_axes, param_names, strict=True):
+        bounds = priors.get(param_name)
+        if bounds is None:
+            continue
+        density_ax, sample_ax = row
+        for bound in bounds:
+            density_ax.axvline(bound, color="red")
+            sample_ax.axhline(bound, color="red")
+    trace_fig = cast(Figure, trace_axes[0, 0].figure)
+    trace_fig.tight_layout()
+
+    posterior_axes = np.atleast_1d(az.plot_posterior(idata, var_names=param_names)).flatten()
+    for ax, param_name in zip(posterior_axes, param_names, strict=True):
+        bounds = priors.get(param_name)
+        if bounds is None:
+            continue
+        for bound in bounds:
+            ax.axvline(bound, color="red")
+    posterior_fig = cast(Figure, posterior_axes[0].figure)
+    posterior_fig.tight_layout()
+
+    return trace_fig, posterior_fig
+
+
 def plot_convergence_comparison(
     fit_params: list[str],
     pymc_inference_path: str | None = None,
@@ -392,7 +445,30 @@ if __name__ == "__main__":
     _include_gradient_descent = True
 
     plot_ids = [
-        "01.0082",
+        # "04.1303",
+        # "51.0015",
+        # "53.0109",
+        # "53.0112",
+        # "53.0114",
+        # "53.0302",
+        # "53.0306",
+        # "53.0311",
+        "53.0312",
+        "53.0313",
+        "53.0316",
+        "53.0407",
+        "53.0501",
+        "53.0513",
+        "53.0603",
+        "53.0617",
+        "53.0618",
+        "53.0623",
+        "59.0001",
+        "59.0003",
+        "04.0101",
+        "04.0704",
+        "08.0034",
+        "53.0107",
         "04.0302",
         "04.1402",
         "04.1403",
@@ -416,9 +492,12 @@ if __name__ == "__main__":
 
         _file_path = os.path.join(_bayesian_output_dir, f"{plot_id}_data.xlsx")
 
-        _df = pl.read_excel(_file_path, sheet_name="param_bound")
-        _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
-        fit_params = _df["param_name"].to_list()
+        if plot_id == "solling":
+            fit_params = FIT_PARAMS
+        else:
+            _df = pl.read_excel(_file_path, sheet_name="param_bound")
+            _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
+            fit_params = _df["param_name"].to_list()
 
         _fig, _metrics_df = plot_comparison(
             _file_path,
@@ -449,6 +528,23 @@ if __name__ == "__main__":
             dpi=200,
             bbox_inches="tight",
         )
+
+        if _include_bayesian:
+            _priors = load_priors_from_file(_file_path, fit_params)
+            _trace_fig, _posterior_fig = plot_trace_and_posterior(
+                os.path.join(_bayesian_output_dir, "inference_data.nc"), fit_params, _priors
+            )
+            _trace_fig.savefig(
+                os.path.join(_plot_output_dir, f"trace_{plot_id}.png"),
+                dpi=200,
+                bbox_inches="tight",
+            )
+            _posterior_fig.savefig(
+                os.path.join(_plot_output_dir, f"posterior_{plot_id}.png"),
+                dpi=200,
+                bbox_inches="tight",
+            )
+
         print(f"Saved plots to {_plot_output_dir}")
 
         # plt.show()
