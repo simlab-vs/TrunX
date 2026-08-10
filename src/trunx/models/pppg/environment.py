@@ -1,9 +1,27 @@
 """Environmental modifiers."""
 
+from dataclasses import dataclass
+
 import numpy as np
 
+from trunx.models.pppg.schemas import Modifier
 
-def effective_quantum_efficiency(quantum_efficiency: float, modifiers: list[float]) -> float:
+
+@dataclass
+class Modifiers:
+    """Bundle of the environmental and physiological modifiers used across the 3PG equations."""
+
+    age: Modifier
+    frost: Modifier
+    fertility: Modifier
+    salinity: Modifier
+    co2: Modifier
+    physiological: Modifier
+    vapour: Modifier
+    water: Modifier
+
+
+def effective_quantum_efficiency(quantum_efficiency: float, mods: Modifiers) -> float:
     """Compute the effective quantum efficiency.
 
     Parameters
@@ -15,25 +33,34 @@ def effective_quantum_efficiency(quantum_efficiency: float, modifiers: list[floa
         modifiers is:
         [age, fros, fertility, salinity, co2, physiological]
     """
-    return np.prod(modifiers).item() * quantum_efficiency
+    return (
+        mods.age * mods.frost * mods.fertility * mods.salinity * mods.co2 * mods.physiological
+    ) * quantum_efficiency
 
 
-def physiological_modifier(age_modifier: float, vapour_modifier: float, water_modifier: float):
+def physiological_modifier(
+    age_mod: Modifier, vapour_mod: Modifier, water_mod: Modifier
+) -> Modifier:
     """Compute the physiological modifier.
+
+    This modifier determines the allocation ratios, the effective quantum efficiency
+    and the canopy conductance.
+
+    Reference: Landsberg and Sands (2011) Eq. 9.9 and Sands (2004) Eq. 4.
 
     Parameters
     ----------
-    age_modifier: float
-    vapour_modifier: float
-    water_modifier: float
+    age_mod: float
+    vapour_mod: float
+    water_mod: float
 
     """
-    return age_modifier * np.min([vapour_modifier, water_modifier])
+    return age_mod * np.min([vapour_mod, water_mod])
 
 
 def temperature_modifier(
     average_temp: float, min_temp: float, max_temp: float, opt_temp: float
-) -> float:
+) -> Modifier:
     """Compute the temperature modifier.
 
     Parameters
@@ -55,7 +82,7 @@ def temperature_modifier(
     return a * b**c
 
 
-def frost_modifier(n_frost_days: float, frost_loss_coefficient) -> float:
+def frost_modifier(n_frost_days: float, frost_loss_coefficient) -> Modifier:
     """Compute the frost modifier.
 
     Parameters
@@ -71,7 +98,7 @@ def frost_modifier(n_frost_days: float, frost_loss_coefficient) -> float:
     return 1 - frost_loss_coefficient * n_frost_days / 30.0
 
 
-def vapour_modifier(vapour_deficit: float, vapour_pressure_coefficient: float) -> float:
+def vapour_modifier(vapour_deficit: float, vapour_pressure_coefficient: float) -> Modifier:
     """Compute the vapour pressure deficit (VPD) modifier.
 
     Parameters
@@ -86,24 +113,24 @@ def vapour_modifier(vapour_deficit: float, vapour_pressure_coefficient: float) -
     return np.exp(-vapour_pressure_coefficient * vapour_deficit)
 
 
-def soil_modifier(available_water: float, soil_modifier_shape) -> float:
+def water_modifier(relative_available_water: float, water_modifier_shape) -> Modifier:
     """Compute the soil water modifier.
 
     Parameters
     ----------
-    available_water: float
+    relative_available_water: float
         Relative plant-available soil water
-    soil_modifier_shape
+    water_modifier_shape
         Soil texture specific shape parameters for the soil modifier
     """
-    a = 1 - (1 - available_water) ** soil_modifier_shape[0]
-    b = 1 + ((1 - available_water) / soil_modifier_shape[1]) ** soil_modifier_shape[0]
+    a = 1 - (1 - relative_available_water) ** water_modifier_shape[0]
+    b = 1 + ((1 - relative_available_water) / water_modifier_shape[1]) ** water_modifier_shape[0]
     return a / b
 
 
 def fertility_modifier(
     fertility_rating: float, fertility_modifier_shape: tuple[float, float] = (1, 0.5)
-) -> float:
+) -> Modifier:
     """Compute the fertility modifier.
 
     Parameters
@@ -123,7 +150,7 @@ def fertility_modifier(
 
 def age_modifier(
     age: float, max_age: float, age_modifier_shape: tuple[float, float] = (4, 0.95)
-) -> float:
+) -> Modifier:
     """Compute the age modifier.
 
     Parameters
