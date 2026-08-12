@@ -11,18 +11,12 @@ import pandas as pd
 import polars as pl
 from jax import config, grad
 
-from trunx.config import SPECIES_INDICES, clean_data_folder, project_root, threepg_data_folder
-
-# config.update("jax_debug_nans", True)  # Enable NaN debugging
-from trunx.gp3.create_data_inputs import create_input_data
+from trunx.config import SPECIES_INDICES, project_root
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
     create_comparison_dataframe,
-    plot_combined_3pg_outputs,
     plot_combined_3pg_outputs_obv,
-    plot_combined_3pg_outputs_per_species,
-    plot_dbh_distribution,
     plot_outputs,
 )
 from trunx.gp3.prepare_climate import prepare_climate
@@ -198,54 +192,3 @@ def run_threepg_main(
         fig = None
 
     return fig, outputs
-
-
-def run_threepg_with_icp(plot_id: str = "", plot_output=True, r_comparison=True):
-    """Run 3PG model with ICP weather data."""
-    file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"Deleted: {file_path}")
-    miss_months, observed_data = create_input_data(file_path, plot_id)
-    if len(miss_months) == 0:
-        fig, outputs = run_threepg_main(
-            file_path,
-            observed_data,
-            plot_output=plot_output,
-            r_comparison=r_comparison,
-            plot_id=plot_id,
-        )
-        return fig, outputs
-    else:
-        print(
-            "The weather data is not complete and need pre-processing before 3PG implementation."
-        )
-        return None, None
-
-
-if __name__ == "__main__":
-    # file_path = os.path.join(threepg_data_folder, "data_semisynthetic.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
-    # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
-
-    # fig, outputs = run_threepg_main(
-    #     file_path, observed_data=None, plot_output=True, r_comparison=True
-    # )
-
-    # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
-
-    plot_ids = ["01.0038", "04.1402", "52.0010", "04.1403", "59.0008"]
-
-    for plot_id in plot_ids:
-        plot_dbh_distribution(
-            plot_id=plot_id,
-            file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
-            kind="box",
-            fig_name=f"ICP_{plot_id}_dbh_distribution",
-            show=True,
-        )
-        fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
