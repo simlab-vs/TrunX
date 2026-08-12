@@ -9,7 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import polars as pl
-from jax import config, grad
 
 from trunx.config import SPECIES_INDICES, project_root
 from trunx.gp3.helper_function import is_dormant
@@ -165,27 +164,31 @@ def run_threepg_main(
     for idx, specie in enumerate(species_data.specie):
         print(f"{specie}: [∂WS/∂alphaCx, ∂WS/∂CoeffCond, ∂WS/∂Y] = {jacobian[idx]}")
 
-    if r_comparison and plot_output:
-        from trunx.gp3.run_r3pg import run_comparison_r
+    if r_comparison:
+        try:
+            from trunx.gp3.run_r3pg import run_comparison_r
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "r_comparison=True requires trunx.gp3.run_r3pg, which is not "
+                "included in this release branch."
+            ) from e
 
         r_outputs = run_comparison_r(file_path)
-        df_comp = create_comparison_dataframe(
-            r_outputs, outputs, simulation_start_month, species_names
-        )
-        fig = plot_combined_3pg_outputs_obv(
-            df_comp,
-            observed_data=observed_data,
-            fig_name=fig_name,
-            plot_id=plot_id,
-            show=show_plots,
-            plot_metrics=["BA", "DBH", "stems_n", "WS", "WR", "WF", "Height"],
-        )
-    elif r_comparison:
-        from trunx.gp3.run_r3pg import run_comparison_r
-
-        r_outputs = run_comparison_r(file_path)
-        create_comparison_dataframe(r_outputs, outputs, simulation_start_month, species_names)
-        fig = None
+        if plot_output:
+            df_comp = create_comparison_dataframe(
+                r_outputs, outputs, simulation_start_month, species_names
+            )
+            fig = plot_combined_3pg_outputs_obv(
+                df_comp,
+                observed_data=observed_data,
+                fig_name=fig_name,
+                plot_id=plot_id,
+                show=show_plots,
+                plot_metrics=["BA", "DBH", "stems_n", "WS", "WR", "WF", "Height"],
+            )
+        else:
+            create_comparison_dataframe(r_outputs, outputs, simulation_start_month, species_names)
+            fig = None
     elif plot_output:
         fig = plot_outputs(outputs, simulation_start_month, fig_name, show=show_plots)
     else:

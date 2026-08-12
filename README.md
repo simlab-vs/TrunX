@@ -1,33 +1,29 @@
-<h1 align="center">TrunkX</h1>
+<h1 align="center">TrunkX — run_3pg_main release</h1>
 
-![logo](./images/logo.png)
+Minimal release of the 3PG forestry model, containing only what is needed
+to run it via `scripts/run_3pg_main.py`.
 
-
-## Development Setup
-
-After cloning the repo, install the pre-commit hooks:
-
-```bash
-uvx pre-commit install
-```
-
-This runs `ruff check`, `ruff format`, and `ty check` automatically before each commit.
-
-The project can then be installed by running
+## Setup
 
 ```bash
 uv sync
 ```
 
-Note that by default, the interface to the R implementation of 3gp is not included.
-To install the required dependencies, first make sure that the packages
-`r-base-dev` and `libtirpc-dev` are installed, then run:
+The R comparison interface (`trunx.gp3.run_r3pg`) is not included in this
+release. If you need it, install the required system packages
+(`r-base-dev`, `libtirpc-dev`) and run:
 
 ```bash
 uv sync --extra r-interface
 ```
 
+## Running the model
 
-## Data Collection
+Place your input workbook at `data/threepg_inputs/solling_data.xlsx`
+(not included — supply your own; see `src/trunx/gp3/PG3_model_impl.py`'s
+`prepare_data` for the expected `site`/`climate`/`species`/`parameters`/
+`observed` sheet structure), then run:
 
-- **ICOS**: can be fetched using a python API, see [example](examples/ICOS_download.py).
+```bash
+uv run python scripts/run_3pg_main.py
+```
