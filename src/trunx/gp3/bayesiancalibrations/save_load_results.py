@@ -76,6 +76,57 @@ def save_results(
     return mcmc
 
 
+def save_map_estimate(
+    map_estimate: dict[str, float],
+    logp: float,
+    output_dir: str,
+    filename: str = "map_estimate.json",
+) -> str:
+    """
+    Save a MAP point estimate and its log posterior density to a JSON file.
+
+    Parameters
+    ----------
+    map_estimate : dict[str, float]
+        Parameter names mapped to their maximum a posteriori values.
+    logp : float
+        Log posterior density at the estimate, for comparing optimisation runs.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the JSON file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    with open(file_path, "w") as f:
+        json.dump({"logp": logp, "map_estimate": map_estimate}, f, indent=2)
+    return file_path
+
+
+def load_map_estimate(file_path: str) -> tuple[dict[str, float], float]:
+    """
+    Load a MAP estimate previously saved with `save_map_estimate`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the JSON file.
+
+    Returns
+    -------
+    tuple[dict[str, float], float]
+        The parameter estimates and their log posterior density.
+    """
+    with open(file_path) as f:
+        state = json.load(f)
+    return state["map_estimate"], state["logp"]
+
+
 def load_inference_data(file_path: str) -> az.InferenceData:
     """
     Load arviz InferenceData previously saved with `save_inference_data`.
