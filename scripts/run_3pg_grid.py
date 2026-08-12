@@ -2,6 +2,7 @@
 
 import calendar
 import datetime
+import functools
 import os
 import time
 from typing import Any, cast
@@ -26,11 +27,11 @@ from trunx.gp3.PG3_model_impl import prepare_data
 
 OUTPUT_VARS = [
     "WS",
-    "WF",
-    "WR",
-    "DBH",
-    "Height",
-    "BA",
+    # "WF",
+    # "WR",
+    # "DBH",
+    # "Height",
+    # "BA",
 ]
 
 
@@ -222,6 +223,43 @@ def load_and_pack_grid(
     return coords, packed_grid
 
 
+def _slice_grid_batch(batch: PackedPlotBatch, start: int, end: int) -> PackedPlotBatch:
+    """Slice a `PackedPlotBatch` down to a contiguous range of grid cells."""
+    return batch._replace(
+        plot_ids=batch.plot_ids[start:end],
+        initial_state=jax.tree_util.tree_map(lambda x: x[start:end], batch.initial_state),
+        climate=jax.tree_util.tree_map(lambda x: x[start:end], batch.climate),
+        site=jax.tree_util.tree_map(lambda x: x[start:end], batch.site),
+        species=jax.tree_util.tree_map(lambda x: x[start:end], batch.species),
+        n_plots=end - start,
+    )
+
+
+@functools.partial(jax.jit, static_argnames=("n_plots",))
+def _forward_batch_jit(
+    initial_state: State,
+    climate: PackedClimateData,
+    site: PackedSiteData,
+    species: PackedSpeciesData,
+    params_batch: Params,
+    n_plots: int,
+) -> dict[str, jnp.ndarray]:
+    """JIT-compiled forward pass, vmapped over posterior draws x grid cells."""
+    batch = PackedPlotBatch(
+        plot_ids=(),
+        initial_state=initial_state,
+        climate=climate,
+        site=site,
+        species=species,
+        observations={},
+        species_names=(),
+        n_plots=n_plots,
+        n_species=1,
+        max_months=climate.T_avg.shape[1],
+    )
+    return jax.vmap(functools.partial(run_packed_plots_forward, batch))(params_batch)
+
+
 def run_3pg_grid(
     grid_input_path: str = os.path.join(threepg_data_folder, "grid_input.parquet"),
     inference_data_path: str = os.path.join(
@@ -230,6 +268,7 @@ def run_3pg_grid(
     physiology_file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     num_predictions: int = 5,
     output_path: str = os.path.join(results_data_folder, "grid_3pg_outputs.parquet"),
+    cells_per_batch: int = 200,
 ) -> pl.DataFrame:
     """Run 3PG for every grid cell using posterior-mean calibrated parameters.
 
@@ -241,62 +280,70 @@ def run_3pg_grid(
         Saved posterior (`inference_data.nc`) produced by `pymc_param_est.py`.
     physiology_file_path : str
         Excel workbook with the baseline physiology parameters that were held
-        fixed during calibration (its calibrated fields are overridden by the
-        posterior mean).
+        fixed during calibration.
     output_path : str
         Destination parquet file path.
+    cells_per_batch : int
+        Number of grid cells to run through `vmap` at once.
 
     Returns
     -------
     pl.DataFrame
-        One row per grid cell with `grid_id`, `x`, `y`, and a monthly
-        `outputs` list-of-struct column (fields from `OUTPUT_VARS`).
+        One row per (grid cell, posterior draw) with `grid_id`, `param_idx`,
+        and the fields in `OUTPUT_VARS` at the final simulated month (age 30) —
+        the model still simulates every month, only the saved output is
+        trimmed down to the final value.
     """
     _, _, fixed_params, _, _, _, _ = prepare_data(physiology_file_path)
     coords, packed_grid = load_and_pack_grid(grid_input_path, fixed_params)
 
     params_batch = sample_posterior_params(inference_data_path, fixed_params, num_predictions)
 
-    print(
-        f"Running 3PG for {packed_grid.n_plots} grid cells x {num_predictions} posterior draws..."
-    )
-    outputs = jax.vmap(lambda params: run_packed_plots_forward(packed_grid, params))(params_batch)
-
-    print("Finishing up and writing parquet...")
-
-    n_months = packed_grid.max_months
     grid_ids = coords["grid_id"].to_numpy()
-
     n_grids = len(grid_ids)
-    all_flat = []
-    for var in OUTPUT_VARS:
-        stacked = np.asarray(outputs[var])[..., 0].reshape(num_predictions, -1)
-        all_flat.append(stacked)
 
-    print("Finished with stacking")
-    grid_ids_repeated = np.repeat(grid_ids, n_months)
-    all_data = {
-        "grid_id": np.tile(grid_ids_repeated, num_predictions),
-        "param_idx": np.repeat(np.arange(num_predictions), n_grids * n_months),
-    }
-
-    for var, arr in zip(OUTPUT_VARS, all_flat, strict=True):
-        all_data[var] = arr.reshape(-1)
+    print(
+        f"Running 3PG for {n_grids} grid cells x {num_predictions} posterior draws "
+        f"({cells_per_batch} cells/batch)..."
+    )
+    final_month_by_var: dict[str, list[np.ndarray]] = {var: [] for var in OUTPUT_VARS}
+    batch_starts = list(range(0, n_grids, cells_per_batch))
+    for batch_i, start in enumerate(batch_starts, start=1):
+        end = min(start + cells_per_batch, n_grids)
+        grid_batch = _slice_grid_batch(packed_grid, start, end)
+        outputs = _forward_batch_jit(
+            grid_batch.initial_state,
+            grid_batch.climate,
+            grid_batch.site,
+            grid_batch.species,
+            params_batch,
+            grid_batch.n_plots,
+        )
+        for var in OUTPUT_VARS:
+            # Keep only the final simulated month (age 30), not the full trajectory.
+            final_month_by_var[var].append(np.asarray(outputs[var])[:, :, -1, 0])
+        print(f"  batch {batch_i}/{len(batch_starts)} done")
 
     print("Creating dataframe...")
-    # Create DataFrame
+    all_data = {
+        "grid_id": np.tile(grid_ids, num_predictions),
+        "param_idx": np.repeat(np.arange(num_predictions), n_grids),
+    }
+    for var in OUTPUT_VARS:
+        all_data[var] = np.concatenate(final_month_by_var[var], axis=1).reshape(-1)
+
     all_flat_df = pl.DataFrame(all_data)
 
     all_flat_df.write_parquet(output_path)
 
-    print(f"Wrote {output_path}: {all_flat_df.height} grid cells")
+    print(f"Wrote {output_path}: {all_flat_df.height} rows")
     return all_flat_df
 
 
 if __name__ == "__main__":
     start_time = time.perf_counter()
 
-    run_3pg_grid(num_predictions=100)
+    run_3pg_grid(num_predictions=500, cells_per_batch=500)
 
     elapsed_time = time.perf_counter() - start_time
     print(f"Total runtime: {elapsed_time:.2f} seconds")

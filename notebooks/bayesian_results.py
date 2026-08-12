@@ -23,11 +23,15 @@ def _():
     import polars as pl
 
     from trunx.config import data_folder, results_data_folder, threepg_data_folder
+    from trunx.gp3.bayesiancalibrations.save_load_results import (
+        load_inference_data,
+    )
 
     return (
         az,
         data_folder,
         go,
+        load_inference_data,
         os,
         pl,
         plt,
@@ -69,14 +73,12 @@ def _(mo):
 
 
 @app.cell
-def _(os, results_data_folder):
+def _(load_inference_data, os, results_data_folder):
     output_dir = os.path.join(results_data_folder, "results/pymc_inference_results")
 
-    # idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
-    # predictions = load_predictions(
-    #     os.path.join(output_dir, "predictions.npz")
-    # )
-    return (output_dir,)
+    idata = load_inference_data(os.path.join(output_dir, "inference_data.nc"))
+    # predictions = load_predictions(os.path.join(output_dir, "predictions.npz"))
+    return idata, output_dir
 
 
 @app.cell
@@ -142,6 +144,7 @@ def _(data_folder, os, output_dir, plt, results_data_folder):
     from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import (
         plot_comparison,
     )
+    from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
 
     _file_path = os.path.join(output_dir, "solling_data.xlsx")
 
@@ -155,8 +158,9 @@ def _(data_folder, os, output_dir, plt, results_data_folder):
 
     _fig, _metrics_df = plot_comparison(
         _file_path,
-        output_dir,
-        _hmc_output_dir,
+        FIT_PARAMS,
+        bayesian_output_dir=output_dir,
+        hmc_output_dir=_hmc_output_dir,
         include_gradient_descent=_include_gradient_descent,
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
@@ -189,7 +193,7 @@ def _():
 
 
 @app.cell
-def _(data_folder, os, plot_comparison, plt, results_data_folder):
+def _(data_folder, os, pl, plot_comparison, plt, results_data_folder):
     plot_id = "14.0003"
 
     _bayesian_dir = os.path.join(results_data_folder, f"results/pymc_inference_results_{plot_id}")
@@ -203,10 +207,17 @@ def _(data_folder, os, plot_comparison, plt, results_data_folder):
     _include_bayesian = True
     _include_hmc = False
 
+    _param_bound_df = pl.read_excel(_file_path, sheet_name="param_bound")
+    _param_bound_df = _param_bound_df.filter(
+        pl.col("min").is_not_null() & pl.col("max").is_not_null()
+    )
+    _fit_params = _param_bound_df["param_name"].to_list()
+
     _fig, _metrics_df = plot_comparison(
         _file_path,
-        _bayesian_dir,
-        _hmc_output_dir,
+        _fit_params,
+        bayesian_output_dir=_bayesian_dir,
+        hmc_output_dir=_hmc_output_dir,
         include_gradient_descent=_include_gradient_descent,
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
@@ -257,12 +268,13 @@ def _(os, pl, results_data_folder, threepg_data_folder):
     grid_outputs = pl.read_parquet(os.path.join(results_data_folder, "grid_3pg_outputs.parquet"))
 
     grid_outputs = (
-        grid_outputs.select("grid_id", "param_idx", "WS", "WR", "WF")
+        grid_outputs.select("grid_id", "param_idx", "WS")
         .group_by("grid_id")
-        .agg(mean_WS=pl.col("WS").mean(), mean_WR=pl.col("WR").mean(), mean_WF=pl.col("WF").mean())
+        .agg(mean_WS=pl.col("WS").mean(), num_pred=pl.len())
     )
 
     grid_outputs = grid_outputs.join(grid_ids, on="grid_id", how="inner")
+
     return grid_input_path, grid_outputs
 
 
@@ -284,6 +296,7 @@ def _(go, grid_outputs, pl):
     plot_locations_fig.update_layout(
         map=dict(
             style="open-street-map",
+            # style = "carto-positron",
             zoom=7,
             center=dict(
                 lat=grid_outputs.select(pl.mean("lat")).item(),
