@@ -23,8 +23,13 @@ def load_config(project_root):
 config = load_config(project_root)
 mode = config.get("mode", "local")
 
-# Determine base directory based on mode
-if mode == "server":
+# Determine base directory based on mode. TRUNX_BASE_DIR wins over both modes, so a
+# cluster job can point every data folder at a shared directory without editing
+# the checked-in config.
+env_base_dir = os.environ.get("TRUNX_BASE_DIR")
+if env_base_dir:
+    base_dir = env_base_dir
+elif mode == "server":
     base_dir = config["server_base_dir"]
 elif mode == "local":
     base_dir = project_root
@@ -41,6 +46,13 @@ era5_data_folder = Path(os.path.join(base_dir, "data/raw/ERA5/"))
 
 icos_raw_data_folder = raw_data_folder / "ICOS"
 icp_raw_data_folder = raw_data_folder / "ICP"
+
+# Remote object storage holding the project data (see scripts/pull_data.py).
+s3_config = config.get("s3", {})
+s3_endpoint_url = s3_config.get("endpoint_url", "")
+s3_bucket = s3_config.get("bucket", "")
+s3_profile = s3_config.get("profile")
+s3_datasets: dict[str, str] = s3_config.get("datasets", {})
 
 # Define key constants
 Species = Literal["spruce", "pine", "beech", "oak"]
