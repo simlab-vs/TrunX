@@ -24,5 +24,33 @@
 #
 # - local: data/ folder is at the project root
 # - server: data/ folder is at the location specified by server_base_dir (relative or absolute)
+#
+# Setting the TRUNX_BASE_DIR environment variable overrides both modes, which lets a
+# cluster job point the data folders at a shared directory without editing this file.
 mode: local
 server_base_dir: ./data
+
+# ------------------
+# REMOTE DATA BUCKET
+# ------------------
+#
+# Object storage holding the project data, synced by scripts/pull_data.py.
+# Credentials come from the named profile in ~/.aws/credentials.
+#
+# The dataset names below map to a prefix in the bucket; the script also accepts a
+# raw prefix (any value containing a "/") for a one-off subfolder.
+s3:
+  endpoint_url: https://zhw-a.s3.cloud.switch.ch
+  bucket: trunx
+  profile: simlab-zhw-a
+  datasets:
+    threepg_inputs: data/threepg_inputs/
+    clean: data/clean/
+    intermediate: data/intermediate/
+    raw: data/raw/
+    era5: data/era5/
+    results: data/results/
+    swiss_data: data/SwissData/
+    # Paper supplements read from the project root rather than the data folder, so
+    # this one must be pulled with --dest pointing at the checkout.
+    literature: literature/

@@ -44,11 +44,15 @@ dependencies = [
     "cfgrib>=0.9.15.1",
     "scikit-learn>=1.9.0",
     "eccodes>=2.47.0",
+    "simlab-tools[storage]",
 ]
 
 # Set curent project as a package, with src/ folder.
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+simlab-tools = { git = "https://github.com/simlab-vs/simlab-tools.git" }
 
 # Set ruff and ty as only a local deps for development.
 [dependency-groups]
