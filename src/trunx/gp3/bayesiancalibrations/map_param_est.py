@@ -25,11 +25,20 @@ from trunx.gp3.bayesiancalibrations.load_files import (
     load_param_defaults_from_file,
     load_priors_from_file,
 )
+from trunx.gp3.bayesiancalibrations.map_uncertainty import (
+    LaplaceApproximation,
+    fit_laplace,
+    sample_laplace_posterior,
+)
 from trunx.gp3.bayesiancalibrations.pymc_param_est import (
     predict_with_uncertainity,
     pymc_model,
 )
-from trunx.gp3.bayesiancalibrations.save_load_results import save_map_estimate, save_results
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    save_laplace_covariance,
+    save_map_estimate,
+    save_results,
+)
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
 
@@ -134,12 +143,21 @@ def run_map_analysis(
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
+    laplace_draws: int = 0,
 ) -> dict[str, float]:
     """Calibrate 3PG by MAP estimation and save the estimates and predictions.
 
-    Writes `map_estimate.json`, plus an `inference_data.nc` holding the MAP point as a
-    single draw and a `predictions.npz` holding the model run at that point, so results
-    load with the same helpers as an MCMC run.
+    Writes `map_estimate.json`, plus an `inference_data.nc` holding the posterior draws
+    and a `predictions.npz` holding the prediction bands, so results load with the same
+    helpers as an MCMC run.
+
+    Parameters
+    ----------
+    laplace_draws : int
+        Number of draws to take from the Laplace approximation at the MAP, which gives
+        the estimates and the predictions a local uncertainty band and writes
+        `laplace_covariance.npz`. If 0, the MAP point is written as a single draw and
+        the bands collapse onto the MAP trajectory itself.
     """
     # Imported here so building the model doesn't require the input files that
     # `PG3_model_impl` reads at import time.
@@ -162,7 +180,7 @@ def run_map_analysis(
     print(f"Loaded priors for {len(priors)} parameters")
     print(f"Loaded observations for variables: {list(observations.keys())}")
 
-    map_estimate, logp, _ = run_map_estimation(
+    map_estimate, logp, model = run_map_estimation(
         initial_state=initial_state,
         climate=climate,
         site=site_data,
@@ -182,8 +200,18 @@ def run_map_analysis(
         at_bound = "  <- at prior bound" if min(value - lower, upper - value) < 1e-6 else ""
         print(f"  {name:<12} {value:>12.6g}   [{lower:g}, {upper:g}]{at_bound}")
 
-    idata = map_to_inference_data(map_estimate)
-    # A single draw collapses the credible bands onto the MAP trajectory itself.
+    laplace = _fit_laplace_or_warn(model, map_estimate) if laplace_draws > 0 else None
+    if laplace is None:
+        idata = map_to_inference_data(map_estimate)
+        num_predictions = 1
+    else:
+        idata = sample_laplace_posterior(model, laplace, draws=laplace_draws)
+        num_predictions = min(laplace_draws, 500)
+        print("\nLaplace approximation at the MAP:")
+        if laplace.fixed:
+            print(f"  conditional on {sorted(laplace.fixed)} held at their MAP values")
+        print(az.summary(idata, kind="stats"))
+
     predictions = predict_with_uncertainity(
         trace=idata,
         initial_state=initial_state,
@@ -193,14 +221,32 @@ def run_map_analysis(
         fixed_params=fixed_params,
         observations=observations,
         priors=priors,
-        num_predictions=1,
+        num_predictions=num_predictions,
     )
 
     print("Saving results... ")
     save_map_estimate(map_estimate, logp, output_dir)
+    if laplace is not None:
+        save_laplace_covariance(laplace.covariance, laplace.names, output_dir)
     save_results(mcmc=idata, output_dir=output_dir, predictions=predictions)
 
     return map_estimate
+
+
+def _fit_laplace_or_warn(
+    model: pm.Model, map_estimate: dict[str, float]
+) -> LaplaceApproximation | None:
+    """Fit the Laplace approximation, downgrading a failure to a warning.
+
+    The optimisation preceding this is expensive and its results are worth saving on
+    their own, so a mode that admits no Gaussian approximation (typically one sitting
+    on a prior bound) must not sink the whole run.
+    """
+    try:
+        return fit_laplace(model, map_estimate)
+    except ValueError as error:
+        print(f"\nSkipping the Laplace approximation: {error}")
+        return None
 
 
 if __name__ == "__main__":
@@ -222,6 +268,7 @@ if __name__ == "__main__":
         file_path=file_path,
         param_to_optimize=param_names,
         n_restarts=4,
+        laplace_draws=1000,
     )
 
     elapsed_time = time.perf_counter() - start_time
