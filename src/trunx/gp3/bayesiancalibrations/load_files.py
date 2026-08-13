@@ -93,8 +93,27 @@ def _load_param_bounds_df(file_path: str) -> pl.DataFrame:
 def load_priors_from_file(
     file_path: str,
     param_names: list[str] | None = None,
+    bound_overrides: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Load parameter priors from a parquet file."""
+    """Load parameter priors from a parquet or Excel param_bound table.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    param_names : list[str] | None
+        Parameter names to load priors for. If None, every parameter with
+        both min and max set is used.
+    bound_overrides : dict[str, tuple[float, float]] | None
+        Replaces the (min, max) loaded from the file for any parameter
+        present in both this and the loaded priors, e.g. to apply a
+        literature-derived bound without editing the data file itself.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Parameter names mapped to (min, max) prior bounds.
+    """
     param_bounds_df = _load_param_bounds_df(file_path)
 
     priors = {}
@@ -122,6 +141,11 @@ def load_priors_from_file(
             )
 
         priors[param_name] = (float(min_val), float(max_val))
+
+    if bound_overrides:
+        for param_name, bounds in bound_overrides.items():
+            if param_name in priors:
+                priors[param_name] = bounds
 
     return priors
 
