@@ -45,11 +45,15 @@ dependencies = [
     "eccodes>=2.47.0",
     "python-docx>=1.2.0",
     "camelot-py[cv]>=2.0.0",
+    "simlab-tools[storage]",
 ]
 
 # Set curent project as a package, with src/ folder.
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+simlab-tools = { git = "https://github.com/simlab-vs/simlab-tools.git" }
 
 # Set ruff and ty as only a local deps for development.
 [dependency-groups]
