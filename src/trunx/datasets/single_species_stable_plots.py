@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 import polars as pl
 from matplotlib.figure import Figure
 
-from trunx.config import clean_data_folder, raw_data_folder
+from trunx.config import SPECIES_INDICES, clean_data_folder, raw_data_folder
 
-MAX_RELATIVE_CHANGE = 0.10
+MAX_RELATIVE_CHANGE = 0.40
 
 
 def _single_species_plot_ids(df: pl.DataFrame, specie_col: str = "specie") -> pl.DataFrame:
@@ -204,7 +204,9 @@ def plot_max_relative_change(
 
 
 if __name__ == "__main__":
-    FORESTS = "NFI"  # "NFI" or "ICP"
+    SPECIES = list(SPECIES_INDICES.keys())
+
+    FORESTS = "ICP"  # "NFI" or "ICP"
 
     if FORESTS == "NFI":
         df = pl.read_parquet(os.path.join(clean_data_folder, "nfi_cleaned.parquet"))
@@ -239,10 +241,11 @@ if __name__ == "__main__":
         f"<={MAX_RELATIVE_CHANGE:.0%}"
     )
 
-    species_plot = _species_plot("Picea abies", stable_plots, specie_col=species_col)
-    print(species_plot)
+    print(stable_plots)
+    # species_plot = _species_plot("Picea abies", stable_plots, specie_col=species_col)
+    # print(species_plot)
 
-    if FORESTS == "ICP":
-        max_rel_change_sp = _species_plot("Picea abies", df, specie_col=species_col)
-        plot_max_relative_change(df, specie_col=species_col, date_col=date_col, n_plots=15)
-    plt.show()
+    # if FORESTS == "ICP":
+    #     max_rel_change_sp = _species_plot("Picea abies", df, specie_col=species_col)
+    #     plot_max_relative_change(df, specie_col=species_col, date_col=date_col, n_plots=15)
+    # plt.show()

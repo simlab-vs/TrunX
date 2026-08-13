@@ -121,7 +121,7 @@ def create_weather_input(df: pl.DataFrame, plot_id: str) -> tuple[list, pl.DataF
             .select("year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad")
         )
 
-    weather_df = weather_df.sort(["year", "month"]).drop_nulls()
+    weather_df = weather_df.sort(["year", "month"])
 
     # Check for gaps
     weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
@@ -330,10 +330,25 @@ def fill_weather_with_era5(
         )
 
     value_cols = ["tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad"]
+    temp_cols = ["tmp_ave", "tmp_min", "tmp_max"]
+    other_cols = [c for c in value_cols if c not in temp_cols]
+
+    joined = full_months.join(weather_df, on=["year", "month"], how="left").join(
+        era5_weather, on=["year", "month"], how="left", suffix="_era5"
+    )
+    # tmp_ave/tmp_min/tmp_max must come from the same source for a given
+    # month: filling only the missing one(s) from ERA5 while keeping the
+    # rest from ICP can produce an internally inconsistent triple (e.g.
+    # ERA5's tmp_max lower than ICP's own tmp_ave).
+    temp_incomplete = pl.any_horizontal([pl.col(c).is_null() for c in temp_cols])
     filled_df = (
-        full_months.join(weather_df, on=["year", "month"], how="left")
-        .join(era5_weather, on=["year", "month"], how="left", suffix="_era5")
-        .with_columns([pl.coalesce(pl.col(c), pl.col(f"{c}_era5")).alias(c) for c in value_cols])
+        joined.with_columns(
+            [
+                pl.when(temp_incomplete).then(pl.col(f"{c}_era5")).otherwise(pl.col(c)).alias(c)
+                for c in temp_cols
+            ]
+            + [pl.coalesce(pl.col(c), pl.col(f"{c}_era5")).alias(c) for c in other_cols]
+        )
         .with_columns(pl.col("frost_days").cast(pl.Int32))
         .select(["date", "year", "month", *value_cols])
         .sort(["year", "month"])

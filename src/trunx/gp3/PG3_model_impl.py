@@ -59,7 +59,8 @@ def prepare_data(file_path):
     param_names = params_df["parameter"].to_list()
     # species_names = [col for col in params_df.columns if col != "parameter"]
     species_indices = species_data.specie
-    species_names = [name for name, index in SPECIES_INDICES.items() if index in species_indices]
+    index_to_species = {index: name for name, index in SPECIES_INDICES.items()}
+    species_names = [index_to_species[int(index)] for index in species_indices]
     values_matrix = params_df[species_names].to_numpy()
 
     params_dict = {}
@@ -236,9 +237,48 @@ if __name__ == "__main__":
     #     file_path, observed_data=None, plot_output=True, r_comparison=True
     # )
 
-    # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx"
+    # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
+    # fig, outputs = run_threepg_main(
+    #         file_path, observed_data=None, plot_output=True, r_comparison=True
+    #     )
 
-    plot_ids = ["01.0038", "04.1402", "52.0010", "04.1403", "59.0008"]
+    species_plot_ids = {
+        "Pinus sylvestris": [
+            "01.0082",
+            "04.1303",
+            "51.0015",
+            "53.0109",
+            "53.0112",
+            "53.0114",
+            "53.0302",
+            "53.0306",
+            "53.0311",
+            "53.0312",
+            "53.0313",
+            "53.0316",
+            "53.0407",
+            "53.0501",
+            "53.0513",
+            "53.0603",
+            "53.0617",
+            "53.0618",
+            "53.0623",
+            "59.0001",
+            "59.0003",
+        ],
+        "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
+        "Picea abies": [
+            "04.0302",
+            "04.1402",
+            "04.1403",
+            "14.0017",
+            "52.0010",
+            "53.0701",
+            "59.0008",
+        ],
+    }
+
+    plot_ids = species_plot_ids["Pinus sylvestris"]
 
     for plot_id in plot_ids:
         plot_dbh_distribution(
