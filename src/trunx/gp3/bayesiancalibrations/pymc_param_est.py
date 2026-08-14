@@ -3,7 +3,7 @@
 import os
 import shutil
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple, cast
 
 import arviz as az
@@ -70,6 +70,88 @@ class Run3PGLogLikeGrad(Op):
         output_storage[0][0] = np.asarray(self.grad_fn(param_values), dtype=np.float64)
 
 
+def build_loglikelihood_fn(
+    params_to_optimize: list[str],
+    fixed_params: Params,
+    state: State,
+    climate: ClimateData,
+    site: SiteData,
+    species: SpeciesData,
+    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a JAX-differentiable 3PG log-likelihood as a pure function of a parameter vector.
+
+    Standalone so it can be reused outside `Run3PGLogLikeOp`'s PyTensor wrapping, e.g. by a
+    plain-JAX optimiser that wants to `jax.vmap`/`jax.jit` it directly (see
+    `map_param_est.batched_map_search`).
+
+    Parameters
+    ----------
+    params_to_optimize : list[str]
+        Names of the entries in the parameter vector passed to the returned function, in
+        order. Names starting with `err_` are treated as observation-noise sigmas rather
+        than 3PG physiology parameters.
+    observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]]
+        Measured variables to score against, as (obs_times, obs_values).
+
+    Returns
+    -------
+    Callable[[jnp.ndarray], jnp.ndarray]
+        Maps a parameter vector (ordered as `params_to_optimize`) to the scalar
+        log-likelihood of `observations` under the 3PG simulation it implies.
+    """
+    param_names = tuple(params_to_optimize)
+    model_param_names = tuple(name for name in param_names if not name.startswith("err_"))
+    packed_observations = tuple(
+        PackedObservation(
+            var_name=var_name,
+            sigma_name=f"err_{var_name}",
+            obs_times=jnp.asarray(obs_times, dtype=jnp.int32).reshape(-1),
+            obs_values=jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1),
+        )
+        for var_name, (obs_times, obs_values) in observations.items()
+    )
+
+    def loglikelihood(param_values: jnp.ndarray) -> jnp.ndarray:
+        """Compute the log-likelihood for a parameter vector (JAX-differentiable)."""
+        param_dict = dict(zip(param_names, param_values, strict=True))
+        # Update the fixed_params with the new parameter values (excluding error/sigma terms)
+        model_params = {name: param_dict[name] for name in model_param_names}
+        updated_params = fixed_params._replace(**model_params)
+
+        # Run the 3PG model
+        _, sim_outputs = run_3pg(state, climate, updated_params, site, species)
+
+        # Compute log-likelihood based on model outputs and observations. A Python loop
+        # rather than a vmapped reduction: observations are ragged across variables (NaNs
+        # are dropped independently per column, see load_observations_from_file), so they
+        # can't generally be stacked into one array.
+        log_likelihood = jnp.array(0.0)
+        for observation in packed_observations:
+            if observation.sigma_name not in param_dict or observation.var_name not in sim_outputs:
+                continue
+            pred_values = jnp.asarray(
+                sim_outputs[observation.var_name][observation.obs_times]
+            ).reshape(-1)
+            # Predictions and observations must line up element-for-element;
+            # a mismatch would broadcast into an (n_obs, n_obs) outer product
+            # that silently scores every prediction against every observation.
+            assert pred_values.shape == observation.obs_values.shape, (
+                f"Likelihood shape mismatch for {observation.var_name}: "
+                f"predictions {pred_values.shape} vs observations {observation.obs_values.shape}"
+            )
+            log_likelihood = log_likelihood + jnp.sum(
+                norm.logpdf(
+                    pred_values,
+                    loc=observation.obs_values,
+                    scale=param_dict[observation.sigma_name],
+                )
+            )
+        return log_likelihood
+
+    return loglikelihood
+
+
 class Run3PGLogLikeOp(Op):
     """PyTensor Op that returns scalar log-likelihood from the 3PG simulator."""
 
@@ -88,66 +170,19 @@ class Run3PGLogLikeOp(Op):
         n_species: int,
     ) -> None:
         self.params_to_optimize = tuple(params_to_optimize)
-        self.model_param_names = tuple(
-            name for name in self.params_to_optimize if not name.startswith("err_")
-        )
-        self.state = state
-        self.climate = climate
-        self.site = site
-        self.species = species
-        self.fixed_params = fixed_params
         self.n_species = n_species
-        self.observations = tuple(
-            PackedObservation(
-                var_name=var_name,
-                sigma_name=f"err_{var_name}",
-                obs_times=jnp.asarray(obs_times, dtype=jnp.int32).reshape(-1),
-                obs_values=jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1),
-            )
-            for var_name, (obs_times, obs_values) in observations.items()
+        loglikelihood_fn = build_loglikelihood_fn(
+            params_to_optimize=params_to_optimize,
+            fixed_params=fixed_params,
+            state=state,
+            climate=climate,
+            site=site,
+            species=species,
+            observations=observations,
         )
 
-        self._loglikelihood_jax = jax.jit(self._loglikelihood)
-        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(self._loglikelihood)))
-
-    def _loglikelihood(self, param_values: jnp.ndarray) -> jnp.ndarray:
-        """Compute the log-likelihood for a parameter vector (JAX-differentiable)."""
-        param_dict = dict(zip(self.params_to_optimize, param_values, strict=True))
-        # Update the fixed_params with the new parameter values (excluding error/sigma terms)
-        model_params = {name: param_dict[name] for name in self.model_param_names}
-        updated_params = self.fixed_params._replace(**model_params)
-
-        # Run the 3PG model
-        _, sim_outputs = run_3pg(self.state, self.climate, updated_params, self.site, self.species)
-
-        # Compute log-likelihood based on model outputs and observations
-        log_likelihood = jnp.array(0.0)
-        for observation in self.observations:
-            if observation.sigma_name not in param_dict or observation.var_name not in sim_outputs:
-                continue
-            pred_values = jnp.asarray(
-                sim_outputs[observation.var_name][observation.obs_times]
-            ).reshape(-1)
-            # Predictions and observations must line up element-for-element;
-            # a mismatch would broadcast into an (n_obs, n_obs) outer product
-            # that silently scores every prediction against every observation.
-            assert pred_values.shape == observation.obs_values.shape, (
-                f"Likelihood shape mismatch for {observation.var_name}: "
-                f"predictions {pred_values.shape} vs observations {observation.obs_values.shape}"
-            )
-            # log_likelihood = log_likelihood + jnp.sum(
-            #     jax_student_t.logpdf(
-            #         pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
-            #     )
-            # )
-            log_likelihood = log_likelihood + jnp.sum(
-                norm.logpdf(
-                    pred_values,
-                    loc=observation.obs_values,
-                    scale=param_dict[observation.sigma_name],
-                )
-            )
-        return log_likelihood
+        self._loglikelihood_jax = jax.jit(loglikelihood_fn)
+        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(loglikelihood_fn)))
 
     def perform(
         self, node: Apply, inputs: Sequence[Any], output_storage: OutputStorageType
