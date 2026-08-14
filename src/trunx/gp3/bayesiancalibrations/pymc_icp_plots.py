@@ -80,10 +80,14 @@ def prepare_plot_input(plot_id: str) -> str:
     param_bound = _load_species_param_bound(species_name)
 
     observed_data = pd.read_excel(file_path, sheet_name="observed")
-    observed_data = observed_data.rename(columns={"Date": "date"})
-    observed_data = observed_data[
-        ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-    ].dropna()
+    observed_data = observed_data.rename(columns={"Date": "date", "stems_n": "N"})
+    required_cols = ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
+    # `N` (stems/ha) isn't required for calibration itself — it's kept only so plots can
+    # show the "mean tree" DBH implied by inverting aWS/nWS on the observed WS/N, next to
+    # the field-measured quadratic mean diameter, to visualize the Jensen's-gap between
+    # the two aggregations. Dropped from the required set so a missing N doesn't discard
+    # an otherwise-complete observation row.
+    observed_data = observed_data[[*required_cols, "N"]].dropna(subset=required_cols)
 
     with pd.ExcelWriter(
         file_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
