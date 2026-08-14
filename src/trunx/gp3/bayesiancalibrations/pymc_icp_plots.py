@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 
 from trunx.config import results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES
 from trunx.gp3.bayesiancalibrations.load_files import load_priors_from_file
 from trunx.gp3.bayesiancalibrations.pymc_param_est import run_pymc_analysis
 from trunx.gp3.create_data_inputs import create_input_data
@@ -121,7 +122,11 @@ def run_bayesian_for_plot(
     file_path = prepare_plot_input(plot_id)
     param_bound = pd.read_excel(file_path, sheet_name="param_bound")
     fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
-    error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+    error_names = [
+        name
+        for name in load_priors_from_file(file_path)
+        if name.startswith("err_") and name not in DIAGNOSTIC_ONLY_ERROR_NAMES
+    ]
 
     output_dir = os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}")
     if os.path.exists(output_dir):
