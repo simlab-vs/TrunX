@@ -39,6 +39,11 @@ set -euo pipefail
 # PATH). Harmless no-op on chacha.
 export PATH="$HOME/.local/bin:$PATH"
 
+# stdout isn't a tty once redirected to the log file, so progress bars and print()
+# block-buffer instead of flushing per line — the log otherwise looks stalled for
+# long stretches even while the job is actively computing.
+export PYTHONUNBUFFERED=1
+
 PROJECT_DIR="${TRUNX_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 cd "$PROJECT_DIR"
 mkdir -p logs
