@@ -12,6 +12,7 @@ priors, and plot data to unifying the codes.
 
 """
 
+import os
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from trunx.config import SPECIES_INDICES
+from trunx.config import SPECIES_INDICES, threepg_data_folder
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -148,6 +149,63 @@ def load_priors_from_file(
                 priors[param_name] = bounds
 
     return priors
+
+
+# Literature tables that carry a real per-species bound for the parameters most
+# prone to pinning against a data file's own (often narrower or stand-specific)
+# range. Tmax: Forrester et al. 2021's central-European calibration. MaxAge:
+# Trotsiuk et al. 2020's species table (only covers Picea abies, Fagus sylvatica).
+_LITERATURE_BOUND_SOURCES = {
+    "Tmax": "literature_params_forrester_forrester.parquet",
+    "MaxAge": "literature_params_trotsiuk.parquet",
+}
+
+
+def literature_bound_overrides(
+    file_path: str, literature_dir: str = str(threepg_data_folder)
+) -> dict[str, tuple[float, float]]:
+    """Species-dependent literature bounds for parameters prone to pinning.
+
+    Widens Tmax and MaxAge to a literature-backed (min, max) for the species
+    in `file_path`'s `species` sheet, in place of whatever narrower bound the
+    data file itself carries. A parameter is left out — deferring to the
+    file's own bound, if it has one — when the literature table has no entry
+    for one of the file's species, or when the file mixes species with
+    disagreeing literature bounds.
+
+    Parameters
+    ----------
+    file_path : str
+        Excel file with a `species` sheet, e.g. a 3PG plot input file.
+    literature_dir : str
+        Directory holding the literature parquet tables.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        `Tmax`/`MaxAge` mapped to (min, max), for whichever of the two has an
+        unambiguous literature bound for every species in the file.
+    """
+    species_names = pl.read_excel(file_path, sheet_name="species")["species"].unique().to_list()
+
+    overrides = {}
+    for param_name, source_file in _LITERATURE_BOUND_SOURCES.items():
+        table = pl.read_parquet(os.path.join(literature_dir, source_file))
+        bounds_by_species = {
+            row["species"]: (row["min"], row["max"])
+            for row in table.filter(
+                (pl.col("parameter") == param_name)
+                & pl.col("min").is_not_null()
+                & pl.col("max").is_not_null()
+            ).iter_rows(named=True)
+        }
+        species_bounds = {
+            bounds_by_species[name] for name in species_names if name in bounds_by_species
+        }
+        if len(species_bounds) == 1:
+            overrides[param_name] = species_bounds.pop()
+
+    return overrides
 
 
 def load_param_defaults_from_file(

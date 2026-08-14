@@ -18,8 +18,9 @@ import pymc as pm
 from jax import numpy as jnp
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS, SOLLING_BOUND_OVERRIDES
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -149,7 +150,7 @@ def run_map_analysis(
     )
 
     priors = load_priors_from_file(
-        file_path, param_to_optimize, bound_overrides=SOLLING_BOUND_OVERRIDES
+        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
     )
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     observations = load_observations_from_file(file_path, site_data=site_data)
