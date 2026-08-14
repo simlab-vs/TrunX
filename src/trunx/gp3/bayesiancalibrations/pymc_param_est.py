@@ -39,7 +39,6 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     save_results,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
-from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 jax.config.update("jax_enable_x64", True)
@@ -395,6 +394,10 @@ def run_pymc_analysis(
     calling this again with the same `output_dir` resumes an interrupted run
     instead of starting over.
     """
+    # Imported here so building the model doesn't require the input files that
+    # `PG3_model_impl` reads at import time.
+    from trunx.gp3.PG3_model_impl import prepare_data
+
     initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
         file_path
     )

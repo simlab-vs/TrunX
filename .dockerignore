@@ -1,0 +1,16 @@
+.git
+.venv
+.devcontainer
+containers
+data
+docs
+examples
+images
+models
+notebooks
+tests
+**/__pycache__
+**/.ipynb_checkpoints
+*.egg-info
+.pytest_cache
+.ruff_cache
