@@ -270,10 +270,18 @@ def _(os, pl, results_data_folder, threepg_data_folder):
     grid_outputs = (
         grid_outputs.select("grid_id", "param_idx", "WS")
         .group_by("grid_id")
-        .agg(mean_WS=pl.col("WS").mean(), num_pred=pl.len())
+        .agg(
+            mean_WS=pl.col("WS").mean(),
+            lower_post=pl.col("WS").quantile(0.025),
+            upper_post=pl.col("WS").quantile(0.975),
+        )
     )
 
     grid_outputs = grid_outputs.join(grid_ids, on="grid_id", how="inner")
+
+    grid_outputs = grid_outputs.with_columns(
+        conf_interval=pl.col("upper_post") - pl.col("lower_post")
+    )
 
     return grid_input_path, grid_outputs
 
@@ -311,6 +319,117 @@ def _(go, grid_outputs, pl):
             xanchor="center",
         ),
     )
+    return
+
+
+@app.cell
+def _(go, grid_outputs, pl):
+    _plot_locations_fig = go.Figure()
+
+    _plot_locations_fig.add_trace(
+        go.Scattermap(
+            lat=grid_outputs["lat"],
+            lon=grid_outputs["lon"],
+            mode="markers",
+            marker=dict(
+                size=3, color=grid_outputs["conf_interval"], colorscale="Plasma", showscale=True
+            ),
+        )
+    )
+
+    _plot_locations_fig.update_layout(
+        map=dict(
+            style="carto-positron",
+            zoom=7,
+            center=dict(
+                lat=grid_outputs.select(pl.mean("lat")).item(),
+                lon=grid_outputs.select(pl.mean("lon")).item(),
+            ),
+        ),
+        margin=dict(r=0, t=0, l=0, b=0),
+        legend=dict(x=0, y=1),
+        title=dict(
+            text="Tree locations",
+            x=0.5,
+            xanchor="center",
+        ),
+    )
+    return
+
+
+@app.cell
+def _(go, grid_outputs, os, results_data_folder):
+    import geopandas as gpd
+    from plotly.subplots import make_subplots
+
+    from trunx.config import clean_data_folder
+
+    # Plain cartesian axes instead of a tile-based map: `layout.map`/`layout.geo`
+    # only support numeric tick labels, not axis title text, and a bare
+    # `go.Scatter` gets a plain white background with no basemap/place labels
+    # for free.
+    _boundary = gpd.read_file(os.path.join(clean_data_folder, "switzerland_boundary.gpkg"))
+    _border_lon, _border_lat = _boundary.geometry.iloc[0].exterior.xy
+
+    _mean = grid_outputs["mean_WS"]
+    _ci = grid_outputs["conf_interval"]
+    _cmin = min(_mean.min(), _ci.min())
+    _cmax = max(_mean.max(), _ci.max())
+
+    _plot_locations_fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Posterior predictive mean", "95% posterior predictive credible interval"),
+        horizontal_spacing=0.0001,
+    )
+
+    for _col, _values in ((1, _mean), (2, _ci)):
+        _plot_locations_fig.add_trace(
+            go.Scatter(
+                x=list(_border_lon),
+                y=list(_border_lat),
+                mode="lines",
+                line=dict(width=1, color="black"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=_col,
+        )
+        _plot_locations_fig.add_trace(
+            go.Scatter(
+                x=grid_outputs["lon"],
+                y=grid_outputs["lat"],
+                mode="markers",
+                marker=dict(size=2, color=_values, coloraxis="coloraxis"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=_col,
+        )
+
+    _plot_locations_fig.update_xaxes(showticklabels=False, ticks="")
+    _plot_locations_fig.update_yaxes(showticklabels=False, ticks="")
+
+    _plot_locations_fig.update_layout(
+        coloraxis=dict(
+            colorscale="YlGn",
+            cmin=_cmin,
+            cmax=_cmax,
+            colorbar=dict(title=dict(text="Stand biomass (t/ha)", side="right")),
+        ),
+        plot_bgcolor="white",
+        width=1000,
+        height=350,
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+
+    _output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
+    os.makedirs(_output_dir, exist_ok=True)
+    _plot_locations_fig.write_image(os.path.join(_output_dir, "stand_biomass_grid.png"), scale=2)
+
+    _plot_locations_fig.show()
     return
 
 
