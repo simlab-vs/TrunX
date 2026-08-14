@@ -142,6 +142,7 @@ def plot_comparison(
     include_bayesian: bool = False,
     include_hmc: bool = False,
     bayesian_label: str = "PyMC (DEz)",
+    hmc_label: str = "HMC (NUTS)",
     site_name: str | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
@@ -168,6 +169,10 @@ def plot_comparison(
     bayesian_label : str
         Legend/title label for the `bayesian_output_dir` source, e.g. "MAP + Laplace"
         when the saved predictions come from `run_map_analysis` instead of MCMC.
+    hmc_label : str
+        Legend/title label for the `hmc_output_dir` source. Despite the parameter name
+        (`run_hmc_model` originally only loaded NUTS runs), this slot works for any
+        saved `predictions.npz`, e.g. "MAP + Laplace" or "MCMC (DEz)".
     site_name : str | None
         If given, adds a figure title with this name, the mean RMSE across the
         variables actually calibrated on (`plot_variables` minus
@@ -280,12 +285,16 @@ def plot_comparison(
             hmc_upper_pred = np.asarray(hmc_predictions[var][2])
             hmc_at_obs = np.asarray([hmc_mean_pred[idx] for idx in obs_indices])
             ax.fill_between(
-                time_months, hmc_lower_pred, hmc_upper_pred, alpha=0.3, label="HMC (NUTS) 95% CI"
+                time_months,
+                hmc_lower_pred,
+                hmc_upper_pred,
+                alpha=0.3,
+                label=f"{hmc_label} 95% CI",
             )
-            ax.plot(time_months, hmc_mean_pred, label="HMC (NUTS) mean")
+            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean")
             row["hmc_rmse"] = rmse(obs_values, hmc_at_obs)
             row["hmc_mae"] = mae(obs_values, hmc_at_obs)
-            title_parts.append(f"HMC: {row['hmc_rmse']:.2f}")
+            title_parts.append(f"{hmc_label}: {row['hmc_rmse']:.2f}")
 
         ax.scatter(obs_time, obs_values, color="red", label="Observations", zorder=5)
         if var == "DBH" and derived_dbh is not None:
