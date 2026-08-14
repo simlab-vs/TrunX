@@ -1,11 +1,13 @@
 """Run the 3PG model."""
 
 import os
+import warnings
 
 import jax
 import jax.numpy as jnp
 from jax import debug, lax
 
+from trunx.gp3.extended_helper import poly_nm
 from trunx.gp3.helper_function import (
     apply_self_thinning_with_mortality_factors,
     apply_stress_mortality,
@@ -36,7 +38,19 @@ from trunx.gp3.model_inputs import State
 
 def model_step(state, climate_month, params, site, species):
     """Compute one model step."""
-    T_avg, T_max, VPD, precip, solar_rad, frost_days, co2, n_days, month = climate_month
+    (
+        T_avg,
+        T_max,
+        VPD,
+        precip,
+        solar_rad,
+        frost_days,
+        co2,
+        n_days,
+        month,
+        fpoly_nn,
+    ) = climate_month
+
     WF, WR, WS, N, ASW, age_months, WF_debt, prev_month = state
 
     # Check if dormant
@@ -50,7 +64,7 @@ def model_step(state, climate_month, params, site, species):
     WF_debt_new = jnp.where(first_dormant, WF, WF_debt)
 
     WF_active = jnp.where(first_growing, WF_debt, WF_active)
-    WF_debt_new = jnp.where(first_growing, 0.0, WF_debt_new)
+    # WF_debt_new = jnp.where(first_growing, 0.0, WF_debt_new)
 
     # Leaf area index
     # Note with WF, we get better fitting.
@@ -74,15 +88,17 @@ def model_step(state, climate_month, params, site, species):
     fA = f_age(params, age_months)
     fcalpha = f_calpha(params, co2)
 
-    phi = fA * jnp.minimum(fD, fSW)
-    # phi = fA * fD * fSW
+    # phi = fA * jnp.minimum(fD, fSW)
+    phi = fA * fD * fSW
 
     gC = calculate_base_conductance(params, lai_total)
     ftmp_gc = f_temperature_gc(params, T_avg, T_max)
+    # ftmp_gc = 1.0
     fcg = f_cg(params, co2)
     conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
 
-    alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha
+    alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha * fpoly_nn
+
     alpha_c = jnp.where(LAI == 0.0, 0.0, alpha_c)
     # Primary production
     epsilon = params.gDM_mol * params.molPAR_MJ * alpha_c
@@ -103,6 +119,8 @@ def model_step(state, climate_month, params, site, species):
         days_in_month=n_days,
         conduct_canopy=conduct_canopy,
         lai=LAI,
+        lai_total=lai_total,
+        lai_per=LAI_per,
     )
 
     GPP = GPP * f_transp_scale
@@ -171,8 +189,6 @@ def model_step(state, climate_month, params, site, species):
     WR_new = WR_stress
     N_new = N_stress
 
-    # Self-thinning with R/Fortran logic (iterative solver + mortality factors)
-    # Built-in dormancy gating: only thins in growing season
     WS_thinned, WF_thinned, WR_thinned, N_thinned, mort_count = (
         apply_self_thinning_with_mortality_factors(params, WS_new, WF_new, WR_new, N_new, dormant)
     )
@@ -249,8 +265,29 @@ def model_step(state, climate_month, params, site, species):
     return new_state, outputs
 
 
-def run_3pg(initial_state, climate, params, site, species):
+def run_3pg(initial_state, climate, params, site, species, extended_params=None):
     """Run 3PG model."""
+    dep_n_tot = getattr(climate, "dep_n_tot", None)
+    dep_s_so4 = getattr(climate, "dep_s_so4", None)
+
+    if dep_n_tot is None or dep_s_so4 is None:
+        warnings.warn(
+            "Climate input missing deposition fields (dep_n_tot and/or dep_s_so4); "
+            "running 3PG without deposition effects using zeros.",
+            UserWarning,
+            stacklevel=2,
+        )
+        dep_n_tot = jnp.zeros_like(climate.T_avg, dtype=float)
+        dep_s_so4 = jnp.zeros_like(climate.T_avg, dtype=float)
+
+    if extended_params is None:
+        fpoly_nn = jnp.ones_like(dep_n_tot, dtype=float)
+    else:
+        fpoly_nn = poly_nm(
+            extended_params.poly_params,
+            jnp.stack([dep_n_tot, dep_s_so4], axis=-1),
+        )
+
     climate_stack = jnp.stack(
         [
             climate.T_avg,
@@ -262,6 +299,7 @@ def run_3pg(initial_state, climate, params, site, species):
             climate.co2,
             climate.n_days,
             climate.month,
+            fpoly_nn,
         ],
         axis=-1,
     )

@@ -5,10 +5,12 @@ sources enabled via their `include_*` flags, against observations for one
 site, with per-variable RMSE/MAE printed for comparison.
 """
 
+import gc
 import os
 from typing import Any, cast
 
 import arviz as az
+import jax
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -19,7 +21,10 @@ from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
-from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
+from trunx.gp3.bayesiancalibrations.load_files import (
+    load_param_defaults_from_file,
+    load_priors_from_file,
+)
 from trunx.gp3.bayesiancalibrations.save_load_results import load_predictions
 from trunx.gp3.gradient_descent import (
     GradientDescentConfig,
@@ -37,7 +42,7 @@ LABEL_MAP = {
     "Height": "Height",
     "WS": "Stem biomass",
     "WR": "Root biomass",
-    "WF": "Stem foliage",
+    "WF": "Foliage biomass",
 }
 
 
@@ -118,10 +123,10 @@ def _obs_indices_in_time_series(
 
 def plot_comparison(
     file_path: str,
+    fit_params: list[str],
     bayesian_output_dir: str | None = None,
     hmc_output_dir: str | None = None,
     plot_variables: list[str] = PLOT_VARIABLES,
-    fit_params: list[str] = FIT_PARAMS,
     include_gradient_descent: bool = False,
     include_bayesian: bool = False,
     include_hmc: bool = False,
@@ -287,7 +292,64 @@ def load_convergence_summary(inference_data_path: str, param_names: list[str]) -
     return summary
 
 
+def plot_trace_and_posterior(
+    inference_data_path: str,
+    param_names: list[str],
+    priors: dict[str, tuple[float, float]],
+) -> tuple[Figure, Figure]:
+    """Plot MCMC trace and posterior distributions, with prior ranges marked.
+
+    Parameters
+    ----------
+    inference_data_path : str
+        Path to a saved `inference_data.nc` (PyMC) or `numpyro_inference_data.nc` (HMC).
+    param_names : list[str]
+        Parameter names to plot.
+    priors : dict[str, tuple[float, float]]
+        Prior (lower, upper) bounds per parameter, drawn as red lines. Parameters
+        without a matching entry are plotted without prior lines.
+
+    Returns
+    -------
+    tuple[Figure, Figure]
+        The trace figure and the posterior figure.
+    """
+    idata = az.from_netcdf(inference_data_path)
+
+    # `plot.max_subplots` (default 40) otherwise silently truncates the plot
+    # instead of raising once `param_names` exceeds it, leaving fewer axes than
+    # requested parameters.
+    with az.rc_context(rc={"plot.max_subplots": None}):
+        trace_axes = np.atleast_2d(az.plot_trace(idata, var_names=param_names))
+        for row, param_name in zip(trace_axes, param_names, strict=True):
+            bounds = priors.get(param_name)
+            if bounds is None:
+                continue
+            density_ax, sample_ax = row
+            for bound in bounds:
+                density_ax.axvline(bound, color="red")
+                sample_ax.axhline(bound, color="red")
+        trace_fig = cast(Figure, trace_axes[0, 0].figure)
+        trace_fig.tight_layout()
+
+        # `plot_posterior`'s grid is sized to fit len(param_names) as squarely as
+        # possible, leaving blank (`has_data() is False`) axes in leftover cells.
+        posterior_axes = np.atleast_1d(az.plot_posterior(idata, var_names=param_names)).flatten()
+        posterior_axes = [ax for ax in posterior_axes if ax.has_data()]
+        for ax, param_name in zip(posterior_axes, param_names, strict=True):
+            bounds = priors.get(param_name)
+            if bounds is None:
+                continue
+            for bound in bounds:
+                ax.axvline(bound, color="red")
+        posterior_fig = cast(Figure, posterior_axes[0].figure)
+        posterior_fig.tight_layout()
+
+    return trace_fig, posterior_fig
+
+
 def plot_convergence_comparison(
+    fit_params: list[str],
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
@@ -324,7 +386,7 @@ def plot_convergence_comparison(
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
     if param_names is None:
-        param_names = FIT_PARAMS + [f"err_{var}" for var in PLOT_VARIABLES]
+        param_names = fit_params + [f"err_{var}" for var in PLOT_VARIABLES]
 
     colors = {}
     summaries = []
@@ -382,6 +444,89 @@ def plot_convergence_comparison(
     return fig, combined
 
 
+def plot_and_save(plot_id: str, output_dir: str, prefix: str = ""):
+    """Plot and save comparison/convergence/trace/posterior figures for a plot.
+
+    Parameters
+    ----------
+    plot_id : str
+        ICP plot identifier.
+    output_dir : str
+        Directory to save the plots in.
+    prefix : str
+        Optional prefix for the saved filenames (e.g. "trot_").
+    """
+    if plot_id == "solling":
+        _bayesian_output_dir = os.path.join(results_data_folder, "results/pymc_inference_results")
+    else:
+        _bayesian_output_dir = os.path.join(
+            results_data_folder, f"results/{prefix}pymc_inference_results_{plot_id}"
+        )
+
+    _file_path = os.path.join(_bayesian_output_dir, f"{plot_id}_data.xlsx")
+
+    if plot_id == "solling":
+        fit_params = FIT_PARAMS
+    else:
+        _df = pl.read_excel(_file_path, sheet_name="param_bound")
+        _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
+        fit_params = _df["param_name"].to_list()
+
+    _fig, _metrics_df = plot_comparison(
+        _file_path,
+        fit_params,
+        _bayesian_output_dir,
+        _hmc_output_dir,
+        include_gradient_descent=_include_gradient_descent,
+        include_bayesian=_include_bayesian,
+        include_hmc=_include_hmc,
+    )
+    # print(_metrics_df)
+    _fig.savefig(
+        os.path.join(_plot_output_dir, f"{prefix}prediction_comparison_{plot_id}.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.close(_fig)
+
+    _conv_fig, _conv_df = plot_convergence_comparison(
+        pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
+        hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
+        include_bayesian=_include_bayesian,
+        include_hmc=_include_hmc,
+        fit_params=fit_params,
+    )
+    # print(_conv_df)
+    _conv_fig.savefig(
+        os.path.join(_plot_output_dir, f"{prefix}convergence_comparison_{plot_id}.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.close(_conv_fig)
+
+    if _include_bayesian:
+        _priors = load_priors_from_file(_file_path, fit_params)
+        _trace_fig, _posterior_fig = plot_trace_and_posterior(
+            os.path.join(_bayesian_output_dir, "inference_data.nc"), fit_params, _priors
+        )
+        _trace_fig.savefig(
+            os.path.join(_plot_output_dir, f"{prefix}trace_{plot_id}.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
+        _posterior_fig.savefig(
+            os.path.join(_plot_output_dir, f"{prefix}posterior_{plot_id}.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
+        plt.close(_trace_fig)
+        plt.close(_posterior_fig)
+
+    print(f"Saved plots to {_plot_output_dir}")
+    gc.collect()
+    jax.clear_caches()
+
+
 if __name__ == "__main__":
     _plot_output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
     _hmc_output_dir = os.path.join(data_folder, "hmc_results")
@@ -391,49 +536,40 @@ if __name__ == "__main__":
     _include_hmc = False
     _include_gradient_descent = True
 
-    plot_ids = ["04.1605", "14.0003", "14.0019", "14.0012"]
+    plot_ids = [
+        # "04.1303",
+        # "51.0015",
+        # "53.0109",
+        # "53.0112",
+        # "53.0114",
+        # "53.0302",
+        # "53.0306",
+        # "53.0311",
+        # "53.0312",
+        # "53.0313",
+        # "53.0316",
+        # "53.0407",
+        # "53.0501",
+        # "53.0513",
+        # "53.0603",
+        # "53.0617",
+        # "53.0618",
+        # "53.0623",
+        # "59.0001",
+        # "59.0003",
+        "04.0101",
+        "04.0704",
+        "08.0034",
+        "53.0107",
+        # "04.0302",
+        # "04.1402",
+        # "04.1403",
+        # "14.0017",
+        # "52.0010",
+        # "53.0701",
+        # "59.0008",
+    ]
 
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
-
-        if plot_id == "solling":
-            _bayesian_output_dir = os.path.join(
-                results_data_folder, "results/pymc_inference_results"
-            )
-        else:
-            _bayesian_output_dir = os.path.join(
-                results_data_folder, f"results/pymc_inference_results_{plot_id}"
-            )
-
-        _file_path = os.path.join(_bayesian_output_dir, f"{plot_id}_data.xlsx")
-
-        _fig, _metrics_df = plot_comparison(
-            _file_path,
-            _bayesian_output_dir,
-            _hmc_output_dir,
-            include_gradient_descent=_include_gradient_descent,
-            include_bayesian=_include_bayesian,
-            include_hmc=_include_hmc,
-        )
-        # print(_metrics_df)
-        _fig.savefig(
-            os.path.join(_plot_output_dir, f"prediction_comparison_{plot_id}.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
-
-        _conv_fig, _conv_df = plot_convergence_comparison(
-            pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
-            hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
-            include_bayesian=_include_bayesian,
-            include_hmc=_include_hmc,
-        )
-        # print(_conv_df)
-        _conv_fig.savefig(
-            os.path.join(_plot_output_dir, f"convergence_comparison_{plot_id}.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
-        print(f"Saved plots to {_plot_output_dir}")
-
-        plt.show()
+        plot_and_save(plot_id, _plot_output_dir, prefix="")
