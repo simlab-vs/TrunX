@@ -20,7 +20,7 @@ from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     plot_inference_results,
     predict_from_parameter_draws,
@@ -404,6 +404,8 @@ def run_pymc_analysis(
     )
 
     priors = load_priors_from_file(file_path, param_to_optimize)
+    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
+        priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     observations = load_observations_from_file(file_path, site_data=site_data)
 
