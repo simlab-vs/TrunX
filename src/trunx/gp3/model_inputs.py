@@ -5,6 +5,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class State(NamedTuple):
@@ -237,3 +238,20 @@ class ExtendedParams(NamedTuple):
 
     # Additional parameters for extended model
     poly_params: jnp.ndarray  # Weights for polynomial nutritional modifier
+
+
+class InputData(BaseModel):
+    """Bundled inputs for the 3PG model."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    initial_state: State = Field(validate_default=True)
+    climate: ClimateData = Field(validate_default=True)
+    site: SiteData = Field(validate_default=True)
+    species: SpeciesData = Field(validate_default=True)
+    params: Params = Field(validate_default=True)
+    n_species: int = Field(validate_default=True)
+    species_names: list[str] = Field(default_factory=list, validate_default=True)
+
+    deposition: DepositionData | None = Field(default=None, validate_default=True)
+    extended_params: ExtendedParams | None = Field(default=None, validate_default=True)

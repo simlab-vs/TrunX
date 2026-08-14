@@ -64,19 +64,18 @@ def run_threepg_main(
         print(f"Could not read observed data from {file_path}: {e}")
         observed_data = None
 
-    initial_state, climate, params, site_data, species_data, n_species, species_names = (
-        prepare_data(file_path)
-    )
+    input_data = prepare_data(file_path)
+
     simulation_start_month = np.datetime64(
-        f"{int(site_data.year_i[0]):04d}-{int(site_data.month_i[0]):02d}", "M"
+        f"{int(input_data.site.year_i[0]):04d}-{int(input_data.site.month_i[0]):02d}", "M"
     )
 
     final_state, outputs = run_3pg(
-        initial_state=initial_state,
-        climate=climate,
-        params=params,
-        site=site_data,
-        species=species_data,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        params=input_data.params,
+        site=input_data.site,
+        species=input_data.species,
     )
 
     print("Final stem biomass (Mg/ha):", final_state.WS)
@@ -85,24 +84,24 @@ def run_threepg_main(
 
     params_vec = jnp.array(
         [
-            params.alphaCx,
-            params.CoeffCond,
-            params.Y,
+            input_data.params.alphaCx,
+            input_data.params.CoeffCond,
+            input_data.params.Y,
         ]
     )
 
     # Get Jacobian matrix (n_species × 3)
     jacobian = jax.jacobian(ws_final_vector)(
         params_vec,
-        params,
-        initial_state,
-        climate,
-        site_data,
-        species_data,
+        input_data.params,
+        input_data.initial_state,
+        input_data.climate,
+        input_data.site,
+        input_data.species,
     )
 
     # jacobian has shape (n_species, 3)
-    for idx, specie in enumerate(species_data.specie):
+    for idx, specie in enumerate(input_data.species.specie):
         print(f"{specie}: [∂WS/∂alphaCx, ∂WS/∂CoeffCond, ∂WS/∂Y] = {jacobian[idx]}")
 
     if r_comparison and plot_output:
@@ -110,7 +109,7 @@ def run_threepg_main(
 
         r_outputs = run_comparison_r(file_path)
         df_comp = create_comparison_dataframe(
-            r_outputs, outputs, simulation_start_month, species_names
+            r_outputs, outputs, simulation_start_month, input_data.species_names
         )
         fig = plot_combined_3pg_outputs_obv(
             df_comp,
@@ -124,7 +123,9 @@ def run_threepg_main(
         from trunx.gp3.run_r3pg import run_comparison_r
 
         r_outputs = run_comparison_r(file_path)
-        create_comparison_dataframe(r_outputs, outputs, simulation_start_month, species_names)
+        create_comparison_dataframe(
+            r_outputs, outputs, simulation_start_month, input_data.species_names
+        )
         fig = None
     elif plot_output:
         fig = plot_outputs(outputs, simulation_start_month, fig_name, show=show_plots)
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     # file_path = os.path.join(threepg_data_folder, "data.input.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_sspecies_nothinning.xlsx")
     # file_path = os.path.join(threepg_data_folder, "data_nothinning.xlsx")
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    # file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "davos_data.xlsx")
     # file_path = os.path.join(threepg_data_folder, "Davos_data_GPP.xlsx")
 
@@ -171,9 +172,9 @@ if __name__ == "__main__":
     # )
 
     # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    fig, outputs = run_threepg_main(
-        file_path, observed_data=None, plot_output=True, r_comparison=True
-    )
+    # fig, outputs = run_threepg_main(
+    #     file_path, observed_data=None, plot_output=True, r_comparison=True
+    # )
 
     # species_plot_ids = {
     #     "Pinus sylvestris": [
@@ -213,13 +214,13 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    # plot_ids = ["04.1402"]
-    # for plot_id in plot_ids:
-    #     # plot_dbh_distribution(
-    #     #     plot_id=plot_id,
-    #     #     file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
-    #     #     kind="box",
-    #     #     fig_name=f"ICP_{plot_id}_dbh_distribution",
-    #     #     show=True,
-    #     # )
-    #     fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+    plot_ids = ["04.1402"]
+    for plot_id in plot_ids:
+        # plot_dbh_distribution(
+        #     plot_id=plot_id,
+        #     file_path=os.path.join(clean_data_folder, "icp_tree_data.parquet"),
+        #     kind="box",
+        #     fig_name=f"ICP_{plot_id}_dbh_distribution",
+        #     show=True,
+        # )
+        fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)

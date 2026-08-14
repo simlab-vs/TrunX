@@ -131,7 +131,7 @@ def setup_parameters(
 
     # Load model data
     print("Loading model data...")
-    initial_state, climate, params, site_data, species_data, _, _ = prepare_data(file_path)
+    input_data = prepare_data(file_path)
 
     # Setup parameters
     _sigma_param_set = set(sigma_param_names.values())
@@ -149,7 +149,7 @@ def setup_parameters(
     print(f"  Outputs: {', '.join(output_vars)}")
 
     # Prepare observations
-    obs_times = prepare_observation_times(site_data, observed_data)
+    obs_times = prepare_observation_times(input_data.site, observed_data)
     obs_indices = jnp.array(obs_times, dtype=jnp.int32)
     obs_values = {
         var: jnp.array(observed_data[var].values, dtype=jnp.float32)
@@ -161,11 +161,11 @@ def setup_parameters(
     def _log_likelihood_components(param_values):
         return log_likelihood_components(
             param_values,
-            params,
-            initial_state,
-            climate,
-            site_data,
-            species_data,
+            input_data.params,
+            input_data.initial_state,
+            input_data.climate,
+            input_data.site,
+            input_data.species,
             obs_indices,
             obs_values,
             output_vars,

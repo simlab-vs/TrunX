@@ -489,16 +489,14 @@ def run_hmc_analysis(
     predict_with_uncert : bool
         Whether to generate predictions with uncertainty quantification
     """
-    initial_state, climate, fixed_params, site_data, species_data, n_species, species_names = (
-        prepare_data(file_path)
-    )
+    input_data = prepare_data(file_path)
 
     priors = load_priors_from_file(file_path, param_names=param_names)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
-    observations = load_observations_from_file(file_path, site_data=site_data)
+    observations = load_observations_from_file(file_path, site_data=input_data.site)
     print(f"Loaded observations for variables: {list(observations.keys())}")
 
     skipped = [name for name in observations if f"err_{name}" not in priors]
@@ -507,13 +505,13 @@ def run_hmc_analysis(
 
     # Run analysis
     mcmc, samples = run_full_analysis(
-        initial_state=initial_state,
-        climate=climate,
-        site=site_data,
-        species=species_data,
-        n_species=n_species,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        site=input_data.site,
+        species=input_data.species,
+        n_species=input_data.n_species,
         observations=observations,
-        fixed_params=fixed_params,
+        fixed_params=input_data.params,
         priors=priors,
         num_warmup=num_warmup,
         num_samples=num_samples,

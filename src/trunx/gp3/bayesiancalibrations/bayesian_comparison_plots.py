@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import arviz as az
 import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -62,11 +63,22 @@ def build_time_index(climate, site_data) -> pd.DatetimeIndex:
 
 def run_default_model(file_path: str) -> dict[str, Any]:
     """Run 3PG with the file's default parameter values."""
-    initial_state, climate, fixed_params, site_data, species_data, _, _ = prepare_data(file_path)
+    input_data = prepare_data(file_path)
     param_defaults = load_param_defaults_from_file(file_path)
     phy_defaults = {k: v for k, v in param_defaults.items() if not k.startswith("err_")}
-    fixed_params = fixed_params._replace(**phy_defaults)
-    _, outputs = run_3pg(initial_state, climate, fixed_params, site_data, species_data)
+    fixed_params = input_data.params._replace(
+        **{
+            name: jnp.full_like(getattr(input_data.params, name), value)
+            for name, value in phy_defaults.items()
+        }
+    )
+    _, outputs = run_3pg(
+        input_data.initial_state,
+        input_data.climate,
+        fixed_params,
+        input_data.site,
+        input_data.species,
+    )
     return outputs
 
 
@@ -81,14 +93,20 @@ def run_gradient_descent_model(
     )
     fit_result = fit_with_gradient_descent(config)
 
-    initial_state, climate, base_params, site_data, species_data, _, _ = prepare_data(file_path)
+    input_data = prepare_data(file_path)
     fitted_params: Params = apply_fitted_params(
-        base_params=base_params,
+        base_params=input_data.params,
         fit_params=fit_params,
         fitted_values=fit_result.fitted_params,
         species_index=config.species_index,
     )
-    _, outputs = run_3pg(initial_state, climate, fitted_params, site_data, species_data)
+    _, outputs = run_3pg(
+        input_data.initial_state,
+        input_data.climate,
+        fitted_params,
+        input_data.site,
+        input_data.species,
+    )
     return outputs
 
 
@@ -163,8 +181,8 @@ def plot_comparison(
     if include_hmc and hmc_output_dir is None:
         raise ValueError("hmc_output_dir is required when include_hmc is True")
 
-    _, climate, _, site_data, _, _, _ = prepare_data(file_path)
-    time_months = build_time_index(climate, site_data)
+    input_data = prepare_data(file_path)
+    time_months = build_time_index(input_data.climate, input_data.site)
 
     observations = pl.read_excel(file_path, sheet_name="observed")
     obs_time = pd.to_datetime(

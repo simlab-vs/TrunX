@@ -172,11 +172,9 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
     param_bounds = load_param_bounds(config.file_path, config.param_bounds_sheet)
 
     # Prepare data and initial state
-    initial_state, climate, params, site_data, species_data, n_species, species_names = (
-        prepare_data(config.file_path)
-    )
+    input_data = prepare_data(config.file_path)
 
-    obs_indices = build_observation_indices(observed_data, site_data)
+    obs_indices = build_observation_indices(observed_data, input_data.site)
 
     obs_values: dict[str, jnp.ndarray] = {}
     obs_scales: dict[str, jnp.ndarray] = {}
@@ -194,7 +192,7 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
 
     initial_values = []
     for name in config.fit_params:
-        param_array = getattr(params, name)
+        param_array = getattr(input_data.params, name)
         param_array = jnp.asarray(param_array)
         if param_array.ndim > 0:
             initial_values.append(float(param_array[config.species_index]))
@@ -204,12 +202,12 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
     param_values = jnp.asarray(initial_values, dtype=jnp.float32)
 
     loss_function = make_loss_function(
-        inital_state=initial_state,
-        climate=climate,
-        base_params=params,
-        site_data=site_data,
-        species_data=species_data,
-        n_species=n_species,
+        inital_state=input_data.initial_state,
+        climate=input_data.climate,
+        base_params=input_data.params,
+        site_data=input_data.site,
+        species_data=input_data.species,
+        n_species=input_data.n_species,
         fit_params=config.fit_params,
         obs_indices=obs_indices,
         obs_values=obs_values,
@@ -319,31 +317,29 @@ def build_predicted_dataframe(
     pd.DataFrame
         Comparison table for each target variable.
     """
-    initial_state, climate, params, site_data, species_data, n_species, _ = prepare_data(
-        config.file_path
-    )
+    input_data = prepare_data(config.file_path)
 
     fitted_model_params = apply_fitted_params(
-        base_params=params,
+        base_params=input_data.params,
         fit_params=config.fit_params,
         fitted_values=fitted_params,
         species_index=config.species_index,
     )
 
     _, outputs_fitted = run_3pg(
-        initial_state=initial_state,
-        climate=climate,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
         params=fitted_model_params,
-        site=site_data,
-        species=species_data,
+        site=input_data.site,
+        species=input_data.species,
     )
 
     _, outputs_default = run_3pg(
-        initial_state=initial_state,
-        climate=climate,
-        params=params,
-        site=site_data,
-        species=species_data,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        params=input_data.params,
+        site=input_data.site,
+        species=input_data.species,
     )
 
     df_data = pd.DataFrame()
@@ -361,7 +357,7 @@ def build_predicted_dataframe(
         df_data[f"pred_{var_name}"] = np.asarray(pred_fitted)
 
     start_date = pd.Timestamp(
-        year=int(site_data.year_i[0]), month=int(site_data.month_i[0]), day=1
+        year=int(input_data.site.year_i[0]), month=int(input_data.site.month_i[0]), day=1
     )
     df_data["date"] = pd.date_range(start=start_date, periods=len(df_data), freq="ME")
     return pd.DataFrame(df_data)

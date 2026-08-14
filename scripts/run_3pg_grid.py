@@ -252,7 +252,7 @@ def run_3pg_grid(
         One row per grid cell with `grid_id`, `x`, `y`, and a monthly
         `outputs` list-of-struct column (fields from `OUTPUT_VARS`).
     """
-    _, _, fixed_params, _, _, _, _ = prepare_data(physiology_file_path)
+    fixed_params = prepare_data(physiology_file_path).params
     coords, packed_grid = load_and_pack_grid(grid_input_path, fixed_params)
 
     params_batch = sample_posterior_params(inference_data_path, fixed_params, num_predictions)

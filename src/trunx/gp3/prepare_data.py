@@ -1,30 +1,28 @@
 """Prepare data for 3PG model."""
 
 import logging
-import os
 
 import jax.numpy as jnp
 import polars as pl
 
 from trunx.config import SPECIES_INDICES
 from trunx.gp3.helper_function import is_dormant
-from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
+from trunx.gp3.model_inputs import InputData, Params, State
 from trunx.gp3.prepare_climate import prepare_climate
-from trunx.gp3.prepare_monthlydata import prepare_monthlydata
+from trunx.gp3.prepare_deposition import prepare_deposition
 from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.prepare_species import prepare_species
 
 
-def prepare_data(file_path: str):
+def prepare_data(file_path: str, extended_params: dict | None = None) -> InputData:
     """Prepare data and initial state for 3PG model."""
     d_site = pl.read_excel(file_path, sheet_name="site")
     site_data, site_start, site_end = prepare_site(d_site)
 
-    # d_climate = pl.read_excel(file_path, sheet_name="climate")
-    # climate = prepare_climate(d_climate, str(site_start), str(site_end))
+    d_climate = pl.read_excel(file_path, sheet_name="climate")
+    climate = prepare_climate(d_climate, str(site_start), str(site_end))
 
-    d_month = pl.read_excel(file_path, sheet_name="climate")
-    climate = prepare_monthlydata(d_month, str(site_start), str(site_end))
+    deposition = prepare_deposition(d_climate, str(site_start), str(site_end))
 
     d_species = pl.read_excel(file_path, sheet_name="species")
     species_data = prepare_species(d_species)
@@ -78,5 +76,15 @@ def prepare_data(file_path: str):
             n_species, 12 if start_month == 1 else start_month - 1, dtype=jnp.int32
         ),
     )
-
-    return initial_state, climate, params, site_data, species_data, n_species, species_names
+    input_data = InputData(
+        initial_state=initial_state,
+        climate=climate,
+        params=params,
+        site=site_data,
+        species=species_data,
+        n_species=n_species,
+        species_names=species_names,
+        extended_params=None,
+        deposition=deposition,
+    )
+    return input_data

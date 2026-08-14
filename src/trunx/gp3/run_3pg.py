@@ -265,14 +265,14 @@ def model_step(state, climate_month, params, site, species):
     return new_state, outputs
 
 
-def run_3pg(initial_state, climate, params, site, species, extended_params=None):
+def run_3pg(initial_state, climate, params, site, species, deposition=None, extended_params=None):
     """Run 3PG model."""
-    dep_n_tot = getattr(climate, "dep_n_tot", None)
-    dep_s_so4 = getattr(climate, "dep_s_so4", None)
+    dep_n_tot = getattr(deposition, "dep_n_tot", None)
+    dep_s_so4 = getattr(deposition, "dep_s_so4", None)
 
     if dep_n_tot is None or dep_s_so4 is None:
         warnings.warn(
-            "Climate input missing deposition fields (dep_n_tot and/or dep_s_so4); "
+            "Missing deposition fields (dep_n_tot and/or dep_s_so4); "
             "running 3PG without deposition effects using zeros.",
             UserWarning,
             stacklevel=2,
