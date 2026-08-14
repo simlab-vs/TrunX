@@ -18,13 +18,26 @@
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
 #SBATCH --partition=Dance
+#SBATCH --qos=standby_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-3
+# This account is capped at 1 GPU at a time (see standby QoS docs), so tasks run
+# one at a time (%1) rather than across the partition's 2 nodes concurrently.
+#SBATCH --array=0-3%1
+# Standby jobs are preempted (SIGTERM) whenever a normal/premium/standard QoS job
+# needs the resources; --requeue puts the task back in the queue instead of it
+# just dying. MCMC checkpoints (run_pymc_analysis writes to <output-dir>/mcmc/),
+# so a requeue only redoes the (fast) MAP+Laplace half of a restarted task.
+#SBATCH --requeue
 
 set -euo pipefail
+
+# The Dance partition spans chacha (uv via snap, already on PATH) and disco (uv
+# installed to ~/.local/bin, per-node local home — not on a batch shell's default
+# PATH). Harmless no-op on chacha.
+export PATH="$HOME/.local/bin:$PATH"
 
 PROJECT_DIR="${TRUNX_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 cd "$PROJECT_DIR"
