@@ -26,6 +26,7 @@ from trunx.gp3.bayesiancalibrations.calibration_utils import (
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -465,7 +466,9 @@ def run_pymc_analysis(
         file_path
     )
 
-    priors = load_priors_from_file(file_path, param_to_optimize)
+    priors = load_priors_from_file(
+        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+    )
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
