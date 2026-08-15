@@ -8,6 +8,7 @@ import pytest
 
 from trunx.gp3.bayesiancalibrations.load_files import (
     literature_bound_overrides,
+    load_param_defaults_from_file,
     load_priors_from_file,
 )
 
@@ -115,3 +116,58 @@ def test_literature_bound_overrides_skips_disagreeing_species(
     overrides = literature_bound_overrides(file_path, literature_dir=literature_dir)
 
     assert overrides == {"Tmax": (30.0, 45.0)}
+
+
+def _param_bound_xlsx(tmp_path: Path, n_species_columns: int = 1) -> str:
+    """A minimal Excel file with `param_bound`, `error_param`, and `parameters`.
+
+    `param_bound` carries only bounds (no `default`): `Tmax`/`alphaCx` are
+    free (both min and max set), `wSx1000` is fixed (neither set). Physiology
+    defaults live only in `parameters`, the single source of truth for a
+    parameter's runtime/seed value.
+    """
+    file_path = tmp_path / "plot_data.xlsx"
+    param_bound = pd.DataFrame(
+        {
+            "param_name": ["Tmax", "alphaCx", "wSx1000"],
+            "min": [25.0, 0.02, None],
+            "max": [40.0, 0.09, None],
+        }
+    )
+    error_param = pd.DataFrame(
+        {"param_name": ["err_WS"], "default": [0.5], "min": [0.05], "max": [2.0]}
+    )
+    parameters = pd.DataFrame({"parameter": ["Tmax", "alphaCx", "wSx1000"]})
+    for i in range(n_species_columns):
+        parameters[f"species_{i}"] = [32.0, 0.055, 300.0]
+
+    with pd.ExcelWriter(file_path) as writer:
+        param_bound.to_excel(writer, sheet_name="param_bound", index=False)
+        error_param.to_excel(writer, sheet_name="error_param", index=False)
+        parameters.to_excel(writer, sheet_name="parameters", index=False)
+    return str(file_path)
+
+
+def test_defaults_come_from_the_parameters_sheet_for_physiology_params(
+    tmp_path: Path,
+) -> None:
+    file_path = _param_bound_xlsx(tmp_path)
+
+    defaults = load_param_defaults_from_file(file_path, ["Tmax", "alphaCx", "wSx1000", "err_WS"])
+
+    assert defaults == {"Tmax": 32.0, "alphaCx": 0.055, "wSx1000": 300.0, "err_WS": 0.5}
+
+
+def test_priors_are_unaffected_by_the_parameters_sheet_split(tmp_path: Path) -> None:
+    file_path = _param_bound_xlsx(tmp_path)
+
+    priors = load_priors_from_file(file_path)
+
+    assert priors == {"Tmax": (25.0, 40.0), "alphaCx": (0.02, 0.09), "err_WS": (0.05, 2.0)}
+
+
+def test_a_multi_species_parameters_sheet_raises(tmp_path: Path) -> None:
+    file_path = _param_bound_xlsx(tmp_path, n_species_columns=2)
+
+    with pytest.raises(ValueError, match="single-species"):
+        load_priors_from_file(file_path)
