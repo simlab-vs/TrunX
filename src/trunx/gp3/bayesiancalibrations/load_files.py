@@ -76,18 +76,50 @@ def load_plot_ids_from_file(plot_file: str) -> list[str]:
     return plot_ids
 
 
+def _load_physiology_defaults(file_path: str) -> pl.DataFrame:
+    """Load each physiology parameter's simulated value from the `parameters` sheet.
+
+    This is the single source of truth for a physiology parameter's default —
+    both its fixed runtime value when not optimized, and its MAP/MCMC seed
+    when it is. Assumes a single-species file: the `parameters` sheet has
+    exactly one value column besides `parameter`, matching every site file
+    this pipeline currently runs on.
+    """
+    params_df = pl.read_excel(file_path, sheet_name="parameters")
+    value_columns = [c for c in params_df.columns if c != "parameter"]
+    if len(value_columns) != 1:
+        raise ValueError(
+            f"Expected a single-species 'parameters' sheet in {file_path}, "
+            f"found species columns: {value_columns}"
+        )
+    return params_df.select(
+        pl.col("parameter").alias("param_name"),
+        pl.col(value_columns[0]).alias("default"),
+    )
+
+
 def _load_param_bounds_df(file_path: str) -> pl.DataFrame:
-    """Load the raw param_bound(+error_param) table shared by priors and defaults."""
+    """Load the raw param_bound(+error_param) table shared by priors and defaults.
+
+    For Excel files, a physiology parameter's `default` comes from the site's
+    `parameters` sheet rather than a separately maintained copy in
+    `param_bound` — see `_load_physiology_defaults`. `error_param`'s sigma
+    priors have no `parameters`-sheet counterpart, so their `default` stays
+    in that sheet.
+    """
     if file_path.lower().endswith(".parquet"):
         return pl.read_parquet(file_path)
     if file_path.lower().endswith(".xlsx"):
-        return pl.concat(
-            [
-                pl.read_excel(file_path, sheet_name="param_bound"),
-                pl.read_excel(file_path, sheet_name="error_param"),
-            ],
-            how="vertical_relaxed",
+        param_bound = pl.read_excel(file_path, sheet_name="param_bound").select(
+            "param_name", "min", "max"
         )
+        param_bound = param_bound.join(
+            _load_physiology_defaults(file_path), on="param_name", how="left"
+        ).select("param_name", "default", "min", "max")
+        error_param = pl.read_excel(file_path, sheet_name="error_param").select(
+            "param_name", "default", "min", "max"
+        )
+        return pl.concat([param_bound, error_param], how="vertical_relaxed")
     raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
 
 
@@ -217,7 +249,11 @@ def load_param_defaults_from_file(
     Parameters
     ----------
     file_path : str
-        Parquet or Excel file with a param_bound(+error_param) table.
+        Parquet file with a flat param_bound(+error_param) table, or Excel
+        file with `param_bound`, `error_param`, and `parameters` sheets.
+        Physiology defaults come from `parameters` (see
+        `_load_physiology_defaults`); error-sigma defaults come from
+        `error_param`.
     param_names : list[str]
         Parameter names to load defaults for (typically the same names passed
         to `load_priors_from_file`).
@@ -225,7 +261,7 @@ def load_param_defaults_from_file(
     Returns
     -------
     dict[str, float]
-        Parameter names mapped to their `default` column value.
+        Parameter names mapped to their default value.
     """
     param_bounds_df = _load_param_bounds_df(file_path)
 
