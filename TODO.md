@@ -32,33 +32,3 @@ instead of a single mean tree — e.g. a Weibull-shaped diameter distribution
 of the current single-tree inversion. This is a real model extension (new
 state variable + dynamics), not a small patch — scope it separately before
 picking it up.
-
-## Backport the consolidated parameter-bounds/defaults loader to legacy tools
-
-`load_files.py` (`_load_param_bounds_df`/`load_priors_from_file`/
-`load_param_defaults_from_file`) is the single loader for the active MAP/MCMC
-pipeline (`map_param_est.py`, `pymc_param_est.py`): a physiology parameter's
-`min`/`max` come from `param_bound`, its default/seed value comes from
-`parameters` (previously duplicated in both — see git history for
-`load_files.py` around the `param_bound.default` removal). Three older tools
-still have their own separate, ad-hoc `param_bound`/`error_param` reading
-instead of calling into `load_files.py`:
-
-- `gradient_descent.py`'s `load_param_bounds` reads every row in the given
-  sheet unconditionally (`float(row["min"])`/`float(row["max"])`) — it isn't
-  guarded against unbounded rows the way `load_priors_from_file` is, so it
-  will raise a `TypeError` on any real site file, which now has far more
-  unbounded than bounded rows (18-54 free vs. 82 total). No test coverage
-  currently catches this.
-- `morris_sensitivity.py`'s param-bound loading duplicates
-  `load_priors_from_file`'s null-filtering logic inline.
-- `pymc_icp_plots.py` builds `param_bound`/`error_param` sheets directly when
-  generating new ICP site files, so any new file it produces needs the same
-  `param_bound.default`-vs-`parameters` consolidation applied by hand unless
-  this is fixed.
-
-None of the three have test coverage, so this wasn't folded into the
-`load_files.py` change — swap each over to `load_priors_from_file`/
-`load_param_defaults_from_file` (and, for `pymc_icp_plots.py`, stop writing a
-`default` column into `param_bound`) once someone is actually exercising
-that code path again.
