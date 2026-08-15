@@ -44,6 +44,12 @@ def main() -> None:
         help="MCMC step method forwarded to run_pymc_analysis",
     )
     parser.add_argument("--target-accept", type=float, default=0.9, help="Only used for NUTS")
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=500,
+        help="Post-tuning draws per chain between checkpoints",
+    )
     args = parser.parse_args()
 
     map_dir = os.path.join(args.output_dir, "map")
@@ -75,6 +81,7 @@ def main() -> None:
         num_samples=args.num_samples,
         step_method=args.step_method,
         target_accept=args.target_accept,
+        checkpoint_every=args.checkpoint_every,
     )
     print(f"MCMC done in {time.perf_counter() - start:.1f}s")
 

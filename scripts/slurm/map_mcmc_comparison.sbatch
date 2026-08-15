@@ -66,10 +66,15 @@ mkdir -p logs
 # site_id -> input file, relative to data/threepg_inputs.
 SITE_IDS=(solling 04.1605 14.0003 14.0012)
 SITE_FILES=(full_solling_data.xlsx icp_plots/04.1605_data.xlsx icp_plots/14.0003_data.xlsx icp_plots/14.0012_data.xlsx)
+# Solling's 57 params make even one checkpoint chunk expensive on CPU NUTS, so
+# it checkpoints far more often than the ~20-param ICP sites (which already
+# completed fine at the 500-draw default).
+CHECKPOINT_EVERY=(100 500 500 500)
 
 SITE_INDEX="${SLURM_ARRAY_TASK_ID:-${TRUNX_SITE_INDEX:?Set TRUNX_SITE_INDEX (0-3) via --export, or submit as an array}}"
 SITE_ID="${SITE_IDS[$SITE_INDEX]}"
 SITE_FILE="${SITE_FILES[$SITE_INDEX]}"
+SITE_CHECKPOINT_EVERY="${CHECKPOINT_EVERY[$SITE_INDEX]}"
 
 echo "Job:       ${SLURM_JOB_ID:-interactive} on $(hostname)"
 echo "Project:   $PROJECT_DIR"
@@ -84,4 +89,5 @@ uv run --no-sync python scripts/run_comparison_site.py \
     --target-accept 0.9 \
     --chains 4 \
     --num-warmup 1000 \
-    --num-samples 1000
+    --num-samples 1000 \
+    --checkpoint-every "$SITE_CHECKPOINT_EVERY"
