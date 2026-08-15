@@ -365,7 +365,6 @@ def run_pymc_inference(
     if step_method not in {"demetropolisz", "nuts"}:
         raise ValueError(f"step_method must be 'demetropolisz' or 'nuts', got {step_method!r}")
 
-    checkpoint_every = max(500, num_samples // 10)
     model = pymc_model(
         climate=climate,
         site=site,
