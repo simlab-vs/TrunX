@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 
 # User defined folders
-docs/ 
 data/
 containers/
 models/
@@ -87,7 +86,10 @@ instance/
 .scrapy
 
 # Sphinx documentation
-docs/_build/
+docs/build/
+docs/plans/
+docs/references/
+docs/superpowers/
 
 # PyBuilder
 .pybuilder/

@@ -61,6 +61,10 @@ dev = [
     "pytest>=8.0.0",
     "responses>=0.25.0",
 ]
+docs = [
+    "sphinx>=8.0.0",
+    "furo>=2024.8.6",
+]
 
 # Build backend
 # -------------
