@@ -1,5 +1,7 @@
 """Helper functions to implement 3PG model."""
 
+from __future__ import annotations
+
 import os
 from typing import Optional
 
