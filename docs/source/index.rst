@@ -1,17 +1,14 @@
-.. trunx documentation master file, created by
-   sphinx-quickstart on Mon Aug 17 15:07:21 2026.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
 trunx documentation
-===================
+====================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
-
+Minimal release of the 3PG forestry model, containing only what is
+needed to run it via ``scripts/run_3pg_main.py``.
 
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
+
+   installation
+   usage
+   api/modules
 
