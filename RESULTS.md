@@ -1,8 +1,8 @@
 # Differentiable 3PG: calibration efficiency results
 
-Status: in progress. The Solling NUTS run has completed; the matched-budget
-`DEMetropolisZ` comparison for that site has not yet been run. See
-[Open runs](#open-runs).
+Status: complete. All planned runs (MAP search timing, MCMC vs. NUTS at
+default and matched wall-clock budgets, and Solling NUTS and
+`DEMetropolisZ` at 57 parameters) have finished. See [Open runs](#open-runs).
 
 ## Summary
 
@@ -17,6 +17,13 @@ digits. Increasing the draw count to 136,000–200,000, at wall-clock budgets
 matching or exceeding those used by NUTS, did not substantially change either
 diagnostic. NUTS reached R-hat ≈ 1.00 and effective sample sizes in the
 thousands using 1,000 post-warmup draws per chain.
+
+The same pattern held at Solling (57 calibrated parameters), a larger site
+outside the three used for the main comparison: `DEMetropolisZ` run to its
+full 200,000-draw ceiling (40x its default-budget draw count, in well under
+its matched wall-clock allowance) still left R-hat at 1.25–3.10 and minimum
+ESS at 3, no better than the 21-parameter ICP sites and worse on ESS than
+NUTS achieved there in a fraction of the wall-clock time.
 
 These results indicate that, on this posterior, gradient-free MCMC does not
 converge at the tested budgets, while gradient-based MCMC converges reliably.
@@ -95,25 +102,35 @@ that was reached first.
 | 14.0003 | NUTS | 160.5 min | 1,000 | 1813 | 1.01 |
 | 14.0012 | DEMetropolisZ | 87.3 min | 184,000 | 4.0 | 1.81 |
 | 14.0012 | NUTS | 83.7 min | 1,000 | 1617 | 1.00 |
+| solling (57 params) | DEMetropolisZ | 89.3 min | 200,000 (ceiling) | 3.0 | 3.10 |
+| solling (57 params) | NUTS | 1d 14h04m | 4,000 | 25 | 1.11 |
 
 \* At 14.0003, `DEMetropolisZ` reached its 200,000-draw ceiling before
 exhausting its allotted wall-clock budget, so it received less wall-clock
 time than NUTS at that site. This works against, rather than in favor of,
-the comparison's framing.
+the comparison's framing. Solling's `DEMetropolisZ` run did the same, in
+89.3 minutes against a 38h10m budget.
 
-Across all three sites, increasing `DEMetropolisZ`'s draw count by a factor
-of 27–40, at a comparable or greater wall-clock budget, produced small
+Across all three ICP sites, increasing `DEMetropolisZ`'s draw count by a
+factor of 27–40, at a comparable or greater wall-clock budget, produced small
 changes in both diagnostics: minimum ESS moved from 3–4 (at 5,000 draws) to
 4–5 (at up to 200,000 draws), and R-hat remained at 1.6–1.8, above the
 ~1.01 threshold typically used to indicate convergence. The three chains
 remained in separate posterior modes; additional draws without gradient
-information did not resolve this.
+information did not resolve this. Solling shows the same pattern at a larger
+scale (57 parameters, 40x its default draw count): R-hat 1.25–3.10 (worst
+parameter `fracBB0`), minimum ESS 3 (parameter `Topt`) — no better than the
+ICP sites despite the much larger draw ceiling, and worse on both diagnostics
+than Solling's own NUTS run (R-hat 1.11, min ESS 25) achieved in a fraction
+of the wall-clock time.
 
 ![04.1605 convergence, matched budget](assets/results/convergence_matched_04.1605.png)
 ![14.0003 convergence, matched budget](assets/results/convergence_matched_14.0003.png)
 ![14.0012 convergence, matched budget](assets/results/convergence_matched_14.0012.png)
 
 ## Open runs
+
+All planned runs have completed; none remain open.
 
 - **Solling (57 params) NUTS**: SLURM job 16526 on `disco`, submitted with a
   4-day walltime cap and `--checkpoint-every 100` (see `fix(bayesian): honor
@@ -130,9 +147,13 @@ information did not resolve this.
   21-parameter ICP sites would predict, plausibly reflecting the cost of
   NUTS's warmup-phase step-size and mass-matrix adaptation at higher
   dimension.
-- **Solling DEMetropolisZ (matched budget)**: not yet run. The completed NUTS
-  wall-clock (1 day 14h04m) will be used to size this comparison, following
-  the procedure in §3.
+- **Solling DEMetropolisZ (matched budget)**: SLURM job 16564 on `disco`,
+  sized off the NUTS run's elapsed time per the procedure in §3
+  (`--time=38:10:00`). Completed in 1h29m20s — reached its 200,000-draw
+  ceiling well within budget rather than being cut off by the walltime cap.
+  Convergence diagnostics: max R-hat 3.10 (`fracBB0`), median R-hat 2.05, min
+  ESS(bulk) 3 (`Topt`). See §3 for the full comparison against Solling's
+  NUTS run.
 
 ## Methodology notes
 
