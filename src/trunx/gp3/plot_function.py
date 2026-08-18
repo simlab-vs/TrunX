@@ -122,7 +122,7 @@ def plot_combined_3pg_outputs(
     months = np.arange(num_months)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
-    cmap = plt.cm.get_cmap("Set2")
+    cmap = plt.colormaps["Set2"]
     r_colors = cmap(np.linspace(0, 1, len(species_list)))
 
     for idx, (var, label) in enumerate(zip(i_var, i_lab, strict=True)):
@@ -417,7 +417,7 @@ def plot_combined_3pg_outputs_per_species(
     num_months = len(dates)
     months = np.arange(num_months)
 
-    cmap = plt.cm.get_cmap("Set2")
+    cmap = plt.colormaps["Set2"]
     r_colors = cmap(np.linspace(0, 1, len(species_list)))
     figures = []
     for sp_idx, (species, color) in enumerate(zip(species_list, r_colors, strict=True)):
@@ -619,9 +619,8 @@ def plot_combined_3pg_outputs_obv(
 
         plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
         plt.tight_layout()
-        plt.savefig(
-            os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png") if fig_name else None
-        )
+        if fig_name:
+            plt.savefig(os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png"))
         figures.append(fig)
 
     if show:

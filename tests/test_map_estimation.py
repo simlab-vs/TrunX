@@ -12,6 +12,7 @@ import pytest
 from synthetic_stand import OBS_MONTHS, TRUE_ALPHA_CX, build_inputs, one
 
 from trunx.gp3.bayesiancalibrations.map_param_est import (
+    batched_map_search,
     map_to_inference_data,
     run_map_estimation,
 )
@@ -61,6 +62,39 @@ def test_restarts_do_not_worsen_the_mode() -> None:
     _, logp_restarts = _run_map(n_restarts=2)
 
     assert logp_restarts >= logp_single
+
+
+def test_batched_map_search_recovers_known_parameter() -> None:
+    state, climate, params, site, species = build_inputs()
+
+    best, logp = batched_map_search(
+        priors=PRIORS,
+        fixed_params=params._replace(alphaCx=one(0.02)),
+        state=state,
+        climate=climate,
+        site=site,
+        species=species,
+        observations=_observations(),
+        n_restarts=100,
+        n_steps=150,
+        seed=0,
+    )
+
+    assert best["alphaCx"] == pytest.approx(TRUE_ALPHA_CX, rel=0.05)
+    assert logp > 0.0
+    for name, (lower, upper) in PRIORS.items():
+        assert lower <= best[name] <= upper
+
+
+def test_vmap_restarts_do_not_worsen_the_mode() -> None:
+    """Also regression-covers a vmap winner pinned at a prior bound (err_NPP's lower
+    bound, from these noise-free observations): `run_map_estimation` must still accept
+    it as a `pm.find_MAP` starting point instead of crashing on a non-finite transform.
+    """
+    _, logp_single = _run_map()
+    _, logp_vmap = _run_map(n_vmap_restarts=50, n_vmap_steps=100)
+
+    assert logp_vmap >= logp_single
 
 
 def test_map_to_inference_data_has_one_draw() -> None:

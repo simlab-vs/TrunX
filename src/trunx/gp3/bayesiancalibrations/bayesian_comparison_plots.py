@@ -18,9 +18,9 @@ from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
-from trunx.gp3.bayesiancalibrations.save_load_results import load_predictions
+from trunx.gp3.bayesiancalibrations.save_load_results import load_map_estimate, load_predictions
 from trunx.gp3.gradient_descent import (
     GradientDescentConfig,
     apply_fitted_params,
@@ -100,6 +100,22 @@ def run_hmc_model(output_dir: str) -> dict[str, Any]:
     return load_predictions(os.path.join(output_dir, "predictions.npz"))
 
 
+def dbh_from_observed_biomass(
+    ws_per_ha: np.ndarray, stems_per_ha: np.ndarray, aWS: float, nWS: float
+) -> np.ndarray:
+    """3PG's own mean-tree DBH, applied to field biomass and stem count.
+
+    Same inversion as `helper_function.compute_dbh`, but fed the observed WS/N instead
+    of simulated output. Comparing this against the field-measured quadratic mean
+    diameter (the `DBH` observation itself) isolates the Jensen's-inequality gap
+    between the two aggregations: `DBH` is built by summing per-tree allometric
+    equations over the stand's actual size distribution, while this — like the model's
+    own DBH state — inverts a single mean tree. See TODO.md.
+    """
+    ws_per_tree_kg = (ws_per_ha * 1000.0) / stems_per_ha
+    return (ws_per_tree_kg / aWS) ** (1.0 / nWS)
+
+
 def _obs_indices_in_time_series(
     time_months: pd.DatetimeIndex, obs_time: pd.Series
 ) -> tuple[list[int], np.ndarray]:
@@ -125,6 +141,9 @@ def plot_comparison(
     include_gradient_descent: bool = False,
     include_bayesian: bool = False,
     include_hmc: bool = False,
+    bayesian_label: str = "PyMC (DEz)",
+    hmc_label: str = "HMC (NUTS)",
+    site_name: str | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
 
@@ -147,6 +166,19 @@ def plot_comparison(
     include_gradient_descent, include_bayesian, include_hmc : bool
         Whether to run, plot, and score each source. The default model
         always runs.
+    bayesian_label : str
+        Legend/title label for the `bayesian_output_dir` source, e.g. "MAP + Laplace"
+        when the saved predictions come from `run_map_analysis` instead of MCMC.
+    hmc_label : str
+        Legend/title label for the `hmc_output_dir` source. Despite the parameter name
+        (`run_hmc_model` originally only loaded NUTS runs), this slot works for any
+        saved `predictions.npz`, e.g. "MAP + Laplace" or "MCMC (DEz)".
+    site_name : str | None
+        If given, adds a figure title with this name, the mean RMSE across the
+        variables actually calibrated on (`plot_variables` minus
+        `bayesian_config.DIAGNOSTIC_ONLY_ERROR_NAMES` — DBH/BA/Height are excluded,
+        since they're diagnostic-only, see TODO.md), and the MAP log posterior read
+        from `bayesian_output_dir/map_estimate.json`, if present.
 
     Returns
     -------
@@ -176,6 +208,22 @@ def plot_comparison(
         )
         observations = observations.filter(pl.Series(obs_mask))
         obs_time = obs_time[obs_mask]
+
+    derived_dbh = None
+    if "N" in observations.columns:
+        stems_mask = observations["N"].is_not_null().to_numpy()
+        if stems_mask.any():
+            defaults = load_param_defaults_from_file(file_path, ["aWS", "nWS"])
+            aWS, nWS = defaults["aWS"], defaults["nWS"]
+            derived_dbh = (
+                obs_time[stems_mask],
+                dbh_from_observed_biomass(
+                    ws_per_ha=observations["WS"].to_numpy()[stems_mask],
+                    stems_per_ha=observations["N"].to_numpy()[stems_mask],
+                    aWS=aWS,
+                    nWS=nWS,
+                ),
+            )
 
     default_outputs = run_default_model(file_path)
 
@@ -224,12 +272,12 @@ def plot_comparison(
             upper_pred = np.asarray(bay_predictions[var][2])
             bay_at_obs = np.asarray([mean_pred[idx] for idx in obs_indices])
             ax.fill_between(
-                time_months, lower_pred, upper_pred, alpha=0.3, label="PyMC (DEz) 95% CI"
+                time_months, lower_pred, upper_pred, alpha=0.3, label=f"{bayesian_label} 95% CI"
             )
-            ax.plot(time_months, mean_pred, label="PyMC (DEz) mean")
+            ax.plot(time_months, mean_pred, label=f"{bayesian_label} mean")
             row["bayesian_rmse"] = rmse(obs_values, bay_at_obs)
             row["bayesian_mae"] = mae(obs_values, bay_at_obs)
-            title_parts.append(f"PyMC: {row['bayesian_rmse']:.2f}")
+            title_parts.append(f"{bayesian_label}: {row['bayesian_rmse']:.2f}")
 
         if hmc_predictions is not None:
             hmc_mean_pred = np.asarray(hmc_predictions[var][0])
@@ -237,14 +285,28 @@ def plot_comparison(
             hmc_upper_pred = np.asarray(hmc_predictions[var][2])
             hmc_at_obs = np.asarray([hmc_mean_pred[idx] for idx in obs_indices])
             ax.fill_between(
-                time_months, hmc_lower_pred, hmc_upper_pred, alpha=0.3, label="HMC (NUTS) 95% CI"
+                time_months,
+                hmc_lower_pred,
+                hmc_upper_pred,
+                alpha=0.3,
+                label=f"{hmc_label} 95% CI",
             )
-            ax.plot(time_months, hmc_mean_pred, label="HMC (NUTS) mean")
+            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean")
             row["hmc_rmse"] = rmse(obs_values, hmc_at_obs)
             row["hmc_mae"] = mae(obs_values, hmc_at_obs)
-            title_parts.append(f"HMC: {row['hmc_rmse']:.2f}")
+            title_parts.append(f"{hmc_label}: {row['hmc_rmse']:.2f}")
 
         ax.scatter(obs_time, obs_values, color="red", label="Observations", zorder=5)
+        if var == "DBH" and derived_dbh is not None:
+            derived_time, derived_values = derived_dbh
+            ax.scatter(
+                derived_time,
+                derived_values,
+                color="black",
+                marker="x",
+                label="3PG-derived (from obs WS, N)",
+                zorder=5,
+            )
 
         ax.set_xlabel("Year")
         ax.set_ylabel(LABEL_MAP.get(var, var))
@@ -253,7 +315,28 @@ def plot_comparison(
         metrics.append(row)
 
     axes[0].legend()
-    fig.tight_layout()
+
+    if site_name is not None:
+        diagnostic_only_vars = {name.removeprefix("err_") for name in DIAGNOSTIC_ONLY_ERROR_NAMES}
+        calibrated_metrics = [
+            row
+            for row in metrics
+            if row["variable"] not in diagnostic_only_vars and "bayesian_rmse" in row
+        ]
+        title = site_name
+        if calibrated_metrics:
+            mean_rmse = np.mean([row["bayesian_rmse"] for row in calibrated_metrics])
+            calibrated_names = "/".join(row["variable"] for row in calibrated_metrics)
+            title += f" — mean RMSE ({calibrated_names}): {mean_rmse:.2f}"
+        if bayesian_output_dir is not None:
+            map_estimate_path = os.path.join(bayesian_output_dir, "map_estimate.json")
+            if os.path.exists(map_estimate_path):
+                _, logp = load_map_estimate(map_estimate_path)
+                title += f", log posterior: {logp:.2f}"
+        fig.suptitle(title, fontsize=14)
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    else:
+        fig.tight_layout()
 
     return fig, pd.DataFrame(metrics)
 
