@@ -57,4 +57,6 @@ structure), then run:
    :maxdepth: 2
    :caption: Contents:
 
-   api/modules
+   User Guide <user_guide>
+   Advanced Usage <advanced_usage>
+   API Reference <api/modules>
