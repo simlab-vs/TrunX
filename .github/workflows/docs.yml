@@ -37,8 +37,19 @@ jobs:
           python-version: "3.13"
           enable-cache: false
 
+      # jax (and its jax[cuda12] variant) is a multi-GB download that the docs
+      # build never needs: conf.py's autodoc_mock_imports mocks it out, since
+      # Sphinx only reads docstrings, it never actually runs any model code.
+      - name: Sync docs dependencies (excluding jax)
+        run: >
+          uv sync --group docs
+          --no-install-package jax
+          --no-install-package jaxlib
+          --no-install-package jax-cuda12-plugin
+          --no-install-package jax-cuda12-pjrt
+
       - name: Build Sphinx docs
-        run: uv run --group docs sphinx-build -b html docs/source docs/build
+        run: uv run --no-sync sphinx-build -b html docs/source docs/build
 
       - name: Save uv cache
         if: steps.cache-restore.outputs.cache-hit != 'true'
