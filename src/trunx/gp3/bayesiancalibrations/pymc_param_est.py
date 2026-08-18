@@ -26,6 +26,7 @@ from trunx.gp3.bayesiancalibrations.calibration_utils import (
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -319,6 +320,8 @@ def run_pymc_inference(
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
+    step_method: str = "demetropolisz",
+    target_accept: float = 0.9,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
@@ -344,10 +347,24 @@ def run_pymc_inference(
         Number of post-tuning draws per chain to sample between checkpoints.
     resume_tune : int
         Number of tuning steps used to re-warm the sampler at the start of
-        every chunk after the first (each chunk starts from a fresh
-        `DEMetropolisZ` step, so its proposal scale needs to briefly readapt).
+        every chunk after the first (each chunk starts a fresh step object, so
+        its proposal scale/step size needs to briefly readapt). For `"nuts"`,
+        this re-tunes the step size and mass matrix from scratch each chunk,
+        which is more wasteful than for `"demetropolisz"` — a larger
+        `resume_tune` is worth considering there if checkpointing resumes often.
+    step_method : str
+        `"demetropolisz"` (derivative-free differential evolution) or `"nuts"`
+        (gradient-based, via the same `Run3PGLogLikeOp.grad` MAP already uses).
+        NUTS needs far fewer draws for a comparable effective sample size but
+        each draw costs more (multiple gradient evaluations via leapfrog steps),
+        and can be more sensitive to a mode sitting on a prior bound.
+    target_accept : float
+        Target acceptance probability for `pm.NUTS`'s step-size adaptation.
+        Ignored for `"demetropolisz"`.
     """
-    checkpoint_every = max(500, num_samples // 10)
+    if step_method not in {"demetropolisz", "nuts"}:
+        raise ValueError(f"step_method must be 'demetropolisz' or 'nuts', got {step_method!r}")
+
     model = pymc_model(
         climate=climate,
         site=site,
@@ -380,8 +397,11 @@ def run_pymc_inference(
         while draws_done < num_samples:
             chunk_draws = min(checkpoint_every, num_samples - draws_done)
             chunk_tune = num_warmup if idata is None else resume_tune
-            step = pm.DEMetropolisZ()
-            # step = pm.NUTS(target_accept=0.9)  # Use NUTS for better sampling efficiency
+            step = (
+                pm.NUTS(target_accept=target_accept)
+                if step_method == "nuts"
+                else pm.DEMetropolisZ()
+            )
             chunk_trace = pm.sample(
                 draws=chunk_draws,
                 tune=chunk_tune,
@@ -423,12 +443,19 @@ def run_pymc_analysis(
     num_samples: int = 5000,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
+    step_method: str = "demetropolisz",
+    target_accept: float = 0.9,
 ):
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
     Sampling is checkpointed to `output_dir` every `checkpoint_every` draws, so
     calling this again with the same `output_dir` resumes an interrupted run
     instead of starting over.
+
+    Parameters
+    ----------
+    step_method, target_accept
+        Forwarded to `run_pymc_inference`; see its docstring.
     """
     # Imported here so building the model doesn't require the input files that
     # `PG3_model_impl` reads at import time.
@@ -438,7 +465,9 @@ def run_pymc_analysis(
         file_path
     )
 
-    priors = load_priors_from_file(file_path, param_to_optimize)
+    priors = load_priors_from_file(
+        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+    )
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
@@ -467,6 +496,8 @@ def run_pymc_analysis(
         checkpoint_dir=output_dir,
         checkpoint_every=checkpoint_every,
         resume_tune=resume_tune,
+        step_method=step_method,
+        target_accept=target_accept,
     )
 
     print("\nConvergence diagnostics:")
