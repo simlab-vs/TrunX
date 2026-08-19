@@ -162,13 +162,16 @@ def create_species_data(
 def create_site_data(icp_df, weather_df, observed_data):
     """Create site data input for 3PG model.
 
-    The simulation start month ("from") is set to the date of the first
-    observation in ``observed_data`` so simulated and observed timelines
-    align, falling back to the earliest weather month if there are no
-    observations. Either way, it's clamped to the earliest month actually
-    present in ``weather_df``, since the simulation can't start before
-    climate data exists (``weather_df`` may already be trimmed to a later
-    start year than the plot's full observation history).
+    The simulation window ("from"/"to") is set to the first and last DBH
+    survey dates in ``observed_data`` so simulated and observed timelines
+    align — GPP-only rows (monthly satellite data joined onto
+    ``observed_data`` alongside the sparser field surveys) don't count,
+    since they can extend well past the last real census. Falls back to
+    the earliest/latest weather month if there are no DBH surveys. Either
+    way, it's clamped to the weather months actually present in
+    ``weather_df``, since the simulation can't run outside the range
+    climate data exists for (``weather_df`` may already be trimmed to a
+    narrower range than the plot's full observation history).
     """
     site_df = pl.read_excel(
         os.path.join(threepg_data_folder, "data.input.xlsx"), sheet_name="site"
@@ -186,21 +189,36 @@ def create_site_data(icp_df, weather_df, observed_data):
     weather_min_month = (
         weather_df.filter(pl.col("year") == weather_min_year).select("month").min().item()
     )
+    weather_max_year = weather_df["year"].max()
+    weather_max_month = (
+        weather_df.filter(pl.col("year") == weather_max_year).select("month").max().item()
+    )
 
-    if observed_data.is_empty():
+    field_observed = (
+        observed_data.drop_nulls(subset=["DBH"]) if not observed_data.is_empty() else observed_data
+    )
+
+    if field_observed.is_empty():
         min_year, min_month = weather_min_year, weather_min_month
+        max_year, max_month = weather_max_year, weather_max_month
     else:
-        first_obs = observed_data.sort("Date").row(0, named=True)
+        sorted_obs = field_observed.sort("Date")
+        first_obs = sorted_obs.row(0, named=True)
+        last_obs = sorted_obs.row(-1, named=True)
         min_year, min_month = first_obs["year"], first_obs["month"]
+        max_year, max_month = last_obs["year"], last_obs["month"]
 
     if (min_year, min_month) < (weather_min_year, weather_min_month):
         min_year, min_month = weather_min_year, weather_min_month
+    if (max_year, max_month) > (weather_max_year, weather_max_month):
+        max_year, max_month = weather_max_year, weather_max_month
 
-    site_df = site_df.with_columns([pl.lit(f"{min_year}-{min_month:02d}").alias("from")])
-
-    max_year = weather_df["year"].max()
-    max_month = weather_df.filter(pl.col("year") == max_year).select("month").max().item()
-    site_df = site_df.with_columns([pl.lit(f"{max_year}-{max_month:02d}").alias("to")])
+    site_df = site_df.with_columns(
+        [
+            pl.lit(f"{min_year}-{min_month:02d}").alias("from"),
+            pl.lit(f"{max_year}-{max_month:02d}").alias("to"),
+        ]
+    )
 
     return site_df
 
