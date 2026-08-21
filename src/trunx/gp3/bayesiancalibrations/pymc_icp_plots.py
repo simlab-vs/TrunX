@@ -3,6 +3,7 @@
 import argparse
 import os
 import shutil
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
@@ -22,25 +23,34 @@ def get_available_cpus() -> int:
     return os.cpu_count() or 1
 
 
-def _load_species_param_bound(species_name: str) -> pd.DataFrame:
-    """Build a param_bound table for one species from the literature parquet.
+_LITERATURE_SOURCES = {
+    "Forrester": "literature_params_forrester_forrester.parquet",
+    "Forrester_default": "literature_params_forrester_default.parquet",
+    "Trotsiuk": "literature_params_trotsiuk.parquet",
+}
 
-    Uses `literature_params_forrester_forrester.parquet` for the default and
-    prior range.
+
+def _load_species_param_bound(
+    species_name: str, literature_source: str = "Forrester"
+) -> pd.DataFrame:
+    """Build a param_bound table for one species from the literature parquet.
 
     Parameters
     ----------
     species_name : str
         Species name as it appears in the literature parquet (e.g. "Picea abies").
+    literature_source : str
+        Which literature table to load bounds from — one of `_LITERATURE_SOURCES`
+        (`"Forrester"`, `"Forrester_default"`, `"Trotsiuk"`).
 
     Returns
     -------
     pd.DataFrame
         Columns: param_name, default, min, max.
     """
-    literature_path = os.path.join(
-        threepg_data_folder, "literature_params_forrester_forrester.parquet"
-    )
+    if literature_source not in _LITERATURE_SOURCES:
+        raise ValueError(f"Unknown literature source: {literature_source}")
+    literature_path = os.path.join(threepg_data_folder, _LITERATURE_SOURCES[literature_source])
     literature_bound = pd.read_parquet(literature_path)
     literature_bound = literature_bound[literature_bound["species"] == species_name]
     if literature_bound.empty:
@@ -50,54 +60,81 @@ def _load_species_param_bound(species_name: str) -> pd.DataFrame:
     return param_bound[["param_name", "default", "min", "max"]]
 
 
-def prepare_plot_input(plot_id: str) -> str:
-    """Regenerate one plot's 3PG input file and align its calibration sheets with solling's.
+def prepare_plot_input(plot_id: str, literature_source: str) -> str:
+    """Get one plot's 3PG input file for `literature_source`, building it once.
+
+    Cached at `icp_plots/<literature_source>/<plot_id>_data.xlsx`: if that file
+    already exists, it's returned as-is rather than rebuilt. Regenerating from raw
+    ICP data is expensive and deterministic given `(plot_id, literature_source)`.
+    Delete the file to force a fresh rebuild, e.g. after the underlying raw ICP
+    data changes, or if `run_calibration_sweep.py`'s retry logic reports it corrupt.
+
+    Built entirely under a uniquely-named temp file in the same directory, then
+    moved into place with `os.replace` (atomic on POSIX) only once complete — so a
+    job crashing mid-build never leaves a half-written `.xlsx` behind, and several
+    `run_calibration_sweep.py` jobs racing to build the same plot_id/source at once
+    just redo the same work redundantly rather than corrupting each other's output.
 
     Parameters
     ----------
     plot_id : str
         ICP plot identifier.
+    literature_source : str
+        Forwarded to `_load_species_param_bound`; also the cache's subdirectory.
 
     Returns
     -------
     str
-        Path to the plot's generated input Excel file.
+        Path to the plot's input Excel file.
     """
-    file_path = os.path.join(threepg_data_folder, f"icp_plots/{plot_id}_data.xlsx")
+    plot_dir = os.path.join(threepg_data_folder, "icp_plots", literature_source)
+    os.makedirs(plot_dir, exist_ok=True)
+    file_path = os.path.join(plot_dir, f"{plot_id}_data.xlsx")
+
     if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"Deleted: {file_path}")
-    create_input_data(file_path, plot_id)
+        return file_path
 
-    species_names = pd.read_excel(file_path, sheet_name="species")["species"].unique().tolist()
-    if len(species_names) != 1:
-        raise ValueError(f"Expected a single-species plot for {plot_id}, found: {species_names}")
-    species_name = species_names[0]
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
+    os.close(tmp_fd)
+    try:
+        create_input_data(tmp_path, plot_id)
 
-    solling_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-    error_bound = pd.read_excel(solling_path, sheet_name="error_param")
+        species_names = pd.read_excel(tmp_path, sheet_name="species")["species"].unique().tolist()
+        if len(species_names) != 1:
+            raise ValueError(
+                f"Expected a single-species plot for {plot_id}, found: {species_names}"
+            )
+        species_name = species_names[0]
 
-    param_bound = _load_species_param_bound(species_name)
+        solling_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+        error_bound = pd.read_excel(solling_path, sheet_name="error_param")
 
-    observed_data = pd.read_excel(file_path, sheet_name="observed")
-    observed_data = observed_data.rename(columns={"Date": "date", "stems_n": "N"})
-    required_cols = ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-    # `N` (stems/ha) isn't required for calibration itself — it's kept only so plots can
-    # show the "mean tree" DBH implied by inverting aWS/nWS on the observed WS/N, next to
-    # the field-measured quadratic mean diameter, to visualize the Jensen's-gap between
-    # the two aggregations. Dropped from the required set so a missing N doesn't discard
-    # an otherwise-complete observation row.
-    observed_data = observed_data[[*required_cols, "N"]].dropna(subset=required_cols)
+        param_bound = _load_species_param_bound(species_name, literature_source=literature_source)
 
-    with pd.ExcelWriter(
-        file_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
-    ) as writer:
-        param_bound.to_excel(writer, sheet_name="param_bound", index=False)
-        error_bound.to_excel(writer, sheet_name="error_param", index=False)
-        observed_data.to_excel(writer, sheet_name="observed", index=False)
-        pd.read_excel(file_path, sheet_name="observed").to_excel(
-            writer, sheet_name="all_observed", index=False
-        )
+        observed_data = pd.read_excel(tmp_path, sheet_name="observed")
+        observed_data = observed_data.rename(columns={"Date": "date", "stems_n": "N"})
+        required_cols = ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
+        # `N` (stems/ha) isn't required for calibration itself — it's kept only so plots can
+        # show the "mean tree" DBH implied by inverting aWS/nWS on the observed WS/N, next to
+        # the field-measured quadratic mean diameter, to visualize the Jensen's-gap between
+        # the two aggregations. Dropped from the required set so a missing N doesn't discard
+        # an otherwise-complete observation row.
+        observed_data = observed_data[[*required_cols, "N"]].dropna(subset=required_cols)
+
+        with pd.ExcelWriter(
+            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        ) as writer:
+            param_bound.to_excel(writer, sheet_name="param_bound", index=False)
+            error_bound.to_excel(writer, sheet_name="error_param", index=False)
+            observed_data.to_excel(writer, sheet_name="observed", index=False)
+            pd.read_excel(tmp_path, sheet_name="observed").to_excel(
+                writer, sheet_name="all_observed", index=False
+            )
+
+        os.replace(tmp_path, file_path)
+    except Exception:
+        os.remove(tmp_path)
+        raise
 
     return file_path
 
@@ -108,6 +145,7 @@ def run_bayesian_for_plot(
     cores: int | None = None,
     num_warmup: int = 10000,
     num_samples: int = 10000,
+    literature_source: str = "Forrester",
 ) -> str:
     """Prepare inputs and run Bayesian calibration for one ICP plot.
 
@@ -117,13 +155,15 @@ def run_bayesian_for_plot(
         ICP plot identifier.
     chains, cores, num_warmup, num_samples
         Passed through to `run_pymc_analysis`.
+    literature_source : str
+        Forwarded to `prepare_plot_input`.
 
     Returns
     -------
     str
         The plot_id, on successful completion.
     """
-    file_path = prepare_plot_input(plot_id)
+    file_path = prepare_plot_input(plot_id, literature_source=literature_source)
     param_bound = pd.read_excel(file_path, sheet_name="param_bound")
     fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
     error_names = [
@@ -153,7 +193,11 @@ def run_bayesian_for_plot(
 
 
 def run_bayesian_calibration(
-    plot_ids: list[str], chains: int = 3, num_warmup: int = 100, num_samples: int = 100
+    plot_ids: list[str],
+    chains: int = 3,
+    num_warmup: int = 100,
+    num_samples: int = 100,
+    literature_source: str = "Forrester",
 ) -> None:
     """Run Bayesian calibration for multiple ICP plots in parallel.
 
@@ -163,6 +207,8 @@ def run_bayesian_calibration(
         List of ICP plot identifiers.
     chains, cores, num_warmup, num_samples
         Passed through to `run_pymc_analysis`.
+    literature_source : str
+        Forwarded to `prepare_plot_input`.
     """
     available_cpus = get_available_cpus()
     max_workers = max(1, min(len(plot_ids), available_cpus // chains))
@@ -179,6 +225,7 @@ def run_bayesian_calibration(
                 cores=chains,
                 num_warmup=num_warmup,
                 num_samples=num_samples,
+                literature_source=literature_source,
             ): plot_id
             for plot_id in plot_ids
         }

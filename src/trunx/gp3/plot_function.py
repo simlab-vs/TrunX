@@ -546,7 +546,7 @@ def plot_combined_3pg_outputs_obv(
 
     figures = []
     for species in species_list:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 7))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 3))
         axes = axes.flatten() if n_metrics > 1 else [axes]
 
         species_data = df[df["species"] == species].sort_values("Dates")

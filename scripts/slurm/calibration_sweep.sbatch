@@ -22,8 +22,8 @@
 # descent tasks in the same array finish in a small fraction of it.
 
 #SBATCH --job-name=trunx-calibration-sweep
-#SBATCH --output=logs/%x-%A_%a.out
-#SBATCH --error=logs/%x-%A_%a.err
+#SBATCH --output=data/results/calibration_sweep/logs/%x-%A_%a.out
+#SBATCH --error=data/results/calibration_sweep/logs/%x-%A_%a.err
 #SBATCH --partition=Dance
 #SBATCH --qos=standby_qos
 #SBATCH --cpus-per-task=5
@@ -76,14 +76,6 @@ apptainer run \
     --bind /tmp:/tmp \
     --pwd /app \
     trunkx-app.sif \
-    python scripts/run_calibration_sweep.py \
+    /app/scripts/run_calibration_sweep.py \
     --job-index "$JOB_INDEX" \
-    --output-dir "data/results/calibration_sweep" \
-    --chains 4 \
-    --demetropolisz-num-warmup 50 \
-    --demetropolisz-num-samples 50 \
-    --nuts-num-warmup 50 \
-    --nuts-num-samples 50 \
-    --n-vmap-restarts 10 \
-    --n-vmap-steps 10 \
-    --laplace-draws 10
+    --output-dir "data/results/calibration_sweep" 
