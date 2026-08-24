@@ -108,6 +108,55 @@ def save_map_estimate(
     return file_path
 
 
+def save_laplace_covariance(
+    covariance: np.ndarray,
+    names: list[str],
+    output_dir: str,
+    filename: str = "laplace_covariance.npz",
+) -> str:
+    """
+    Save the unconstrained-space covariance of a Laplace approximation.
+
+    Parameters
+    ----------
+    covariance : np.ndarray
+        Covariance matrix from `fit_laplace`.
+    names : list[str]
+        Parameter names indexing the matrix axes.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the .npz file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    np.savez(file_path, covariance=covariance, names=np.asarray(names))
+    return file_path
+
+
+def load_laplace_covariance(file_path: str) -> tuple[np.ndarray, list[str]]:
+    """
+    Load a covariance matrix previously saved with `save_laplace_covariance`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .npz file.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[str]]
+        The covariance matrix and the parameter names indexing its axes.
+    """
+    data = np.load(file_path)
+    return data["covariance"], [str(name) for name in data["names"]]
+
+
 def load_map_estimate(file_path: str) -> tuple[dict[str, float], float]:
     """
     Load a MAP estimate previously saved with `save_map_estimate`.

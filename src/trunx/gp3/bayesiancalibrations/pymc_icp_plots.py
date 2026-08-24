@@ -13,6 +13,9 @@ from trunx.gp3.bayesiancalibrations.load_files import (
     load_priors_from_file,
 )
 from trunx.gp3.bayesiancalibrations.pymc_param_est import plot_saved_results, run_pymc_analysis
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES
+from trunx.gp3.bayesiancalibrations.load_files import load_priors_from_file
+from trunx.gp3.bayesiancalibrations.pymc_param_est import run_pymc_analysis
 from trunx.gp3.create_data_inputs import create_input_data
 from trunx.gp3.prepare_data import prepare_data
 
@@ -83,10 +86,14 @@ def prepare_plot_input(plot_id: str) -> str:
     param_bound = _load_species_param_bound(species_name)
 
     observed_data = pd.read_excel(file_path, sheet_name="observed")
-    observed_data = observed_data.rename(columns={"Date": "date"})
-    observed_data = observed_data[
-        ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-    ].dropna()
+    observed_data = observed_data.rename(columns={"Date": "date", "stems_n": "N"})
+    required_cols = ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
+    # `N` (stems/ha) isn't required for calibration itself — it's kept only so plots can
+    # show the "mean tree" DBH implied by inverting aWS/nWS on the observed WS/N, next to
+    # the field-measured quadratic mean diameter, to visualize the Jensen's-gap between
+    # the two aggregations. Dropped from the required set so a missing N doesn't discard
+    # an otherwise-complete observation row.
+    observed_data = observed_data[[*required_cols, "N"]].dropna(subset=required_cols)
 
     with pd.ExcelWriter(
         file_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
@@ -125,7 +132,11 @@ def run_bayesian_for_plot(
     file_path = prepare_plot_input(plot_id)
     param_bound = pd.read_excel(file_path, sheet_name="param_bound")
     fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
-    error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+    error_names = [
+        name
+        for name in load_priors_from_file(file_path)
+        if name.startswith("err_") and name not in DIAGNOSTIC_ONLY_ERROR_NAMES
+    ]
 
     output_dir = os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}")
     if os.path.exists(output_dir):

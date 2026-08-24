@@ -22,3 +22,22 @@ FIT_PARAMS = [
     "nHB",
     "nHC",
 ]
+
+# `thinPower` and `rhoMin` also pin against their current bounds in some data files,
+# but published calibrations disagree by up to 2x on those two (e.g. Trotsiuk et al.
+# 2020 vs. Forrester et al. 2021 for thinPower), so widening isn't obviously the
+# right fix there; left alone pending a separate look at parameter identifiability.
+# See `load_files.literature_bound_overrides` for the species-dependent widening
+# applied to Tmax and MaxAge.
+
+# `compute_dbh` derives DBH from a single stand-level "mean tree": it inverts
+# aWS/nWS on the mean stem biomass per tree. `BA` and `Height` are then computed
+# from that same DBH. The ICP observations for all three are instead built by
+# summing per-tree allometric equations over each stand's actual DBH distribution
+# (see create_data_inputs.py) — a different, distribution-aware aggregation that
+# the model's single-mean-tree inversion cannot match whenever a stand has real
+# size spread. Fitting err_DBH/err_BA/err_Height therefore pushes the optimizer
+# to trade away real WS/WF/WR accuracy for a target the model can't correctly
+# represent, so their sigma priors are excluded from calibration; the variables
+# are still simulated and can be plotted for reference. See TODO.md.
+DIAGNOSTIC_ONLY_ERROR_NAMES = frozenset({"err_DBH", "err_BA", "err_Height"})
