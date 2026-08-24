@@ -1771,6 +1771,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mypy-boto3-s3"
+version = "1.43.66"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/b4/d9af4054a80a46e27bfec10ead824ac1d39a974179b47db4ad9844bc5658/mypy_boto3_s3-1.43.66.tar.gz", hash = "sha256:b2f74763e373b3f3d64cfcd2f00cdb1c10c8a4cefe6d4cdbc1ed4a6ade085c07", size = 78866, upload-time = "2026-08-07T00:17:38.354Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/bc/8ed7dad2bc1506732cc503ccbbc0fd48786d85900bb2c6577a26a634843b/mypy_boto3_s3-1.43.66-py3-none-any.whl", hash = "sha256:f9385e190d423690dbc161260dac02439e3b6c9841e992ba6a92d15c1050b3af", size = 86296, upload-time = "2026-08-07T00:17:36.388Z" },
+]
+
+[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3460,6 +3469,20 @@ wheels = [
 ]
 
 [[package]]
+name = "simlab-tools"
+version = "0.1.0"
+source = { git = "https://github.com/simlab-vs/simlab-tools.git#76f0a6c5d8958ef5467211c6a011b2ddfc702475" }
+
+[package.optional-dependencies]
+storage = [
+    { name = "boto3" },
+    { name = "mypy-boto3-s3" },
+    { name = "polars" },
+    { name = "pyarrow" },
+    { name = "tqdm" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3674,6 +3697,7 @@ dependencies = [
     { name = "salib" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+    { name = "simlab-tools", extra = ["storage"] },
     { name = "streamlit" },
     { name = "tqdm" },
 ]
@@ -3730,6 +3754,7 @@ requires-dist = [
     { name = "salib", specifier = ">=1.5.2" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
+    { name = "simlab-tools", extras = ["storage"], git = "https://github.com/simlab-vs/simlab-tools.git" },
     { name = "streamlit", specifier = ">=1.58.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
 ]
