@@ -335,8 +335,7 @@ def run_pymc_inference(
         so worker processes don't compete for device memory.
     param_defaults : dict[str, float] | None
         Starting value for each calibrated parameter, used to seed every
-        chain at the same point instead of a random prior draw — matching
-        the R reference's `createUniformPrior(min, max, best)`. If None,
+        chain at the same point instead of a random prior draw. If None,
         PyMC falls back to its default (random) initialization.
     checkpoint_dir : str | None
         Directory to save sampling checkpoints to and resume from. If a

@@ -12,10 +12,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import pandas as pd
+import polars as pl
 from jax import grad, jit, value_and_grad
 from tqdm import tqdm
 
-from trunx.config import threepg_data_folder
+from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.model_inputs import Params, SiteData, SpeciesData, State
 from trunx.gp3.PG3_model_impl import prepare_data, run_threepg_main
 from trunx.gp3.run_3pg import run_3pg
@@ -23,7 +24,7 @@ from trunx.gp3.run_3pg import run_3pg
 
 @dataclass
 class GradientDescentFitResult:
-    """COntainer for results of gradient descent fitting."""
+    """Container for results of gradient descent fitting."""
 
     fitted_params: dict[str, float]
     loss_history: list[float]
@@ -36,7 +37,7 @@ class GradientDescentConfig:
 
     target_vars: list[str]  # List of target variable names to fit
     fit_params: list[str]  # List of parameter names to optimize
-    file_path: str = "./data/solling_data.xlsx"
+    file_path: str
     observed_sheet: str = "observed"
     param_bounds_sheet: str = "param_bound"
     # Replaces the (min, max) loaded from param_bounds_sheet for any parameter present
@@ -116,11 +117,11 @@ def make_loss_function(
         }
         total_squared_error = jnp.asarray(0.0, dtype=jnp.float32)
         for var_name in target_vars:
-            pg3_predictions = pg3_outputs[var_name][obs_indices]
+            pg3_predictions = pg3_outputs[var_name][np.asarray(obs_indices)]
             if pg3_predictions.ndim == 2:
-                pg3_predictions = pg3_predictions[:, species_index]
+                pg3_predictions = pg3_predictions[:, species_index].reshape(-1)
 
-            observed_values = obs_values[var_name]
+            observed_values = obs_values[var_name].reshape(-1)
             scale = obs_scales[var_name]
             mask = ~(jnp.isnan(observed_values) | jnp.isnan(pg3_predictions))
             residuals = (pg3_predictions - observed_values) / scale
@@ -606,7 +607,17 @@ if __name__ == "__main__":
         "nHC",
     ]
 
-    file_path = os.path.join(threepg_data_folder, "14.0003_data.xlsx")
+    plot_id = "01.0082"
+    file_path = os.path.join(
+        results_data_folder, f"results/pymc_inference_results_{plot_id}/{plot_id}_data.xlsx"
+    )
+
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
+    if plot_id in file_path:
+        _df = pl.read_excel(file_path, sheet_name="param_bound")
+        _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
+        fit_params = _df["param_name"].to_list()
+
     config = GradientDescentConfig(
         file_path=file_path,
         observed_sheet="observed",

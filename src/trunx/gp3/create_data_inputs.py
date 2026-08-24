@@ -13,6 +13,7 @@ from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
 from trunx.gp3.allometrics import add_allometric_columns, load_forrester_eq3
+from trunx.gp3.prepare_deposition import get_deposition_df
 from trunx.gp3.weather_processing import (
     create_weather_input,
     fill_weather_with_era5,
@@ -223,6 +224,52 @@ def create_site_data(icp_df, weather_df, observed_data):
     return site_df
 
 
+def add_deposition_to_weather(
+    weather_df: pl.DataFrame,
+    plot_id: str,
+    deposition: pl.DataFrame | None = None,
+    deposition_path: str | None = None,
+) -> pl.DataFrame:
+    """Join deposition onto weather using weather's exact month range.
+
+    The deposition period is derived from ``weather_df`` min/max year-month so
+    deposition starts and ends on the same months as climate.
+    """
+    min_row = weather_df.sort(["year", "month"]).row(0, named=True)
+    max_row = weather_df.sort(["year", "month"]).row(weather_df.height - 1, named=True)
+    from_ = f"{int(min_row['year']):04d}-{int(min_row['month']):02d}"
+    to = f"{int(max_row['year']):04d}-{int(max_row['month']):02d}"
+
+    try:
+        dep_df = get_deposition_df(
+            plot_id=plot_id,
+            from_=from_,
+            to=to,
+            deposition=deposition,
+            deposition_path=deposition_path,
+        )
+        out = weather_df.join(dep_df, on=["year", "month"], how="left")
+        logger.info(
+            "Added deposition columns for plot_id %s over climate period [%s, %s]",
+            plot_id,
+            from_,
+            to,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load deposition for plot_id %s (%s) — filling with zeros", plot_id, exc
+        )
+        out = weather_df.with_columns(
+            pl.lit(0.0).alias("dep_n_tot"),
+            pl.lit(0.0).alias("dep_s_so4"),
+        )
+
+    return out.with_columns(
+        pl.col("dep_n_tot").fill_null(0.0),
+        pl.col("dep_s_so4").fill_null(0.0),
+    )
+
+
 def _allometric_observations(icp_df: pl.DataFrame) -> pl.DataFrame:
     """Aggregate per-tree Forrester biomass to survey-date observations.
 
@@ -431,6 +478,8 @@ def create_input_data(input_data_file, plot_id):
     # Site data
     input_site_df = create_site_data(icp_df, weather_df, observed_data)
     logger.info("Created site data for plot_id: %s", plot_id)
+
+    weather_df = add_deposition_to_weather(weather_df=weather_df, plot_id=plot_id)
 
     if len(miss_months) == 0:
         with pd.ExcelWriter(input_data_file, engine="openpyxl") as writer:

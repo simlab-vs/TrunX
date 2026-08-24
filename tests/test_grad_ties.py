@@ -115,7 +115,7 @@ _TIE_CASES = [
     # lai==LAImaxIntcptn marginally on the ratio (unclipped) side.
     (
         "calculate_interception@LAImax",
-        lambda lai: H.calculate_interception(PARAMS, _col(100.0), lai)[0],
+        lambda lai: H.calculate_interception(PARAMS, _col(100.0), lai, _col(1.0))[0],
         _col(5.0),
         "backward",
     ),

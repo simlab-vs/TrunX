@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
+import polars as pl
 from jax.scipy.stats import norm
 from SALib.analyze import morris as morris_analyze
 from SALib.sample import morris as morris_sample
@@ -228,6 +229,13 @@ def run_morris_analysis(
     print("\nGenerating Morris samples...")
     param_values = morris_sample.sample(problem, n_trajectories, num_levels=n_levels, seed=seed)
     print(f"Generated {param_values.shape[0]} samples")
+
+    param_names = problem["names"]
+    df_samples = pl.DataFrame(param_values, schema=param_names)
+
+    # Save to parquet
+    output_path = os.path.join(save_dir, "morris_samples.parquet")
+    df_samples.write_parquet(output_path)
 
     # Evaluate all samples
     print("\nEvaluating log-likelihood with JAX batching...")

@@ -641,17 +641,23 @@ def compute_allocation_fraction(species, params, phi_phys: Array, DBH: Array):
 def calculate_interception(
     params,
     prcp: Array,
-    lai: Array,
+    lai_total: Array,
+    lai_per: Array,
 ) -> tuple[Array, Array]:
     """
-    Calculate rainfall interception for a single species (JAX-compatible).
+    Calculate rainfall interception per species, sharing the stand's total canopy.
+
+    Interception saturates with the *stand's* total LAI (species compete for the
+    same rainfall), then splits proportionally by each species' canopy share.
 
     Parameters
     ----------
     prcp : Array
         Monthly precipitation (mm)
-    lai : Array
-        Leaf Area Index
+    lai_total : Array
+        Stand-level total Leaf Area Index (summed across species)
+    lai_per : Array
+        Each species' fraction of the stand's total LAI
     MaxIntcptn : Array
         Maximum interception fraction
     LAImaxIntcptn : Array
@@ -665,7 +671,9 @@ def calculate_interception(
         Interception amount (mm)
     """
     condition = params.LAImaxIntcptn > 0
-    adjusted_fract = params.MaxIntcptn * jnp.minimum(1.0, lai / (params.LAImaxIntcptn + 1e-8))
+    adjusted_fract = (
+        params.MaxIntcptn * jnp.minimum(1.0, lai_total / (params.LAImaxIntcptn + 1e-8)) * lai_per
+    )
     prcp_interc_fract = jnp.where(condition, adjusted_fract, params.MaxIntcptn)
 
     prcp_interc = prcp * prcp_interc_fract
@@ -793,16 +801,18 @@ def compute_asw(
     # Parameters
     conduct_canopy: Array,
     lai: Array,
+    lai_total: Array,
+    lai_per: Array,
     # Optional soil evaporation
     evapotra_soil: Array | None = None,
 ) -> tuple[Array, Array]:
     """
-    Complete soil water balance for a single species following Fortran 3-PG code.
+    Complete soil water balance for a stand.
 
     Parameters
     ----------
     ASW : Array
-        Current available soil water (mm)
+        Current available soil water (mm), identical across species
     prcp : Array
         Monthly precipitation (mm)
     solar_rad : Array
@@ -817,6 +827,10 @@ def compute_asw(
         Canopy conductance (m/s)
     lai : Array
         Leaf Area Index
+    lai_total : Array
+        Stand-level total Leaf Area Index (summed across species)
+    lai_per : Array
+        Each species' fraction of the stand's total LAI
     evapotra_soil : Array, optional
         Soil evaporation (mm), default 0.0
 
@@ -834,10 +848,11 @@ def compute_asw(
     prcp_interc_fract, prcp_interc = calculate_interception(
         params=params,
         prcp=prcp,
-        lai=lai,
+        lai_total=lai_total,
+        lai_per=lai_per,
     )
 
-    # Step 2: Calculate transpiration
+    # Calculate transpiration
     transp_veg = calculate_transpiration(
         params=params,
         solar_rad=solar_rad,
@@ -847,24 +862,18 @@ def compute_asw(
         days_in_month=days_in_month,
     )
 
-    # Step 3: Update soil water balance
-    ASW, f_transp_scale, evapo_transp = update_soil_water(
+    # Update the shared, stand-level soil water balance. All species
+    # start each step with the same ASW, so any one of them represents the pool.
+    ASW_stand, f_transp_scale_stand, evapo_transp = update_soil_water(
         site=site,
-        ASW=ASW,
+        ASW=jnp.asarray(ASW).reshape(-1)[0],
         prcp=prcp,
-        transp_veg=transp_veg,
-        evapotra_soil=evapotra_soil,
-        prcp_interc=prcp_interc,
+        transp_veg=jnp.sum(transp_veg),
+        evapotra_soil=jnp.sum(jnp.broadcast_to(evapotra_soil, transp_veg.shape)),
+        prcp_interc=jnp.sum(prcp_interc),
     )
-
-    # Step 4: Scale transpiration if needed
-    transp_veg_scaled, evapotra_soil_scaled = scale_transpiration(
-        transp_veg=transp_veg,
-        evapotra_soil=evapotra_soil,
-        prcp_interc=prcp_interc,
-        evapo_transp=evapo_transp,
-        f_transp_scale=f_transp_scale,
-    )
+    ASW = jnp.full_like(transp_veg, ASW_stand)
+    f_transp_scale = jnp.full_like(transp_veg, f_transp_scale_stand)
 
     return ASW, f_transp_scale
 
@@ -1015,12 +1024,13 @@ def f_exp_foliage(params, age_months: Array) -> Array:
     eps = 1e-8
     kg = 12.0 * jnp.log(1.0 + params.gammaF1 / (params.gammaF0 + eps)) / (params.tgammaF + eps)
     age_year = jnp.where(age_months == 1.0, age_months / 12.0, (age_months - 1.0) / 12.0)
+
+    denom = params.gammaF0 + (params.gammaF1 - params.gammaF0) * jnp.exp(-kg * age_year)
+    denom = jnp.where(jnp.abs(denom) < eps, jnp.ones_like(denom), denom)
     out = jnp.where(
         (params.tgammaF * params.gammaF1) < eps,
         params.gammaF1,
-        params.gammaF1
-        * params.gammaF0
-        / (params.gammaF0 + (params.gammaF1 - params.gammaF0) * jnp.exp(-kg * age_year)),
+        params.gammaF1 * params.gammaF0 / denom,
     )
 
     return out

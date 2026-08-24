@@ -10,9 +10,13 @@ import pandas as pd
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES
-from trunx.gp3.bayesiancalibrations.load_files import load_priors_from_file
-from trunx.gp3.bayesiancalibrations.pymc_param_est import run_pymc_analysis
+from trunx.gp3.bayesiancalibrations.load_files import (
+    load_observations_from_file,
+    load_priors_from_file,
+)
+from trunx.gp3.bayesiancalibrations.pymc_param_est import plot_saved_results, run_pymc_analysis
 from trunx.gp3.create_data_inputs import create_input_data
+from trunx.gp3.prepare_data import prepare_data
 
 
 def get_available_cpus() -> int:
@@ -275,7 +279,7 @@ if __name__ == "__main__":
         ],
     }
 
-    plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species][0:5]
+    plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species]
 
     # Add argument parser
     parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
@@ -283,8 +287,8 @@ if __name__ == "__main__":
         "--plot-ids", nargs="+", required=False, help="Space-separated list of plot IDs"
     )
     parser.add_argument("--chains", type=int, default=3, help="Number of MCMC chains")
-    parser.add_argument("--warmup", type=int, default=100, help="Number of warmup samples")
-    parser.add_argument("--samples", type=int, default=100, help="Number of posterior samples")
+    parser.add_argument("--warmup", type=int, default=5000, help="Number of warmup samples")
+    parser.add_argument("--samples", type=int, default=5000, help="Number of posterior samples")
 
     args = parser.parse_args()
 
@@ -297,4 +301,15 @@ if __name__ == "__main__":
         chains=args.chains,
         num_warmup=args.warmup,
         num_samples=args.samples,
+    )
+
+    # Example plot
+    plot_id = args.plot_ids[0]
+    file_path = os.path.join(
+        results_data_folder, f"pymc_inference_results_{plot_id}", f"{plot_id}_data.xlsx"
+    )
+    plot_saved_results(
+        output_dir=os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}"),
+        observations=load_observations_from_file(file_path, site_data=prepare_data(file_path)[3]),
+        climate=prepare_data(file_path)[1],
     )

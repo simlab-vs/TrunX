@@ -11,7 +11,7 @@ import pandas as pd
 import polars as pl
 from matplotlib.figure import Figure
 
-from trunx.config import clean_data_folder
+from trunx.config import clean_data_folder, images_folder, results_data_folder
 from trunx.gp3.weather_processing import create_weather_input
 
 
@@ -65,7 +65,7 @@ def plot_outputs(outputs, start_month, fig_name: str | None = None, show: bool =
         ax.set_xlabel("Year")
 
     plt.tight_layout()
-    plt.savefig(os.path.join("./images/", fig_name))
+    plt.savefig(os.path.join(images_folder, fig_name))
     if show:
         plt.show()
 
@@ -190,7 +190,7 @@ def plot_combined_3pg_outputs(
 
     plt.suptitle("3-PG Model Outputs: R3PG vs Python3PG", fontsize=14, fontweight="bold")
     plt.tight_layout()
-    plt.savefig(os.path.join("./images/", fig_name))
+    plt.savefig(os.path.join(images_folder, fig_name))
     plt.show()
 
     return fig
@@ -363,7 +363,7 @@ def create_comparison_dataframe(r_df, outputs, start_month, species_list):
 
     df = p_outputs.join(r_outputs, on=["Dates", "species"], how="inner")
     df = df.with_columns(pl.col("Dates").dt.strftime("%Y-%m-%d").alias("Dates"))
-    df.write_csv("./data/r_python.comparison.csv")
+    df.write_csv(os.path.join(results_data_folder, "r_python_comparison.csv"))
 
     return df.to_pandas()
 
@@ -623,8 +623,7 @@ def plot_combined_3pg_outputs_obv(
         # )
 
         plt.tight_layout()
-        if fig_name:
-            plt.savefig(os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png"))
+        plt.savefig(os.path.join(images_folder, f"{fig_name}_{plot_id}_{species}.png"))
         figures.append(fig)
 
     if show:
@@ -650,7 +649,7 @@ def plot_dbh_distribution(
         "box" for a boxplot of tree diameters per survey date, or "scatter"
         for individual tree diameters plotted per date.
     fig_name : str | None
-        Base name used to save each species' figure under ``./images/``.
+        Base name used to save each species' figure under ``images_folder``.
     show : bool
         Whether to call ``plt.show()``.
 
@@ -726,7 +725,7 @@ def plot_dbh_distribution(
         )
         plt.tight_layout()
         if fig_name is not None:
-            plt.savefig(os.path.join("./images/", f"{fig_name}_{specie}.png"))
+            plt.savefig(os.path.join(images_folder, f"{fig_name}_{specie}.png"))
         figures.append(fig)
 
     if show:
