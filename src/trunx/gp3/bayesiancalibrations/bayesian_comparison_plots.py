@@ -16,19 +16,21 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_param_defaults_from_file,
     load_priors_from_file,
 )
-from trunx.gp3.bayesiancalibrations.save_load_results import load_predictions
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
-from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
-from trunx.gp3.bayesiancalibrations.save_load_results import load_map_estimate, load_predictions
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_gradient_descent_result,
+    load_map_estimate,
+    load_predictions,
+)
 from trunx.gp3.gradient_descent import (
     GradientDescentConfig,
     apply_fitted_params,
@@ -71,6 +73,38 @@ def run_default_model(file_path: str) -> dict[str, Any]:
     fixed_params = fixed_params._replace(**phy_defaults)
     _, outputs = run_3pg(initial_state, climate, fixed_params, site_data, species_data)
     return outputs
+
+
+def get_gradient_descent_fit(cache_dir: str) -> dict[str, float]:
+    """Load a gradient descent fit saved by `run_calibration_sweep.py` (or similar).
+
+    Plotting never runs gradient descent itself — the point estimate takes several
+    minutes, which a plotting call shouldn't pay for — so this only loads a
+    `gradient_descent_result.json` from `cache_dir` (see `save_gradient_descent_result`).
+
+    Parameters
+    ----------
+    cache_dir : str
+        Directory containing a `gradient_descent_result.json` from an earlier
+        calibration run.
+
+    Returns
+    -------
+    dict[str, float]
+        Fitted parameter values.
+
+    Raises
+    ------
+    FileNotFoundError
+        If `cache_dir` has no saved fit yet.
+    """
+    cache_path = os.path.join(cache_dir, "gradient_descent_result.json")
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError(
+            f"No saved gradient descent fit at {cache_path!r}. Run the calibration "
+            "(e.g. scripts/run_calibration_sweep.py) before plotting."
+        )
+    return load_gradient_descent_result(cache_path)
 
 
 def run_gradient_descent_model(
@@ -530,6 +564,111 @@ def plot_convergence_comparison(
     return fig, combined
 
 
+def plot_parameter_value_comparison(
+    pymc_inference_path: str | None = None,
+    hmc_inference_path: str | None = None,
+    param_names: list[str] = FIT_PARAMS,
+    include_gradient_descent: bool = True,
+    include_bayesian: bool = True,
+    include_hmc: bool = True,
+    gd_cache_dir: str | None = None,
+) -> tuple[Figure, pd.DataFrame]:
+    """Compare each parameter's fitted value across gradient descent, PyMC (DEz), and HMC (NUTS).
+
+    One small subplot per parameter (values span very different scales, e.g.
+    `mS` ~1e-4 vs. `MaxAge` ~400, so a single shared-axis bar chart would hide
+    most of them), each with one bar per included method.
+
+    Parameters
+    ----------
+    pymc_inference_path : str | None
+        Path to the saved PyMC `inference_data.nc`. Required if `include_bayesian`.
+    hmc_inference_path : str | None
+        Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
+    param_names : list[str]
+        Physiology parameters to compare. Error/sigma terms are excluded — gradient
+        descent doesn't fit them, so they'd have no value to compare against.
+    include_gradient_descent, include_bayesian, include_hmc : bool
+        Whether to include each method.
+    gd_cache_dir : str | None
+        Directory holding a saved gradient descent fit (see `get_gradient_descent_fit`).
+        Required if `include_gradient_descent`; pass the same directory used for
+        `plot_comparison`'s `gd_cache_dir` to compare against the same fit.
+
+    Returns
+    -------
+    tuple[Figure, pd.DataFrame]
+        The comparison figure and a long-form table (`parameter`, `method`, `value`).
+    """
+    if not (include_gradient_descent or include_bayesian or include_hmc):
+        raise ValueError(
+            "At least one of include_gradient_descent/include_bayesian/include_hmc must be True"
+        )
+    if include_gradient_descent and gd_cache_dir is None:
+        raise ValueError("gd_cache_dir is required when include_gradient_descent is True")
+    if include_bayesian and pymc_inference_path is None:
+        raise ValueError("pymc_inference_path is required when include_bayesian is True")
+    if include_hmc and hmc_inference_path is None:
+        raise ValueError("hmc_inference_path is required when include_hmc is True")
+
+    colors = {}
+    rows = []
+
+    if include_gradient_descent:
+        assert gd_cache_dir is not None
+        fitted_params = get_gradient_descent_fit(gd_cache_dir)
+        for name in param_names:
+            rows.append(
+                {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
+            )
+        colors["Gradient descent"] = "tab:green"
+
+    if include_bayesian:
+        assert pymc_inference_path is not None
+        pymc_summary = load_convergence_summary(pymc_inference_path, param_names)
+        for _, row in pymc_summary.iterrows():
+            rows.append(
+                {"parameter": row["parameter"], "method": "PyMC (DEz)", "value": row["mean"]}
+            )
+        colors["PyMC (DEz)"] = "tab:blue"
+
+    if include_hmc:
+        assert hmc_inference_path is not None
+        hmc_summary = load_convergence_summary(hmc_inference_path, param_names)
+        for _, row in hmc_summary.iterrows():
+            rows.append(
+                {"parameter": row["parameter"], "method": "HMC (NUTS)", "value": row["mean"]}
+            )
+        colors["HMC (NUTS)"] = "tab:orange"
+
+    combined = pd.DataFrame(rows)
+
+    ncols = 4
+    nrows = int(np.ceil(len(param_names) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    axes = axes.flatten()
+
+    for ax, name in zip(axes, param_names, strict=False):
+        param_rows = combined[combined["parameter"] == name]
+        for method in colors:
+            value = param_rows[param_rows["method"] == method]["value"]
+            if not value.empty:
+                ax.bar(method, value.iloc[0], color=colors[method])
+        ax.set_title(name)
+        ax.tick_params(axis="x", rotation=45)
+        ax.grid(alpha=0.3, axis="y")
+
+    for ax in axes[len(param_names) :]:
+        ax.axis("off")
+
+    legend_handles = [Rectangle((0, 0), 1, 1, color=color) for color in colors.values()]
+    fig.legend(legend_handles, list(colors), loc="upper right")
+    fig.suptitle("Fitted parameter values by calibration method")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+
+    return fig, combined
+
+
 def plot_and_save(plot_id: str, output_dir: str, prefix: str = ""):
     """Plot and save comparison/convergence/trace/posterior figures for a plot.
 
@@ -622,40 +761,7 @@ if __name__ == "__main__":
     _include_hmc = False
     _include_gradient_descent = True
 
-    plot_ids = [
-        # "04.1303",
-        # "51.0015",
-        # "53.0109",
-        # "53.0112",
-        # "53.0114",
-        # "53.0302",
-        # "53.0306",
-        # "53.0311",
-        # "53.0312",
-        # "53.0313",
-        # "53.0316",
-        # "53.0407",
-        # "53.0501",
-        # "53.0513",
-        # "53.0603",
-        # "53.0617",
-        # "53.0618",
-        # "53.0623",
-        # "59.0001",
-        # "59.0003",
-        "04.0101",
-        "04.0704",
-        "08.0034",
-        "53.0107",
-        # "04.0302",
-        # "04.1402",
-        # "04.1403",
-        # "14.0017",
-        # "52.0010",
-        # "53.0701",
-        # "59.0008",
-    ]
-
+    plot_ids = ["solling"]
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
         plot_and_save(plot_id, _plot_output_dir, prefix="")

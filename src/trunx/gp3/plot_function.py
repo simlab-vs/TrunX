@@ -619,11 +619,7 @@ def plot_combined_3pg_outputs_obv(
 
         plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
         plt.tight_layout()
-        plt.savefig(
-            os.path.join(images_folder, f"{fig_name}_{plot_id}_{species}.png")
-            if fig_name
-            else None
-        )
+        plt.savefig(os.path.join(images_folder, f"{fig_name}_{plot_id}_{species}.png"))
         figures.append(fig)
 
     if show:
