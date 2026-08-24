@@ -335,7 +335,7 @@ def run_map_analysis(
     print(f"Loaded priors for {len(priors)} parameters")
     print(f"Loaded observations for variables: {list(observations.keys())}")
 
-    map_estimate, logp, _ = run_map_estimation(
+    map_estimate, logp, model = run_map_estimation(
         initial_state=input_data.initial_state,
         climate=input_data.climate,
         site=input_data.site,

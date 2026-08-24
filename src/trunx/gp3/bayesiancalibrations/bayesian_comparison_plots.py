@@ -38,7 +38,6 @@ from trunx.gp3.gradient_descent import (
     apply_fitted_params,
     fit_with_gradient_descent,
 )
-from trunx.gp3.gradient_descent import apply_fitted_params
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -123,6 +122,7 @@ def get_gradient_descent_fit(cache_dir: str) -> dict[str, float]:
 
 def run_gradient_descent_model(
     file_path: str,
+    target_vars: list[str],
     fit_params: list[str],
     cache_dir: str | None = None,
 ) -> dict[str, Any]:
