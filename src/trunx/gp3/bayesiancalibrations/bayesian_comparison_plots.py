@@ -544,7 +544,12 @@ def plot_convergence_comparison(
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
     if param_names is None:
-        param_names = fit_params + [f"err_{var}" for var in PLOT_VARIABLES]
+        # param_names = fit_params + [f"err_{var}" for var in PLOT_VARIABLES]
+        param_names = FIT_PARAMS + [
+            f"err_{var}"
+            for var in PLOT_VARIABLES
+            if f"err_{var}" not in DIAGNOSTIC_ONLY_ERROR_NAMES
+        ]
 
     colors = {}
     summaries = []
