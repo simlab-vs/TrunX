@@ -16,12 +16,13 @@ from numpyro.distributions.transforms import AffineTransform, ComposeTransform, 
 from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     plot_inference_results,
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -87,25 +88,25 @@ def model(
 
     samples = {}
     for param_name, (lower, upper) in priors.items():
-        # samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
-        # Transform to unconstrained space
-        transform = ComposeTransform(
-            [SigmoidTransform(), AffineTransform(loc=lower, scale=upper - lower)]
-        )
+        samples[param_name] = numpyro.sample(param_name, dist.Uniform(lower, upper))
+        # # Transform to unconstrained space
+        # transform = ComposeTransform(
+        #     [SigmoidTransform(), AffineTransform(loc=lower, scale=upper - lower)]
+        # )
 
-        # Use Gaussian prior in unconstrained space
-        if param_defaults and param_name in param_defaults:
-            p = (param_defaults[param_name] - lower) / (upper - lower)
-            p = jnp.clip(p, 1e-6, 1 - 1e-6)
-            mu = jnp.log(p / (1 - p))
-            sigma = (upper - lower) / 6
-        else:
-            mu = 0.0
-            sigma = (upper - lower) / 6
+        # # Use Gaussian prior in unconstrained space
+        # if param_defaults and param_name in param_defaults:
+        #     p = (param_defaults[param_name] - lower) / (upper - lower)
+        #     p = jnp.clip(p, 1e-6, 1 - 1e-6)
+        #     mu = jnp.log(p / (1 - p))
+        #     sigma = (upper - lower) / 6
+        # else:
+        #     mu = 0.0
+        #     sigma = (upper - lower) / 6
 
-        samples[param_name] = numpyro.sample(
-            param_name, dist.TransformedDistribution(dist.Normal(mu, sigma), transform)
-        )
+        # samples[param_name] = numpyro.sample(
+        #     param_name, dist.TransformedDistribution(dist.Normal(mu, sigma), transform)
+        # )
 
     param_updates = {
         name: value for name, value in samples.items() if name in fixed_params._fields
@@ -493,7 +494,11 @@ def run_hmc_analysis(
         prepare_data(file_path)
     )
 
-    priors = load_priors_from_file(file_path, param_names=param_names)
+    priors = load_priors_from_file(
+        file_path, param_names, bound_overrides=literature_bound_overrides(file_path)
+    )
+    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
+        priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 

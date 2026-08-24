@@ -546,7 +546,7 @@ def plot_combined_3pg_outputs_obv(
 
     figures = []
     for species in species_list:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 10))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 3))
         axes = axes.flatten() if n_metrics > 1 else [axes]
 
         species_data = df[df["species"] == species].sort_values("Dates")
@@ -610,14 +610,18 @@ def plot_combined_3pg_outputs_obv(
                 )
 
             axes[idx].set_ylabel(config["label"])
-            axes[idx].set_title(config["label"].split("(")[0].strip())
+            # axes[idx].set_title(config["label"].split("(")[0].strip())
             axes[idx].grid(True, alpha=0.3)
             axes[idx].legend()
 
         for ax in axes[n_metrics:]:
             ax.axis("off")
 
-        plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
+        # plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})",
+        #       fontsize=14,
+        #       fontweight="bold"
+        # )
+
         plt.tight_layout()
         if fig_name:
             plt.savefig(os.path.join("./images/", f"{fig_name}_{plot_id}_{species}.png"))

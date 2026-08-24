@@ -14,18 +14,19 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import load_param_defaults_from_file
-from trunx.gp3.bayesiancalibrations.save_load_results import load_map_estimate, load_predictions
-from trunx.gp3.gradient_descent import (
-    GradientDescentConfig,
-    apply_fitted_params,
-    fit_with_gradient_descent,
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_gradient_descent_result,
+    load_map_estimate,
+    load_predictions,
 )
+from trunx.gp3.gradient_descent import apply_fitted_params
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -37,7 +38,7 @@ LABEL_MAP = {
     "Height": "Height",
     "WS": "Stem biomass",
     "WR": "Root biomass",
-    "WF": "Stem foliage",
+    "WF": "Foliage biomass",
 }
 
 
@@ -65,23 +66,52 @@ def run_default_model(file_path: str) -> dict[str, Any]:
     return outputs
 
 
+def get_gradient_descent_fit(cache_dir: str) -> dict[str, float]:
+    """Load a gradient descent fit saved by `run_calibration_sweep.py` (or similar).
+
+    Plotting never runs gradient descent itself — the point estimate takes several
+    minutes, which a plotting call shouldn't pay for — so this only loads a
+    `gradient_descent_result.json` from `cache_dir` (see `save_gradient_descent_result`).
+
+    Parameters
+    ----------
+    cache_dir : str
+        Directory containing a `gradient_descent_result.json` from an earlier
+        calibration run.
+
+    Returns
+    -------
+    dict[str, float]
+        Fitted parameter values.
+
+    Raises
+    ------
+    FileNotFoundError
+        If `cache_dir` has no saved fit yet.
+    """
+    cache_path = os.path.join(cache_dir, "gradient_descent_result.json")
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError(
+            f"No saved gradient descent fit at {cache_path!r}. Run the calibration "
+            "(e.g. scripts/run_calibration_sweep.py) before plotting."
+        )
+    return load_gradient_descent_result(cache_path)
+
+
 def run_gradient_descent_model(
     file_path: str,
-    target_vars: list[str],
     fit_params: list[str],
+    cache_dir: str,
 ) -> dict[str, Any]:
-    """Fit parameters with gradient descent and run 3PG with the fitted values."""
-    config = GradientDescentConfig(
-        target_vars=target_vars, fit_params=fit_params, file_path=file_path
-    )
-    fit_result = fit_with_gradient_descent(config)
+    """Load a saved gradient descent fit and run 3PG with it."""
+    fitted_values = get_gradient_descent_fit(cache_dir)
 
     initial_state, climate, base_params, site_data, species_data, _, _ = prepare_data(file_path)
     fitted_params: Params = apply_fitted_params(
         base_params=base_params,
         fit_params=fit_params,
-        fitted_values=fit_result.fitted_params,
-        species_index=config.species_index,
+        fitted_values=fitted_values,
+        species_index=0,
     )
     _, outputs = run_3pg(initial_state, climate, fitted_params, site_data, species_data)
     return outputs
@@ -144,6 +174,7 @@ def plot_comparison(
     bayesian_label: str = "PyMC (DEz)",
     hmc_label: str = "HMC (NUTS)",
     site_name: str | None = None,
+    gd_cache_dir: str | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
 
@@ -185,6 +216,8 @@ def plot_comparison(
     tuple[Figure, pd.DataFrame]
         The comparison figure and a per-variable RMSE/MAE table.
     """
+    if include_gradient_descent and gd_cache_dir is None:
+        raise ValueError("gd_cache_dir is required when include_gradient_descent is True")
     if include_bayesian and bayesian_output_dir is None:
         raise ValueError("bayesian_output_dir is required when include_bayesian is True")
     if include_hmc and hmc_output_dir is None:
@@ -227,11 +260,10 @@ def plot_comparison(
 
     default_outputs = run_default_model(file_path)
 
-    gd_outputs = (
-        run_gradient_descent_model(file_path, plot_variables, fit_params)
-        if include_gradient_descent
-        else None
-    )
+    gd_outputs = None
+    if include_gradient_descent:
+        assert gd_cache_dir is not None
+        gd_outputs = run_gradient_descent_model(file_path, fit_params, cache_dir=gd_cache_dir)
 
     bay_predictions = None
     if include_bayesian:
@@ -386,8 +418,9 @@ def plot_convergence_comparison(
     hmc_inference_path : str | None
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
-        Parameters to compare. Defaults to `FIT_PARAMS` plus one `err_{var}`
-        per variable in `PLOT_VARIABLES`.
+        Parameters to compare. Defaults to `FIT_PARAMS` plus one `err_{var}` per
+        variable in `PLOT_VARIABLES` that isn't in `DIAGNOSTIC_ONLY_ERROR_NAMES`
+        (DBH/BA/Height have no sigma prior, so they're never in the posterior).
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself
@@ -407,7 +440,11 @@ def plot_convergence_comparison(
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
     if param_names is None:
-        param_names = FIT_PARAMS + [f"err_{var}" for var in PLOT_VARIABLES]
+        param_names = FIT_PARAMS + [
+            f"err_{var}"
+            for var in PLOT_VARIABLES
+            if f"err_{var}" not in DIAGNOSTIC_ONLY_ERROR_NAMES
+        ]
 
     colors = {}
     summaries = []
@@ -465,24 +502,127 @@ def plot_convergence_comparison(
     return fig, combined
 
 
+def plot_parameter_value_comparison(
+    pymc_inference_path: str | None = None,
+    hmc_inference_path: str | None = None,
+    param_names: list[str] = FIT_PARAMS,
+    include_gradient_descent: bool = True,
+    include_bayesian: bool = True,
+    include_hmc: bool = True,
+    gd_cache_dir: str | None = None,
+) -> tuple[Figure, pd.DataFrame]:
+    """Compare each parameter's fitted value across gradient descent, PyMC (DEz), and HMC (NUTS).
+
+    One small subplot per parameter (values span very different scales, e.g.
+    `mS` ~1e-4 vs. `MaxAge` ~400, so a single shared-axis bar chart would hide
+    most of them), each with one bar per included method.
+
+    Parameters
+    ----------
+    pymc_inference_path : str | None
+        Path to the saved PyMC `inference_data.nc`. Required if `include_bayesian`.
+    hmc_inference_path : str | None
+        Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
+    param_names : list[str]
+        Physiology parameters to compare. Error/sigma terms are excluded — gradient
+        descent doesn't fit them, so they'd have no value to compare against.
+    include_gradient_descent, include_bayesian, include_hmc : bool
+        Whether to include each method.
+    gd_cache_dir : str | None
+        Directory holding a saved gradient descent fit (see `get_gradient_descent_fit`).
+        Required if `include_gradient_descent`; pass the same directory used for
+        `plot_comparison`'s `gd_cache_dir` to compare against the same fit.
+
+    Returns
+    -------
+    tuple[Figure, pd.DataFrame]
+        The comparison figure and a long-form table (`parameter`, `method`, `value`).
+    """
+    if not (include_gradient_descent or include_bayesian or include_hmc):
+        raise ValueError(
+            "At least one of include_gradient_descent/include_bayesian/include_hmc must be True"
+        )
+    if include_gradient_descent and gd_cache_dir is None:
+        raise ValueError("gd_cache_dir is required when include_gradient_descent is True")
+    if include_bayesian and pymc_inference_path is None:
+        raise ValueError("pymc_inference_path is required when include_bayesian is True")
+    if include_hmc and hmc_inference_path is None:
+        raise ValueError("hmc_inference_path is required when include_hmc is True")
+
+    colors = {}
+    rows = []
+
+    if include_gradient_descent:
+        assert gd_cache_dir is not None
+        fitted_params = get_gradient_descent_fit(gd_cache_dir)
+        for name in param_names:
+            rows.append(
+                {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
+            )
+        colors["Gradient descent"] = "tab:green"
+
+    if include_bayesian:
+        assert pymc_inference_path is not None
+        pymc_summary = load_convergence_summary(pymc_inference_path, param_names)
+        for _, row in pymc_summary.iterrows():
+            rows.append(
+                {"parameter": row["parameter"], "method": "PyMC (DEz)", "value": row["mean"]}
+            )
+        colors["PyMC (DEz)"] = "tab:blue"
+
+    if include_hmc:
+        assert hmc_inference_path is not None
+        hmc_summary = load_convergence_summary(hmc_inference_path, param_names)
+        for _, row in hmc_summary.iterrows():
+            rows.append(
+                {"parameter": row["parameter"], "method": "HMC (NUTS)", "value": row["mean"]}
+            )
+        colors["HMC (NUTS)"] = "tab:orange"
+
+    combined = pd.DataFrame(rows)
+
+    ncols = 4
+    nrows = int(np.ceil(len(param_names) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    axes = axes.flatten()
+
+    for ax, name in zip(axes, param_names, strict=False):
+        param_rows = combined[combined["parameter"] == name]
+        for method in colors:
+            value = param_rows[param_rows["method"] == method]["value"]
+            if not value.empty:
+                ax.bar(method, value.iloc[0], color=colors[method])
+        ax.set_title(name)
+        ax.tick_params(axis="x", rotation=45)
+        ax.grid(alpha=0.3, axis="y")
+
+    for ax in axes[len(param_names) :]:
+        ax.axis("off")
+
+    legend_handles = [Rectangle((0, 0), 1, 1, color=color) for color in colors.values()]
+    fig.legend(legend_handles, list(colors), loc="upper right")
+    fig.suptitle("Fitted parameter values by calibration method")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+
+    return fig, combined
+
+
 if __name__ == "__main__":
     _plot_output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
-    _hmc_output_dir = os.path.join(data_folder, "hmc_results")
+    _hmc_output_dir = os.path.join(data_folder, "paper/nuts_pymc_inference_results")
     os.makedirs(_plot_output_dir, exist_ok=True)
 
     _include_bayesian = True
-    _include_hmc = False
+    _include_hmc = True
     _include_gradient_descent = True
 
-    plot_ids = ["04.1605", "14.0003", "14.0019", "14.0012"]
+    plot_ids = ["solling"]
 
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
 
         if plot_id == "solling":
-            _bayesian_output_dir = os.path.join(
-                results_data_folder, "results/pymc_inference_results"
-            )
+            _bayesian_output_dir = os.path.join(data_folder, "paper/pymc_inference_results")
         else:
             _bayesian_output_dir = os.path.join(
                 results_data_folder, f"results/pymc_inference_results_{plot_id}"
@@ -497,23 +637,39 @@ if __name__ == "__main__":
             include_gradient_descent=_include_gradient_descent,
             include_bayesian=_include_bayesian,
             include_hmc=_include_hmc,
+            gd_cache_dir=_bayesian_output_dir,
         )
         # print(_metrics_df)
         _fig.savefig(
-            os.path.join(_plot_output_dir, f"prediction_comparison_{plot_id}.png"),
+            os.path.join(_plot_output_dir, f"paper_prediction_comparison_{plot_id}.png"),
             dpi=200,
             bbox_inches="tight",
         )
 
         _conv_fig, _conv_df = plot_convergence_comparison(
             pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
-            hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
+            hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
             include_bayesian=_include_bayesian,
             include_hmc=_include_hmc,
         )
         # print(_conv_df)
         _conv_fig.savefig(
-            os.path.join(_plot_output_dir, f"convergence_comparison_{plot_id}.png"),
+            os.path.join(_plot_output_dir, f"paper_convergence_comparison_{plot_id}.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
+
+        _param_fig, _param_df = plot_parameter_value_comparison(
+            pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
+            hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
+            include_gradient_descent=_include_gradient_descent,
+            include_bayesian=_include_bayesian,
+            include_hmc=_include_hmc,
+            gd_cache_dir=_bayesian_output_dir,
+        )
+        # print(_param_df)
+        _param_fig.savefig(
+            os.path.join(_plot_output_dir, f"paper_parameter_value_comparison_{plot_id}.png"),
             dpi=200,
             bbox_inches="tight",
         )

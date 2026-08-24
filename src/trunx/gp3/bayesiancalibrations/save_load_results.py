@@ -176,6 +176,54 @@ def load_map_estimate(file_path: str) -> tuple[dict[str, float], float]:
     return state["map_estimate"], state["logp"]
 
 
+def save_gradient_descent_result(
+    fitted_params: dict[str, float],
+    output_dir: str,
+    filename: str = "gradient_descent_result.json",
+) -> str:
+    """
+    Save a gradient descent fit's parameter values to a JSON file.
+
+    Parameters
+    ----------
+    fitted_params : dict[str, float]
+        Parameter names mapped to their fitted (converged) values.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the JSON file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    with open(file_path, "w") as f:
+        json.dump({"fitted_params": fitted_params}, f, indent=2)
+    return file_path
+
+
+def load_gradient_descent_result(file_path: str) -> dict[str, float]:
+    """
+    Load fitted parameters previously saved with `save_gradient_descent_result`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the JSON file.
+
+    Returns
+    -------
+    dict[str, float]
+        The fitted parameter values.
+    """
+    with open(file_path) as f:
+        state = json.load(f)
+    return state["fitted_params"]
+
+
 def load_inference_data(file_path: str) -> az.InferenceData:
     """
     Load arviz InferenceData previously saved with `save_inference_data`.
