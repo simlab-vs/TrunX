@@ -30,6 +30,7 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     load_gradient_descent_result,
     load_map_estimate,
     load_predictions,
+    save_gradient_descent_result,
 )
 from trunx.gp3.gradient_descent import (
     GradientDescentConfig,
@@ -111,19 +112,41 @@ def run_gradient_descent_model(
     file_path: str,
     target_vars: list[str],
     fit_params: list[str],
+    cache_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Fit parameters with gradient descent and run 3PG with the fitted values."""
-    config = GradientDescentConfig(
-        target_vars=target_vars, fit_params=fit_params, file_path=file_path
-    )
-    fit_result = fit_with_gradient_descent(config)
+    """Fit parameters with gradient descent and run 3PG with the fitted values.
+
+    Parameters
+    ----------
+    file_path : str
+        3PG input Excel file (site, species, climate, observed sheets).
+    target_vars : list[str]
+        Target variable names to fit.
+    fit_params : list[str]
+        Parameter names to optimize during gradient descent.
+    cache_dir : str | None
+        Directory holding (or to write) a `gradient_descent_result.json`
+        (see `save_gradient_descent_result`). If it already contains a saved
+        fit, that is loaded instead of re-running gradient descent; otherwise
+        the fit is computed and saved there for the next call.
+    """
+    cache_path = os.path.join(cache_dir, "gradient_descent_result.json") if cache_dir else None
+    if cache_path is not None and os.path.exists(cache_path):
+        fitted_values = load_gradient_descent_result(cache_path)
+    else:
+        config = GradientDescentConfig(
+            target_vars=target_vars, fit_params=fit_params, file_path=file_path
+        )
+        fitted_values = fit_with_gradient_descent(config).fitted_params
+        if cache_dir is not None:
+            save_gradient_descent_result(fitted_values, cache_dir)
 
     initial_state, climate, base_params, site_data, species_data, _, _ = prepare_data(file_path)
     fitted_params: Params = apply_fitted_params(
         base_params=base_params,
         fit_params=fit_params,
-        fitted_values=fit_result.fitted_params,
-        species_index=config.species_index,
+        fitted_values=fitted_values,
+        species_index=0,
     )
     _, outputs = run_3pg(initial_state, climate, fitted_params, site_data, species_data)
     return outputs
@@ -186,6 +209,7 @@ def plot_comparison(
     bayesian_label: str = "PyMC (DEz)",
     hmc_label: str = "HMC (NUTS)",
     site_name: str | None = None,
+    gd_cache_dir: str | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
 
@@ -208,6 +232,10 @@ def plot_comparison(
     include_gradient_descent, include_bayesian, include_hmc : bool
         Whether to run, plot, and score each source. The default model
         always runs.
+    gd_cache_dir : str | None
+        Directory holding (or to write) a saved gradient descent fit, see
+        `run_gradient_descent_model`. If omitted, gradient descent is always
+        re-run from scratch when `include_gradient_descent` is True.
     bayesian_label : str
         Legend/title label for the `bayesian_output_dir` source, e.g. "MAP + Laplace"
         when the saved predictions come from `run_map_analysis` instead of MCMC.
@@ -270,7 +298,7 @@ def plot_comparison(
     default_outputs = run_default_model(file_path)
 
     gd_outputs = (
-        run_gradient_descent_model(file_path, plot_variables, fit_params)
+        run_gradient_descent_model(file_path, plot_variables, fit_params, cache_dir=gd_cache_dir)
         if include_gradient_descent
         else None
     )
@@ -396,15 +424,25 @@ def load_convergence_summary(inference_data_path: str, param_names: list[str]) -
     Returns
     -------
     pd.DataFrame
-        One row per parameter, with `az.summary`'s columns (mean, sd, r_hat,
-        ess_bulk, ess_tail, ...) plus `n_chains`/`n_draws`/`num_warmup` read
-        from the file itself (the actual retained posterior, not what a
-        script requested). `num_warmup` is `None` for older saved files that
-        predate `tuning_steps` being stashed in `posterior.attrs`.
+        One row per parameter actually present in the saved posterior (params
+        with no sigma prior in this run, e.g. `err_DBH` under a "biomass_only"
+        calibration, are silently skipped — see the printed note), with
+        `az.summary`'s columns (mean, sd, r_hat, ess_bulk, ess_tail, ...) plus
+        `n_chains`/`n_draws`/`num_warmup` read from the file itself (the actual
+        retained posterior, not what a script requested). `num_warmup` is
+        `None` for older saved files that predate `tuning_steps` being stashed
+        in `posterior.attrs`.
     """
     idata = az.from_netcdf(inference_data_path)
     posterior = cast(Any, idata).posterior
-    summary = cast(pd.DataFrame, az.summary(idata, var_names=param_names))
+    available_names = [name for name in param_names if name in posterior.data_vars]
+    missing_names = [name for name in param_names if name not in posterior.data_vars]
+    if missing_names:
+        print(
+            f"Note: {inference_data_path} has no posterior for {missing_names} "
+            "(not fit in this run) — skipping them"
+        )
+    summary = cast(pd.DataFrame, az.summary(idata, var_names=available_names))
     summary = summary.reset_index().rename(columns={"index": "parameter"})
     summary["n_chains"] = posterior.sizes["chain"]
     summary["n_draws"] = posterior.sizes["draw"]
@@ -669,30 +707,58 @@ def plot_parameter_value_comparison(
     return fig, combined
 
 
-def plot_and_save(plot_id: str, output_dir: str, prefix: str = ""):
+def plot_and_save(
+    plot_id: str,
+    plot_output_dir: str,
+    output_dir: str,
+    error_terms: str,
+    literature_source: str,
+    method: str = "",
+):
     """Plot and save comparison/convergence/trace/posterior figures for a plot.
 
     Parameters
     ----------
     plot_id : str
         ICP plot identifier.
-    output_dir : str
+    plot_output_dir : str
         Directory to save the plots in.
-    prefix : str
-        Optional prefix for the saved filenames (e.g. "trot_").
+    output_dir : str
+        Directory to save the output in.
+    literature_source : str
+        Source of the literature for the saved filenames.
+    method : str
+        Calibration method to use.
     """
+    plot_output_dir = os.path.join(plot_output_dir, plot_id)
+    os.makedirs(plot_output_dir, exist_ok=True)
+
+    # Mirrors the calibration_sweep directory layout (site/[literature_source/]mode),
+    # so filenames stay unique across every (literature_source, error_terms) combination
+    # saved into the same plot_id folder instead of overwriting each other.
+    combo_parts = [part for part in (literature_source, error_terms) if part]
+    combo_prefix = "_".join(combo_parts) + "_" if combo_parts else ""
+
     if plot_id == "solling":
-        _bayesian_output_dir = os.path.join(results_data_folder, "results/pymc_inference_results")
-    else:
-        _bayesian_output_dir = os.path.join(
-            results_data_folder, f"results/{prefix}pymc_inference_results_{plot_id}"
+        _bayesian_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/demetropolisz")
+        _hmc_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/nuts")
+        _gradient_descent_dir = os.path.join(
+            output_dir, f"{plot_id}/{error_terms}/gradient_descent"
         )
-
-    _file_path = os.path.join(_bayesian_output_dir, f"{plot_id}_data.xlsx")
-
-    if plot_id == "solling":
+        _file_path = os.path.join(output_dir, f"{plot_id}/{plot_id}_data.xlsx")
         fit_params = FIT_PARAMS
     else:
+        _bayesian_output_dir = os.path.join(
+            output_dir, f"{plot_id}/{literature_source}/{error_terms}/demetropolisz"
+        )
+        _hmc_output_dir = os.path.join(
+            output_dir, f"{plot_id}/{literature_source}/{error_terms}/nuts"
+        )
+        _gradient_descent_dir = os.path.join(
+            output_dir, f"{plot_id}/{literature_source}/{error_terms}/gradient_descent"
+        )
+        _file_path = os.path.join(output_dir, f"{plot_id}/{literature_source}/{plot_id}_data.xlsx")
+
         _df = pl.read_excel(_file_path, sheet_name="param_bound")
         _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
         fit_params = _df["param_name"].to_list()
@@ -705,63 +771,96 @@ def plot_and_save(plot_id: str, output_dir: str, prefix: str = ""):
         include_gradient_descent=_include_gradient_descent,
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
+        gd_cache_dir=_gradient_descent_dir,
     )
     # print(_metrics_df)
     _fig.savefig(
-        os.path.join(_plot_output_dir, f"{prefix}prediction_comparison_{plot_id}.png"),
+        os.path.join(plot_output_dir, f"{combo_prefix}prediction_comparison_{plot_id}.png"),
         dpi=200,
         bbox_inches="tight",
     )
-    plt.close(_fig)
+    plt.show()
+    # plt.close(_fig)
 
     _conv_fig, _conv_df = plot_convergence_comparison(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
-        hmc_inference_path=os.path.join(_hmc_output_dir, "numpyro_inference_data.nc"),
+        hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
         fit_params=fit_params,
     )
     # print(_conv_df)
+    plt.show()
     _conv_fig.savefig(
-        os.path.join(_plot_output_dir, f"{prefix}convergence_comparison_{plot_id}.png"),
+        os.path.join(plot_output_dir, f"{combo_prefix}convergence_comparison_{plot_id}.png"),
         dpi=200,
         bbox_inches="tight",
     )
-    plt.close(_conv_fig)
+    plt.show()
+    # plt.close(_conv_fig)
 
     if _include_bayesian:
         _priors = load_priors_from_file(_file_path, fit_params)
         _trace_fig, _posterior_fig = plot_trace_and_posterior(
             os.path.join(_bayesian_output_dir, "inference_data.nc"), fit_params, _priors
         )
+        plt.show()
         _trace_fig.savefig(
-            os.path.join(_plot_output_dir, f"{prefix}trace_{plot_id}.png"),
+            os.path.join(plot_output_dir, f"{combo_prefix}trace_{plot_id}.png"),
             dpi=200,
             bbox_inches="tight",
         )
         _posterior_fig.savefig(
-            os.path.join(_plot_output_dir, f"{prefix}posterior_{plot_id}.png"),
+            os.path.join(plot_output_dir, f"{combo_prefix}posterior_{plot_id}.png"),
             dpi=200,
             bbox_inches="tight",
         )
-        plt.close(_trace_fig)
-        plt.close(_posterior_fig)
 
-    print(f"Saved plots to {_plot_output_dir}")
+        plt.show()
+        # plt.close(_trace_fig)
+        # plt.close(_posterior_fig)
+
+    _param_fig, _param_df = plot_parameter_value_comparison(
+        pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
+        hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
+        param_names=fit_params,
+        include_gradient_descent=_include_gradient_descent,
+        include_bayesian=_include_bayesian,
+        include_hmc=_include_hmc,
+        gd_cache_dir=_gradient_descent_dir,
+    )
+    # print(_param_df)
+    plt.show()
+    _param_fig.savefig(
+        os.path.join(plot_output_dir, f"{combo_prefix}parameter_value_comparison_{plot_id}.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    # plt.close(_param_fig)
+
+    print(f"Saved plots to {plot_output_dir}")
     gc.collect()
     jax.clear_caches()
 
 
 if __name__ == "__main__":
-    _plot_output_dir = os.path.join(results_data_folder, "bayesian_test_plot")
-    _hmc_output_dir = os.path.join(data_folder, "hmc_results")
-    os.makedirs(_plot_output_dir, exist_ok=True)
+    _calibration_sweep_dir = os.path.join(data_folder, "results/calibration_sweep")
+    plot_ids = ["solling"]
+
+    plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
+
+    os.makedirs(plot_output_dir, exist_ok=True)
 
     _include_bayesian = True
-    _include_hmc = False
+    _include_hmc = True
     _include_gradient_descent = True
 
-    plot_ids = ["solling"]
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
-        plot_and_save(plot_id, _plot_output_dir, prefix="")
+        plot_and_save(
+            plot_id=plot_id,
+            plot_output_dir=plot_output_dir,
+            output_dir=_calibration_sweep_dir,
+            error_terms="biomass_only",
+            literature_source="",
+        )
