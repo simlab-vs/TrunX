@@ -40,19 +40,23 @@ def make_loss_function(
 if __name__ == "__main__":
     file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
 
-    initial_state, climate, params, site_data, species_data, n_species, species_names = (
-        prepare_data(file_path)
-    )
+    input_data = prepare_data(file_path)
 
-    _, outputs = run_3pg(initial_state, climate, params, site_data, species_data)
+    _, outputs = run_3pg(
+        input_data.initial_state,
+        input_data.climate,
+        input_data.params,
+        input_data.site,
+        input_data.species,
+    )
 
     extended_params = ExtendedParams(poly_params=jnp.ones((2, 2)) * 5)  # Example weights
     _, outputs_extended = run_3pg(
-        initial_state,
-        climate,
-        params,
-        site_data,
-        species_data,
+        input_data.initial_state,
+        input_data.climate,
+        input_data.params,
+        input_data.site,
+        input_data.species,
         extended_params,
     )
 

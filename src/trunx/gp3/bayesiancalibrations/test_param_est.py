@@ -470,13 +470,11 @@ def run_pymc_analysis(
     if sampler not in {"pymc", "jax"}:
         raise ValueError(f"sampler must be 'pymc' or 'jax', got {sampler!r}")
 
-    initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
-        file_path
-    )
+    input_data = prepare_data(file_path)
 
     priors = load_priors_from_file(file_path, param_to_optimize)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
-    observations = load_observations_from_file(file_path, site_data=site_data)
+    observations = load_observations_from_file(file_path, site_data=input_data.site)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]
     if skipped:
@@ -487,11 +485,11 @@ def run_pymc_analysis(
 
     if sampler == "pymc":
         trace, _ = run_pymc_inference(
-            initial_state=initial_state,
-            climate=climate,
-            site=site_data,
-            species=species_data,
-            fixed_params=fixed_params,
+            initial_state=input_data.initial_state,
+            climate=input_data.climate,
+            site=input_data.site,
+            species=input_data.species,
+            fixed_params=input_data.params,
             observations=observations,
             priors=priors,
             num_warmup=num_warmup,
@@ -502,11 +500,11 @@ def run_pymc_analysis(
         )
     else:
         trace = run_demetropolisz_jax(
-            climate=climate,
-            site=site_data,
-            species=species_data,
-            fixed_params=fixed_params,
-            state=initial_state,
+            climate=input_data.climate,
+            site=input_data.site,
+            species=input_data.species,
+            fixed_params=input_data.params,
+            state=input_data.initial_state,
             observations=observations,
             priors=priors,
             num_warmup=num_warmup,
@@ -521,11 +519,11 @@ def run_pymc_analysis(
 
     predictions = predict_with_uncertainity(
         trace=trace,
-        initial_state=initial_state,
-        climate=climate,
-        site=site_data,
-        species=species_data,
-        fixed_params=fixed_params,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        site=input_data.site,
+        species=input_data.species,
+        fixed_params=input_data.params,
         observations=observations,
         priors=priors,
     )
@@ -612,9 +610,10 @@ if __name__ == "__main__":
     elapsed_time = time.perf_counter() - start_time
     print(f"Total runtime: {elapsed_time:.2f} seconds")
 
+    input_data = prepare_data(file_path)
     plot_saved_results(
         output_dir=os.path.join(results_data_folder, "pymc_inference_results"),
         params=FIT_PARAMS,
-        observations=load_observations_from_file(file_path, prepare_data(file_path)[3]),
-        climate=prepare_data(file_path)[1],
+        observations=load_observations_from_file(file_path, input_data.site),
+        climate=input_data.climate,
     )

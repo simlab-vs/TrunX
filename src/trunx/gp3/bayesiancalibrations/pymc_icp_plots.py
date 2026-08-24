@@ -308,8 +308,9 @@ if __name__ == "__main__":
     file_path = os.path.join(
         results_data_folder, f"pymc_inference_results_{plot_id}", f"{plot_id}_data.xlsx"
     )
+    input_data = prepare_data(file_path)
     plot_saved_results(
         output_dir=os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}"),
-        observations=load_observations_from_file(file_path, site_data=prepare_data(file_path)[3]),
-        climate=prepare_data(file_path)[1],
+        observations=load_observations_from_file(file_path, site_data=input_data.site),
+        climate=input_data.climate,
     )

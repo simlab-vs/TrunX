@@ -460,9 +460,7 @@ def run_pymc_analysis(
     # `PG3_model_impl` reads at import time.
     from trunx.gp3.PG3_model_impl import prepare_data
 
-    initial_state, climate, fixed_params, site_data, species_data, n_species, _ = prepare_data(
-        file_path
-    )
+    input_data = prepare_data(file_path)
 
     priors = load_priors_from_file(
         file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
@@ -470,7 +468,7 @@ def run_pymc_analysis(
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
-    observations = load_observations_from_file(file_path, site_data=site_data)
+    observations = load_observations_from_file(file_path, site_data=input_data.site)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]
     if skipped:
@@ -480,11 +478,11 @@ def run_pymc_analysis(
     print(f"Loaded observations for variables: {list(observations.keys())}")
 
     trace, model = run_pymc_inference(
-        initial_state=initial_state,
-        climate=climate,
-        site=site_data,
-        species=species_data,
-        fixed_params=fixed_params,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        site=input_data.site,
+        species=input_data.species,
+        fixed_params=input_data.params,
         observations=observations,
         priors=priors,
         num_warmup=num_warmup,
@@ -505,11 +503,11 @@ def run_pymc_analysis(
 
     predictions = predict_with_uncertainity(
         trace=trace,
-        initial_state=initial_state,
-        climate=climate,
-        site=site_data,
-        species=species_data,
-        fixed_params=fixed_params,
+        initial_state=input_data.initial_state,
+        climate=input_data.climate,
+        site=input_data.site,
+        species=input_data.species,
+        fixed_params=input_data.params,
         observations=observations,
         priors=priors,
     )

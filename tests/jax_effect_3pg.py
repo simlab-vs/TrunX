@@ -158,7 +158,10 @@ def run_jax_vmap(perturbed_batch):
     """Vmap the batch of perturbed inputs; returns (compile_seconds, exec_seconds, mem)."""
     params_batch, climate_batch, site_batch, species_batch, state_batch = perturbed_batch
 
-    run_3pg_vmapped = jax.jit(jax.vmap(run_3pg_orig))
+    time.sleep(5)
+
+    run_3pg = jax.jit(run_3pg_orig)
+    run_3pg_vmapped = jax.vmap(run_3pg)
 
     start_compile = time.perf_counter()
     _, outputs_vmap = run_3pg_vmapped(
@@ -208,14 +211,20 @@ def run_r_benchmark(file_path: str, n_runs: int):
 
 
 file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-initial_state, climate, params, site_data, species_data, n_species, _ = prepare_data(file_path)
+input_data = prepare_data(file_path)
 
 print(f"JAX backend: {jax.default_backend()} (devices: {jax.devices()})")
 
 print("JIT-compiling run_3pg...")
 run_3pg = jax.jit(run_3pg_orig)
 start_compile = time.perf_counter()
-_, outputs = run_3pg(initial_state, climate, params, site_data, species_data)
+_, outputs = run_3pg(
+    input_data.initial_state,
+    input_data.climate,
+    input_data.params,
+    input_data.site,
+    input_data.species,
+)
 _wait_for_outputs(outputs)
 compile_time = time.perf_counter() - start_compile
 print(f"JIT-compiled run_3pg (first-run/compile+exec time: {compile_time:.4f}s)")
@@ -226,7 +235,12 @@ results = []
 for scale in _SCALES:
     print(f"\n--- Scale: {scale} pass(es) ---")
     perturbed_inputs = build_perturbed_inputs(
-        params, climate, site_data, species_data, initial_state, scale
+        input_data.params,
+        input_data.climate,
+        input_data.site,
+        input_data.species,
+        input_data.initial_state,
+        scale,
     )
 
     vmap_compile, vmap_exec, vmap_mem = run_jax_vmap(perturbed_inputs)
@@ -234,6 +248,7 @@ for scale in _SCALES:
 
     print(f"  Running R benchmark ({scale} runs)...")
     r_result = run_r_benchmark(file_path, scale)
+
     if r_result is not None:
         r_single, r_total, r_mem = r_result
         print(f"  R single-pass: {r_single:.4f}s, total ({scale} runs): {r_total:.4f}s")
