@@ -37,6 +37,7 @@ from trunx.gp3.gradient_descent import (
     apply_fitted_params,
     fit_with_gradient_descent,
 )
+from trunx.gp3.gradient_descent import apply_fitted_params
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -110,7 +111,6 @@ def get_gradient_descent_fit(cache_dir: str) -> dict[str, float]:
 
 def run_gradient_descent_model(
     file_path: str,
-    target_vars: list[str],
     fit_params: list[str],
     cache_dir: str | None = None,
 ) -> dict[str, Any]:
@@ -255,6 +255,8 @@ def plot_comparison(
     tuple[Figure, pd.DataFrame]
         The comparison figure and a per-variable RMSE/MAE table.
     """
+    if include_gradient_descent and gd_cache_dir is None:
+        raise ValueError("gd_cache_dir is required when include_gradient_descent is True")
     if include_bayesian and bayesian_output_dir is None:
         raise ValueError("bayesian_output_dir is required when include_bayesian is True")
     if include_hmc and hmc_output_dir is None:
@@ -523,8 +525,9 @@ def plot_convergence_comparison(
     hmc_inference_path : str | None
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
-        Parameters to compare. Defaults to `FIT_PARAMS` plus one `err_{var}`
-        per variable in `PLOT_VARIABLES`.
+        Parameters to compare. Defaults to `FIT_PARAMS` plus one `err_{var}` per
+        variable in `PLOT_VARIABLES` that isn't in `DIAGNOSTIC_ONLY_ERROR_NAMES`
+        (DBH/BA/Height have no sigma prior, so they're never in the posterior).
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself

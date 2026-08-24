@@ -561,7 +561,7 @@ def plot_saved_results(
 if __name__ == "__main__":
     start_time = time.perf_counter()
 
-    file_path = os.path.join(threepg_data_folder, "full_solling_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # morris_results_path = os.path.join(
     #     results_data_folder,
     #     "morris_analysis_results_jax",
@@ -575,7 +575,7 @@ if __name__ == "__main__":
     # param_names = top_params + error_names
     param_names = FIT_PARAMS + error_names
 
-    output_dir = os.path.join(results_data_folder, "pymc_inference_results")
+    output_dir = os.path.join(results_data_folder, "nuts_pymc_inference_results")
 
     shutil.rmtree(output_dir)  # To rerun everthing from scratch uncomment this
 
@@ -592,8 +592,9 @@ if __name__ == "__main__":
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=3000,  # If you need to increase the warmup, rerun from scratch.
-        num_samples=3000,  # If you just need to increase the number of samples, adjust here
+        step_method="nuts",
+        num_warmup=1000,  # If you need to increase the warmup, rerun from scratch.
+        num_samples=1000,  # If you just need to increase the number of samples, adjust here
     )
 
     elapsed_time = time.perf_counter() - start_time
