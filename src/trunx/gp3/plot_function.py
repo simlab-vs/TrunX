@@ -122,7 +122,7 @@ def plot_combined_3pg_outputs(
     months = np.arange(num_months)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
-    cmap = plt.cm.get_cmap("Set2")
+    cmap = plt.colormaps["Set2"]
     r_colors = cmap(np.linspace(0, 1, len(species_list)))
 
     for idx, (var, label) in enumerate(zip(i_var, i_lab, strict=True)):
@@ -417,7 +417,7 @@ def plot_combined_3pg_outputs_per_species(
     num_months = len(dates)
     months = np.arange(num_months)
 
-    cmap = plt.cm.get_cmap("Set2")
+    cmap = plt.colormaps["Set2"]
     r_colors = cmap(np.linspace(0, 1, len(species_list)))
     figures = []
     for sp_idx, (species, color) in enumerate(zip(species_list, r_colors, strict=True)):
@@ -546,7 +546,7 @@ def plot_combined_3pg_outputs_obv(
 
     figures = []
     for species in species_list:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 10))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 3))
         axes = axes.flatten() if n_metrics > 1 else [axes]
 
         species_data = df[df["species"] == species].sort_values("Dates")
@@ -610,20 +610,20 @@ def plot_combined_3pg_outputs_obv(
                 )
 
             axes[idx].set_ylabel(config["label"])
-            axes[idx].set_title(config["label"].split("(")[0].strip())
+            # axes[idx].set_title(config["label"].split("(")[0].strip())
             axes[idx].grid(True, alpha=0.3)
             axes[idx].legend()
 
         for ax in axes[n_metrics:]:
             ax.axis("off")
 
-        plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})", fontsize=14, fontweight="bold")
+        # plt.suptitle(f"3-PG Model Outputs: {species} ({plot_id})",
+        #       fontsize=14,
+        #       fontweight="bold"
+        # )
+
         plt.tight_layout()
-        plt.savefig(
-            os.path.join(images_folder, f"{fig_name}_{plot_id}_{species}.png")
-            if fig_name
-            else None
-        )
+        plt.savefig(os.path.join(images_folder, f"{fig_name}_{plot_id}_{species}.png"))
         figures.append(fig)
 
     if show:

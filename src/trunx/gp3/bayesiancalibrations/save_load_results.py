@@ -108,6 +108,55 @@ def save_map_estimate(
     return file_path
 
 
+def save_laplace_covariance(
+    covariance: np.ndarray,
+    names: list[str],
+    output_dir: str,
+    filename: str = "laplace_covariance.npz",
+) -> str:
+    """
+    Save the unconstrained-space covariance of a Laplace approximation.
+
+    Parameters
+    ----------
+    covariance : np.ndarray
+        Covariance matrix from `fit_laplace`.
+    names : list[str]
+        Parameter names indexing the matrix axes.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the .npz file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    np.savez(file_path, covariance=covariance, names=np.asarray(names))
+    return file_path
+
+
+def load_laplace_covariance(file_path: str) -> tuple[np.ndarray, list[str]]:
+    """
+    Load a covariance matrix previously saved with `save_laplace_covariance`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .npz file.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[str]]
+        The covariance matrix and the parameter names indexing its axes.
+    """
+    data = np.load(file_path)
+    return data["covariance"], [str(name) for name in data["names"]]
+
+
 def load_map_estimate(file_path: str) -> tuple[dict[str, float], float]:
     """
     Load a MAP estimate previously saved with `save_map_estimate`.
@@ -125,6 +174,54 @@ def load_map_estimate(file_path: str) -> tuple[dict[str, float], float]:
     with open(file_path) as f:
         state = json.load(f)
     return state["map_estimate"], state["logp"]
+
+
+def save_gradient_descent_result(
+    fitted_params: dict[str, float],
+    output_dir: str,
+    filename: str = "gradient_descent_result.json",
+) -> str:
+    """
+    Save a gradient descent fit's parameter values to a JSON file.
+
+    Parameters
+    ----------
+    fitted_params : dict[str, float]
+        Parameter names mapped to their fitted (converged) values.
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the JSON file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    with open(file_path, "w") as f:
+        json.dump({"fitted_params": fitted_params}, f, indent=2)
+    return file_path
+
+
+def load_gradient_descent_result(file_path: str) -> dict[str, float]:
+    """
+    Load fitted parameters previously saved with `save_gradient_descent_result`.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the JSON file.
+
+    Returns
+    -------
+    dict[str, float]
+        The fitted parameter values.
+    """
+    with open(file_path) as f:
+        state = json.load(f)
+    return state["fitted_params"]
 
 
 def load_inference_data(file_path: str) -> az.InferenceData:

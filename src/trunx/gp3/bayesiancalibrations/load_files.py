@@ -12,6 +12,7 @@ priors, and plot data to unifying the codes.
 
 """
 
+import os
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from trunx.config import SPECIES_INDICES
+from trunx.config import SPECIES_INDICES, threepg_data_folder
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -75,26 +76,77 @@ def load_plot_ids_from_file(plot_file: str) -> list[str]:
     return plot_ids
 
 
+def _load_physiology_defaults(file_path: str) -> pl.DataFrame:
+    """Load each physiology parameter's simulated value from the `parameters` sheet.
+
+    This is the single source of truth for a physiology parameter's default —
+    both its fixed runtime value when not optimized, and its MAP/MCMC seed
+    when it is. Assumes a single-species file: the `parameters` sheet has
+    exactly one value column besides `parameter`, matching every site file
+    this pipeline currently runs on.
+    """
+    params_df = pl.read_excel(file_path, sheet_name="parameters")
+    value_columns = [c for c in params_df.columns if c != "parameter"]
+    if len(value_columns) != 1:
+        raise ValueError(
+            f"Expected a single-species 'parameters' sheet in {file_path}, "
+            f"found species columns: {value_columns}"
+        )
+    return params_df.select(
+        pl.col("parameter").alias("param_name"),
+        pl.col(value_columns[0]).alias("default"),
+    )
+
+
 def _load_param_bounds_df(file_path: str) -> pl.DataFrame:
-    """Load the raw param_bound(+error_param) table shared by priors and defaults."""
+    """Load the raw param_bound(+error_param) table shared by priors and defaults.
+
+    For Excel files, a physiology parameter's `default` comes from the site's
+    `parameters` sheet rather than a separately maintained copy in
+    `param_bound` — see `_load_physiology_defaults`. `error_param`'s sigma
+    priors have no `parameters`-sheet counterpart, so their `default` stays
+    in that sheet.
+    """
     if file_path.lower().endswith(".parquet"):
         return pl.read_parquet(file_path)
     if file_path.lower().endswith(".xlsx"):
-        return pl.concat(
-            [
-                pl.read_excel(file_path, sheet_name="param_bound"),
-                pl.read_excel(file_path, sheet_name="error_param"),
-            ],
-            how="vertical_relaxed",
+        param_bound = pl.read_excel(file_path, sheet_name="param_bound").select(
+            "param_name", "min", "max"
         )
+        param_bound = param_bound.join(
+            _load_physiology_defaults(file_path), on="param_name", how="left"
+        ).select("param_name", "default", "min", "max")
+        error_param = pl.read_excel(file_path, sheet_name="error_param").select(
+            "param_name", "default", "min", "max"
+        )
+        return pl.concat([param_bound, error_param], how="vertical_relaxed")
     raise ValueError(f"Expected parquet or Excel file for parameter priors, got: {file_path}")
 
 
 def load_priors_from_file(
     file_path: str,
     param_names: list[str] | None = None,
+    bound_overrides: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Load parameter priors from a parquet file."""
+    """Load parameter priors from a parquet or Excel param_bound table.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    param_names : list[str] | None
+        Parameter names to load priors for. If None, every parameter with
+        both min and max set is used.
+    bound_overrides : dict[str, tuple[float, float]] | None
+        Replaces the (min, max) loaded from the file for any parameter
+        present in both this and the loaded priors, e.g. to apply a
+        literature-derived bound without editing the data file itself.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Parameter names mapped to (min, max) prior bounds.
+    """
     param_bounds_df = _load_param_bounds_df(file_path)
 
     priors = {}
@@ -123,7 +175,69 @@ def load_priors_from_file(
 
         priors[param_name] = (float(min_val), float(max_val))
 
+    if bound_overrides:
+        for param_name, bounds in bound_overrides.items():
+            if param_name in priors:
+                priors[param_name] = bounds
+
     return priors
+
+
+# Literature tables that carry a real per-species bound for the parameters most
+# prone to pinning against a data file's own (often narrower or stand-specific)
+# range. Tmax: Forrester et al. 2021's central-European calibration. MaxAge:
+# Trotsiuk et al. 2020's species table (only covers Picea abies, Fagus sylvatica).
+_LITERATURE_BOUND_SOURCES = {
+    "Tmax": "literature_params_forrester_forrester.parquet",
+    "MaxAge": "literature_params_trotsiuk.parquet",
+}
+
+
+def literature_bound_overrides(
+    file_path: str, literature_dir: str = str(threepg_data_folder)
+) -> dict[str, tuple[float, float]]:
+    """Species-dependent literature bounds for parameters prone to pinning.
+
+    Widens Tmax and MaxAge to a literature-backed (min, max) for the species
+    in `file_path`'s `species` sheet, in place of whatever narrower bound the
+    data file itself carries. A parameter is left out — deferring to the
+    file's own bound, if it has one — when the literature table has no entry
+    for one of the file's species, or when the file mixes species with
+    disagreeing literature bounds.
+
+    Parameters
+    ----------
+    file_path : str
+        Excel file with a `species` sheet, e.g. a 3PG plot input file.
+    literature_dir : str
+        Directory holding the literature parquet tables.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        `Tmax`/`MaxAge` mapped to (min, max), for whichever of the two has an
+        unambiguous literature bound for every species in the file.
+    """
+    species_names = pl.read_excel(file_path, sheet_name="species")["species"].unique().to_list()
+
+    overrides = {}
+    for param_name, source_file in _LITERATURE_BOUND_SOURCES.items():
+        table = pl.read_parquet(os.path.join(literature_dir, source_file))
+        bounds_by_species = {
+            row["species"]: (row["min"], row["max"])
+            for row in table.filter(
+                (pl.col("parameter") == param_name)
+                & pl.col("min").is_not_null()
+                & pl.col("max").is_not_null()
+            ).iter_rows(named=True)
+        }
+        species_bounds = {
+            bounds_by_species[name] for name in species_names if name in bounds_by_species
+        }
+        if len(species_bounds) == 1:
+            overrides[param_name] = species_bounds.pop()
+
+    return overrides
 
 
 def load_param_defaults_from_file(
@@ -135,7 +249,11 @@ def load_param_defaults_from_file(
     Parameters
     ----------
     file_path : str
-        Parquet or Excel file with a param_bound(+error_param) table.
+        Parquet file with a flat param_bound(+error_param) table, or Excel
+        file with `param_bound`, `error_param`, and `parameters` sheets.
+        Physiology defaults come from `parameters` (see
+        `_load_physiology_defaults`); error-sigma defaults come from
+        `error_param`.
     param_names : list[str]
         Parameter names to load defaults for (typically the same names passed
         to `load_priors_from_file`).
@@ -143,7 +261,7 @@ def load_param_defaults_from_file(
     Returns
     -------
     dict[str, float]
-        Parameter names mapped to their `default` column value.
+        Parameter names mapped to their default value.
     """
     param_bounds_df = _load_param_bounds_df(file_path)
 

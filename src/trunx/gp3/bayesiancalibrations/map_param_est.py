@@ -4,7 +4,7 @@ A point-estimate alternative to the `DEMetropolisZ` MCMC run in `pymc_param_est`
 it reuses the exact same PyMC model (same uniform priors, same JAX log-likelihood)
 but maximises the posterior density with a gradient-based optimiser instead of
 sampling from it. Fast, but it yields a single mode with no uncertainty estimate,
-and only a local one — see `n_restarts`.
+and only a local one — see `n_restarts`/`n_vmap_restarts`.
 """
 
 import os
@@ -13,22 +13,38 @@ import time
 from typing import Any, cast
 
 import arviz as az
+import jax
 import numpy as np
+import optax
 import pymc as pm
 from jax import numpy as jnp
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    DIAGNOSTIC_ONLY_ERROR_NAMES,
+    FIT_PARAMS,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
 )
+from trunx.gp3.bayesiancalibrations.map_uncertainty import (
+    LaplaceApproximation,
+    fit_laplace,
+    sample_laplace_posterior,
+)
 from trunx.gp3.bayesiancalibrations.pymc_param_est import (
+    build_loglikelihood_fn,
     predict_with_uncertainity,
     pymc_model,
 )
-from trunx.gp3.bayesiancalibrations.save_load_results import save_map_estimate, save_results
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    save_laplace_covariance,
+    save_map_estimate,
+    save_results,
+)
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
 
@@ -37,6 +53,125 @@ def _prior_draw(
 ) -> dict[str, float]:
     """Draw one starting point uniformly from the priors."""
     return {name: float(rng.uniform(lower, upper)) for name, (lower, upper) in priors.items()}
+
+
+def _to_unconstrained(x: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray) -> jnp.ndarray:
+    """Map bounded parameter values to PyMC's unconstrained Interval-transform space."""
+    return jax.scipy.special.logit((x - lower) / (upper - lower))
+
+
+def _to_constrained(y: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray) -> jnp.ndarray:
+    """Map PyMC's unconstrained Interval-transform space back to bounded parameter values."""
+    return lower + (upper - lower) * jax.nn.sigmoid(y)
+
+
+def batched_map_search(
+    priors: dict[str, tuple[float, float]],
+    fixed_params: Params,
+    state: State,
+    climate: ClimateData,
+    site: SiteData,
+    species: SpeciesData,
+    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
+    n_restarts: int = 2000,
+    n_steps: int = 200,
+    seed: int = 42,
+) -> tuple[dict[str, float], float]:
+    """Search for the MAP by running many L-BFGS optimisations in parallel on the GPU.
+
+    A `jax.vmap`-batched alternative to `run_map_estimation`'s sequential, CPU-only
+    `n_restarts`: every restart's own `optax.lbfgs` trajectory (with a zoom linesearch)
+    runs as one lane of a single vmapped/jitted computation, so thousands of restarts
+    cost about the same wall-clock time as one. Optimises in the same unconstrained
+    (Interval-transformed) space `pm.find_MAP` uses, scored on the log-likelihood alone
+    — since every prior here is `Uniform`, that is the log posterior up to an additive
+    constant, matching `pm.find_MAP`'s `jacobian=False` scoring.
+
+    This is an exploration step, not a replacement for `pm.find_MAP`: its winner is
+    meant to seed one final scipy polish (see `run_map_estimation`'s `n_vmap_restarts`),
+    whose exact stationary point is what `fit_laplace` needs.
+
+    Parameters
+    ----------
+    n_restarts : int
+        Number of independent random starting points, drawn uniformly from the priors
+        and optimised in parallel.
+    n_steps : int
+        Number of L-BFGS iterations per restart.
+    seed : int
+        Seed for the random starting points.
+
+    Returns
+    -------
+    tuple[dict[str, float], float]
+        The best restart's parameter estimates and its log-likelihood.
+    """
+    param_names = list(priors.keys())
+    lower_np = np.array([priors[name][0] for name in param_names])
+    upper_np = np.array([priors[name][1] for name in param_names])
+    lower, upper = jnp.asarray(lower_np), jnp.asarray(upper_np)
+
+    loglikelihood_fn = build_loglikelihood_fn(
+        params_to_optimize=param_names,
+        fixed_params=fixed_params,
+        state=state,
+        climate=climate,
+        site=site,
+        species=species,
+        observations=observations,
+    )
+
+    def neg_log_posterior(y: jnp.ndarray) -> jnp.ndarray:
+        return -loglikelihood_fn(_to_constrained(y, lower, upper))
+
+    solver = optax.lbfgs()
+    value_and_grad = optax.value_and_grad_from_state(neg_log_posterior)
+
+    def run_one(y0: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Run one L-BFGS trajectory from `y0`, returning its endpoint and log-likelihood."""
+
+        def step(carry: tuple[Any, Any], _: None) -> tuple[tuple[Any, Any], None]:
+            y, opt_state = carry
+            value, grad = value_and_grad(y, state=opt_state)
+            updates, opt_state = solver.update(
+                grad, opt_state, y, value=value, grad=grad, value_fn=neg_log_posterior
+            )
+            return (optax.apply_updates(y, updates), opt_state), None
+
+        (y_final, _), _ = jax.lax.scan(step, (y0, solver.init(y0)), xs=None, length=n_steps)
+        return y_final, -neg_log_posterior(y_final)
+
+    rng = np.random.default_rng(seed)
+    y0_batch = _to_unconstrained(
+        jnp.asarray(rng.uniform(lower_np, upper_np, size=(n_restarts, len(param_names)))),
+        lower,
+        upper,
+    )
+
+    y_final_batch, logp_batch = jax.jit(jax.vmap(run_one))(y0_batch)
+    logp_np = np.asarray(logp_batch)
+    finite = np.isfinite(logp_np)
+    if not finite.any():
+        raise ValueError("No vmapped restart produced a finite log posterior")
+
+    best_index = int(np.argmax(np.where(finite, logp_np, -np.inf)))
+    best_params = _to_constrained(y_final_batch[best_index], lower, upper)
+    # A restart can converge with a coordinate pinned against a prior bound (e.g. an
+    # error sigma driven to its floor by noise-free observations), where the sigmoid
+    # saturates to exactly 0 or 1 in float64. Pulled back into the open interval so the
+    # winner is a valid `pm.find_MAP` start — PyMC's own Interval transform maps an
+    # exact bound to +/-inf and rejects it as a starting point.
+    bound_margin = 1e-9 * (upper - lower)
+    best_params = jnp.clip(best_params, lower + bound_margin, upper - bound_margin)
+    print(
+        f"Vmapped MAP search: {n_restarts} restarts x {n_steps} steps, best log "
+        f"likelihood = {logp_np[best_index]:.4f} (range over restarts: "
+        f"[{logp_np[finite].min():.4f}, {logp_np[finite].max():.4f}])"
+    )
+    return (
+        {name: float(v) for name, v in zip(param_names, best_params, strict=True)},
+        float(logp_np[best_index]),
+    )
 
 
 def map_to_inference_data(map_estimate: dict[str, float]) -> az.InferenceData:
@@ -58,6 +193,8 @@ def run_map_estimation(
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
+    n_vmap_restarts: int = 0,
+    n_vmap_steps: int = 200,
     seed: int = 42,
 ) -> tuple[dict[str, float], float, pm.Model]:
     """Maximise the posterior density of the 3PG calibration model.
@@ -73,9 +210,18 @@ def run_map_estimation(
     maxeval : int
         Maximum number of posterior evaluations per optimisation run.
     n_restarts : int
-        Number of extra optimisations started from random prior draws. The run with
-        the highest posterior density wins. The likelihood surface of a stand
-        simulator is multimodal, so a single run only finds a local mode.
+        Number of extra optimisations started from random prior draws, run
+        sequentially on CPU. The run with the highest posterior density wins. The
+        likelihood surface of a stand simulator is multimodal, so a single run only
+        finds a local mode.
+    n_vmap_restarts : int
+        Number of extra random-restart starting points explored in parallel on the
+        GPU via `batched_map_search`, before the sequential `pm.find_MAP` runs. Cheap
+        relative to `n_restarts` — thousands of GPU-parallel restarts cost about the
+        same wall-clock time as one — so prefer this over `n_restarts` for broad
+        exploration; only the winner is then polished by `pm.find_MAP`. 0 disables it.
+    n_vmap_steps : int
+        L-BFGS iterations per restart when `n_vmap_restarts > 0`.
     seed : int
         Seed for the restart draws.
 
@@ -99,6 +245,21 @@ def run_map_estimation(
         if param_defaults is not None
         else None
     ]
+    if n_vmap_restarts > 0:
+        vmap_point, vmap_logp = batched_map_search(
+            priors=priors,
+            fixed_params=fixed_params,
+            state=initial_state,
+            climate=climate,
+            site=site,
+            species=species,
+            observations=observations,
+            n_restarts=n_vmap_restarts,
+            n_steps=n_vmap_steps,
+            seed=seed,
+        )
+        print(f"Vmapped search winner: log likelihood = {vmap_logp:.4f}")
+        starts.append(vmap_point)
     rng = np.random.default_rng(seed)
     starts += [_prior_draw(priors, rng) for _ in range(n_restarts)]
 
@@ -133,12 +294,25 @@ def run_map_analysis(
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
+    n_vmap_restarts: int = 0,
+    n_vmap_steps: int = 200,
+    laplace_draws: int = 0,
 ) -> dict[str, float]:
     """Calibrate 3PG by MAP estimation and save the estimates and predictions.
 
-    Writes `map_estimate.json`, plus an `inference_data.nc` holding the MAP point as a
-    single draw and a `predictions.npz` holding the model run at that point, so results
-    load with the same helpers as an MCMC run.
+    Writes `map_estimate.json`, plus an `inference_data.nc` holding the posterior draws
+    and a `predictions.npz` holding the prediction bands, so results load with the same
+    helpers as an MCMC run.
+
+    Parameters
+    ----------
+    n_vmap_restarts, n_vmap_steps : int
+        Forwarded to `run_map_estimation`'s GPU-parallel restart search.
+    laplace_draws : int
+        Number of draws to take from the Laplace approximation at the MAP, which gives
+        the estimates and the predictions a local uncertainty band and writes
+        `laplace_covariance.npz`. If 0, the MAP point is written as a single draw and
+        the bands collapse onto the MAP trajectory itself.
     """
     # Imported here so building the model doesn't require the input files that
     # `PG3_model_impl` reads at import time.
@@ -146,7 +320,11 @@ def run_map_analysis(
 
     input_data = prepare_data(file_path)
 
-    priors = load_priors_from_file(file_path, param_to_optimize)
+    priors = load_priors_from_file(
+        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+    )
+    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
+        priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
@@ -169,6 +347,8 @@ def run_map_analysis(
         method=method,
         maxeval=maxeval,
         n_restarts=n_restarts,
+        n_vmap_restarts=n_vmap_restarts,
+        n_vmap_steps=n_vmap_steps,
     )
 
     print(f"\nMAP estimate (log posterior = {logp:.4f}):")
@@ -177,8 +357,18 @@ def run_map_analysis(
         at_bound = "  <- at prior bound" if min(value - lower, upper - value) < 1e-6 else ""
         print(f"  {name:<12} {value:>12.6g}   [{lower:g}, {upper:g}]{at_bound}")
 
-    idata = map_to_inference_data(map_estimate)
-    # A single draw collapses the credible bands onto the MAP trajectory itself.
+    laplace = _fit_laplace_or_warn(model, map_estimate) if laplace_draws > 0 else None
+    if laplace is None:
+        idata = map_to_inference_data(map_estimate)
+        num_predictions = 1
+    else:
+        idata = sample_laplace_posterior(model, laplace, draws=laplace_draws)
+        num_predictions = min(laplace_draws, 500)
+        print("\nLaplace approximation at the MAP:")
+        if laplace.fixed:
+            print(f"  conditional on {sorted(laplace.fixed)} held at their MAP values")
+        print(az.summary(idata, kind="stats"))
+
     predictions = predict_with_uncertainity(
         trace=idata,
         initial_state=input_data.initial_state,
@@ -188,14 +378,32 @@ def run_map_analysis(
         fixed_params=input_data.params,
         observations=observations,
         priors=priors,
-        num_predictions=1,
+        num_predictions=num_predictions,
     )
 
     print("Saving results... ")
     save_map_estimate(map_estimate, logp, output_dir)
+    if laplace is not None:
+        save_laplace_covariance(laplace.covariance, laplace.names, output_dir)
     save_results(mcmc=idata, output_dir=output_dir, predictions=predictions)
 
     return map_estimate
+
+
+def _fit_laplace_or_warn(
+    model: pm.Model, map_estimate: dict[str, float]
+) -> LaplaceApproximation | None:
+    """Fit the Laplace approximation, downgrading a failure to a warning.
+
+    The optimisation preceding this is expensive and its results are worth saving on
+    their own, so a mode that admits no Gaussian approximation (typically one sitting
+    on a prior bound) must not sink the whole run.
+    """
+    try:
+        return fit_laplace(model, map_estimate)
+    except ValueError as error:
+        print(f"\nSkipping the Laplace approximation: {error}")
+        return None
 
 
 if __name__ == "__main__":
@@ -217,6 +425,7 @@ if __name__ == "__main__":
         file_path=file_path,
         param_to_optimize=param_names,
         n_restarts=4,
+        laplace_draws=1000,
     )
 
     elapsed_time = time.perf_counter() - start_time

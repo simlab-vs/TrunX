@@ -40,6 +40,10 @@ class GradientDescentConfig:
     file_path: str
     observed_sheet: str = "observed"
     param_bounds_sheet: str = "param_bound"
+    # Replaces the (min, max) loaded from param_bounds_sheet for any parameter present
+    # in both this and the loaded bounds — e.g. `load_files.literature_bound_overrides`,
+    # to clip against a literature-derived Tmax/MaxAge range instead of the file's own.
+    bound_overrides: dict[str, tuple[float, float]] | None = None
     species_index: int = 0  # Index of the species to fit parameters for
     optimizer_name: str = "adam"
     learning_rate: float = 1e-3
@@ -170,6 +174,10 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
     """Fit 3PG model parameter using gradient descent."""
     observed_data = pd.read_excel(config.file_path, sheet_name=config.observed_sheet)
     param_bounds = load_param_bounds(config.file_path, config.param_bounds_sheet)
+    if config.bound_overrides:
+        for name, bounds in config.bound_overrides.items():
+            if name in param_bounds:
+                param_bounds[name] = bounds
 
     # Prepare data and initial state
     input_data = prepare_data(config.file_path)

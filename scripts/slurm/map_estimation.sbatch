@@ -1,5 +1,5 @@
 #!/bin/bash
-# MAP calibration of the 3PG parameters on the full Solling stand.
+# MAP calibration of the 3PG parameters on the Solling stand.
 #
 # Refreshes the 3PG input files from the S3 bucket into the shared data root, then runs
 # the MAP estimation against them. Files already current on the cluster are left alone,

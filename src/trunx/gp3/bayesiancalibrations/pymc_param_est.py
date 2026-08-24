@@ -3,7 +3,7 @@
 import os
 import shutil
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple, cast
 
 import arviz as az
@@ -20,12 +20,13 @@ from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     plot_inference_results,
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -70,6 +71,88 @@ class Run3PGLogLikeGrad(Op):
         output_storage[0][0] = np.asarray(self.grad_fn(param_values), dtype=np.float64)
 
 
+def build_loglikelihood_fn(
+    params_to_optimize: list[str],
+    fixed_params: Params,
+    state: State,
+    climate: ClimateData,
+    site: SiteData,
+    species: SpeciesData,
+    observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a JAX-differentiable 3PG log-likelihood as a pure function of a parameter vector.
+
+    Standalone so it can be reused outside `Run3PGLogLikeOp`'s PyTensor wrapping, e.g. by a
+    plain-JAX optimiser that wants to `jax.vmap`/`jax.jit` it directly (see
+    `map_param_est.batched_map_search`).
+
+    Parameters
+    ----------
+    params_to_optimize : list[str]
+        Names of the entries in the parameter vector passed to the returned function, in
+        order. Names starting with `err_` are treated as observation-noise sigmas rather
+        than 3PG physiology parameters.
+    observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]]
+        Measured variables to score against, as (obs_times, obs_values).
+
+    Returns
+    -------
+    Callable[[jnp.ndarray], jnp.ndarray]
+        Maps a parameter vector (ordered as `params_to_optimize`) to the scalar
+        log-likelihood of `observations` under the 3PG simulation it implies.
+    """
+    param_names = tuple(params_to_optimize)
+    model_param_names = tuple(name for name in param_names if not name.startswith("err_"))
+    packed_observations = tuple(
+        PackedObservation(
+            var_name=var_name,
+            sigma_name=f"err_{var_name}",
+            obs_times=jnp.asarray(obs_times, dtype=jnp.int32).reshape(-1),
+            obs_values=jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1),
+        )
+        for var_name, (obs_times, obs_values) in observations.items()
+    )
+
+    def loglikelihood(param_values: jnp.ndarray) -> jnp.ndarray:
+        """Compute the log-likelihood for a parameter vector (JAX-differentiable)."""
+        param_dict = dict(zip(param_names, param_values, strict=True))
+        # Update the fixed_params with the new parameter values (excluding error/sigma terms)
+        model_params = {name: param_dict[name] for name in model_param_names}
+        updated_params = fixed_params._replace(**model_params)
+
+        # Run the 3PG model
+        _, sim_outputs = run_3pg(state, climate, updated_params, site, species)
+
+        # Compute log-likelihood based on model outputs and observations. A Python loop
+        # rather than a vmapped reduction: observations are ragged across variables (NaNs
+        # are dropped independently per column, see load_observations_from_file), so they
+        # can't generally be stacked into one array.
+        log_likelihood = jnp.array(0.0)
+        for observation in packed_observations:
+            if observation.sigma_name not in param_dict or observation.var_name not in sim_outputs:
+                continue
+            pred_values = jnp.asarray(
+                sim_outputs[observation.var_name][observation.obs_times]
+            ).reshape(-1)
+            # Predictions and observations must line up element-for-element;
+            # a mismatch would broadcast into an (n_obs, n_obs) outer product
+            # that silently scores every prediction against every observation.
+            assert pred_values.shape == observation.obs_values.shape, (
+                f"Likelihood shape mismatch for {observation.var_name}: "
+                f"predictions {pred_values.shape} vs observations {observation.obs_values.shape}"
+            )
+            log_likelihood = log_likelihood + jnp.sum(
+                norm.logpdf(
+                    pred_values,
+                    loc=observation.obs_values,
+                    scale=param_dict[observation.sigma_name],
+                )
+            )
+        return log_likelihood
+
+    return loglikelihood
+
+
 class Run3PGLogLikeOp(Op):
     """PyTensor Op that returns scalar log-likelihood from the 3PG simulator."""
 
@@ -88,66 +171,19 @@ class Run3PGLogLikeOp(Op):
         n_species: int,
     ) -> None:
         self.params_to_optimize = tuple(params_to_optimize)
-        self.model_param_names = tuple(
-            name for name in self.params_to_optimize if not name.startswith("err_")
-        )
-        self.state = state
-        self.climate = climate
-        self.site = site
-        self.species = species
-        self.fixed_params = fixed_params
         self.n_species = n_species
-        self.observations = tuple(
-            PackedObservation(
-                var_name=var_name,
-                sigma_name=f"err_{var_name}",
-                obs_times=jnp.asarray(obs_times, dtype=jnp.int32).reshape(-1),
-                obs_values=jnp.asarray(obs_values, dtype=jnp.float64).reshape(-1),
-            )
-            for var_name, (obs_times, obs_values) in observations.items()
+        loglikelihood_fn = build_loglikelihood_fn(
+            params_to_optimize=params_to_optimize,
+            fixed_params=fixed_params,
+            state=state,
+            climate=climate,
+            site=site,
+            species=species,
+            observations=observations,
         )
 
-        self._loglikelihood_jax = jax.jit(self._loglikelihood)
-        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(self._loglikelihood)))
-
-    def _loglikelihood(self, param_values: jnp.ndarray) -> jnp.ndarray:
-        """Compute the log-likelihood for a parameter vector (JAX-differentiable)."""
-        param_dict = dict(zip(self.params_to_optimize, param_values, strict=True))
-        # Update the fixed_params with the new parameter values (excluding error/sigma terms)
-        model_params = {name: param_dict[name] for name in self.model_param_names}
-        updated_params = self.fixed_params._replace(**model_params)
-
-        # Run the 3PG model
-        _, sim_outputs = run_3pg(self.state, self.climate, updated_params, self.site, self.species)
-
-        # Compute log-likelihood based on model outputs and observations
-        log_likelihood = jnp.array(0.0)
-        for observation in self.observations:
-            if observation.sigma_name not in param_dict or observation.var_name not in sim_outputs:
-                continue
-            pred_values = jnp.asarray(
-                sim_outputs[observation.var_name][observation.obs_times]
-            ).reshape(-1)
-            # Predictions and observations must line up element-for-element;
-            # a mismatch would broadcast into an (n_obs, n_obs) outer product
-            # that silently scores every prediction against every observation.
-            assert pred_values.shape == observation.obs_values.shape, (
-                f"Likelihood shape mismatch for {observation.var_name}: "
-                f"predictions {pred_values.shape} vs observations {observation.obs_values.shape}"
-            )
-            # log_likelihood = log_likelihood + jnp.sum(
-            #     jax_student_t.logpdf(
-            #         pred_values, df=3, loc=obs_values, scale=param_dict[sigma_name]
-            #     )
-            # )
-            log_likelihood = log_likelihood + jnp.sum(
-                norm.logpdf(
-                    pred_values,
-                    loc=observation.obs_values,
-                    scale=param_dict[observation.sigma_name],
-                )
-            )
-        return log_likelihood
+        self._loglikelihood_jax = jax.jit(loglikelihood_fn)
+        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(loglikelihood_fn)))
 
     def perform(
         self, node: Apply, inputs: Sequence[Any], output_storage: OutputStorageType
@@ -284,6 +320,8 @@ def run_pymc_inference(
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
+    step_method: str = "demetropolisz",
+    target_accept: float = 0.9,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
@@ -308,10 +346,24 @@ def run_pymc_inference(
         Number of post-tuning draws per chain to sample between checkpoints.
     resume_tune : int
         Number of tuning steps used to re-warm the sampler at the start of
-        every chunk after the first (each chunk starts from a fresh
-        `DEMetropolisZ` step, so its proposal scale needs to briefly readapt).
+        every chunk after the first (each chunk starts a fresh step object, so
+        its proposal scale/step size needs to briefly readapt). For `"nuts"`,
+        this re-tunes the step size and mass matrix from scratch each chunk,
+        which is more wasteful than for `"demetropolisz"` — a larger
+        `resume_tune` is worth considering there if checkpointing resumes often.
+    step_method : str
+        `"demetropolisz"` (derivative-free differential evolution) or `"nuts"`
+        (gradient-based, via the same `Run3PGLogLikeOp.grad` MAP already uses).
+        NUTS needs far fewer draws for a comparable effective sample size but
+        each draw costs more (multiple gradient evaluations via leapfrog steps),
+        and can be more sensitive to a mode sitting on a prior bound.
+    target_accept : float
+        Target acceptance probability for `pm.NUTS`'s step-size adaptation.
+        Ignored for `"demetropolisz"`.
     """
-    checkpoint_every = max(500, num_samples // 10)
+    if step_method not in {"demetropolisz", "nuts"}:
+        raise ValueError(f"step_method must be 'demetropolisz' or 'nuts', got {step_method!r}")
+
     model = pymc_model(
         climate=climate,
         site=site,
@@ -344,8 +396,11 @@ def run_pymc_inference(
         while draws_done < num_samples:
             chunk_draws = min(checkpoint_every, num_samples - draws_done)
             chunk_tune = num_warmup if idata is None else resume_tune
-            step = pm.DEMetropolisZ()
-            # step = pm.NUTS(target_accept=0.9)  # Use NUTS for better sampling efficiency
+            step = (
+                pm.NUTS(target_accept=target_accept)
+                if step_method == "nuts"
+                else pm.DEMetropolisZ()
+            )
             chunk_trace = pm.sample(
                 draws=chunk_draws,
                 tune=chunk_tune,
@@ -387,12 +442,19 @@ def run_pymc_analysis(
     num_samples: int = 5000,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
+    step_method: str = "demetropolisz",
+    target_accept: float = 0.9,
 ):
     """Run PyMC inference for Bayesian calibration of 3PG parameters.
 
     Sampling is checkpointed to `output_dir` every `checkpoint_every` draws, so
     calling this again with the same `output_dir` resumes an interrupted run
     instead of starting over.
+
+    Parameters
+    ----------
+    step_method, target_accept
+        Forwarded to `run_pymc_inference`; see its docstring.
     """
     # Imported here so building the model doesn't require the input files that
     # `PG3_model_impl` reads at import time.
@@ -400,7 +462,11 @@ def run_pymc_analysis(
 
     input_data = prepare_data(file_path)
 
-    priors = load_priors_from_file(file_path, param_to_optimize)
+    priors = load_priors_from_file(
+        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+    )
+    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
+        priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
@@ -427,6 +493,8 @@ def run_pymc_analysis(
         checkpoint_dir=output_dir,
         checkpoint_every=checkpoint_every,
         resume_tune=resume_tune,
+        step_method=step_method,
+        target_accept=target_accept,
     )
 
     print("\nConvergence diagnostics:")
@@ -491,7 +559,7 @@ def plot_saved_results(
 if __name__ == "__main__":
     start_time = time.perf_counter()
 
-    file_path = os.path.join(threepg_data_folder, "full_solling_data.xlsx")
+    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
     # morris_results_path = os.path.join(
     #     results_data_folder,
     #     "morris_analysis_results_jax",
@@ -505,7 +573,7 @@ if __name__ == "__main__":
     # param_names = top_params + error_names
     param_names = FIT_PARAMS + error_names
 
-    output_dir = os.path.join(results_data_folder, "pymc_inference_results")
+    output_dir = os.path.join(results_data_folder, "nuts_pymc_inference_results")
 
     shutil.rmtree(output_dir)  # To rerun everthing from scratch uncomment this
 
@@ -522,8 +590,9 @@ if __name__ == "__main__":
         param_to_optimize=param_names,
         chains=3,
         cores=3,
-        num_warmup=3000,  # If you need to increase the warmup, rerun from scratch.
-        num_samples=3000,  # If you just need to increase the number of samples, adjust here
+        step_method="nuts",
+        num_warmup=1000,  # If you need to increase the warmup, rerun from scratch.
+        num_samples=1000,  # If you just need to increase the number of samples, adjust here
     )
 
     elapsed_time = time.perf_counter() - start_time
