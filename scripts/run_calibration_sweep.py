@@ -22,6 +22,7 @@ array job, one task per combination.
 import argparse
 import os
 import shutil
+import tempfile
 import time
 import zipfile
 from collections.abc import Iterator
@@ -54,8 +55,8 @@ ERROR_MODES: dict[str, frozenset[str]] = {
     "biomass_DBH_only": frozenset({"err_BA", "err_Height"}),
 }
 
-METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
-
+# METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
+METHODS = ["nuts", "map"]
 # Modules that did `from bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES` and so
 # each hold their own binding of it — patched directly by `diagnostic_only_error_names`.
 _PATCHED_MODULES = (pymc_param_est, map_param_est)
@@ -183,9 +184,25 @@ def run_job(
         site_output_dir = os.path.join(output_dir, site_id, literature_source)
     site_dir = os.path.join(site_output_dir, mode_name)
     os.makedirs(site_output_dir, exist_ok=True)
-    shutil.copy(source_file_path, site_output_dir)
     file_path = os.path.join(site_output_dir, os.path.basename(source_file_path))
-    apply_literature_bounds(file_path)
+
+    # `file_path` is shared by every (mode, method) job for this site — with the
+    # sweep meant to run all of them as independent concurrent jobs (see the module
+    # docstring), a plain `shutil.copy` + in-place `apply_literature_bounds` write
+    # here would let two jobs race on the same file and corrupt it mid-write (e.g.
+    # truncating param_bound so a parameter's min/max reads back as null). Building
+    # into a uniquely-named temp file first and only `os.replace`-ing it into place
+    # once complete (same pattern as `prepare_plot_input`) makes concurrent jobs
+    # redo the same work redundantly instead of corrupting each other's output.
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{site_id}_", dir=site_output_dir)
+    os.close(tmp_fd)
+    try:
+        shutil.copy(source_file_path, tmp_path)
+        apply_literature_bounds(tmp_path)
+        os.replace(tmp_path, file_path)
+    except Exception:
+        os.remove(tmp_path)
+        raise
 
     param_bound = pd.read_excel(file_path, sheet_name="param_bound")
     if site_id == "solling":

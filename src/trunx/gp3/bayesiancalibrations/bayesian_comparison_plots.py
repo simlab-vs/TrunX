@@ -543,7 +543,7 @@ def plot_convergence_comparison(
     hmc_inference_path : str | None
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
-        Parameters to compare. Defaults to `FIT_PARAMS` plus one `err_{var}` per
+        Parameters to compare. Defaults to `fit_params` plus one `err_{var}` per
         variable in `PLOT_VARIABLES` that isn't in `DIAGNOSTIC_ONLY_ERROR_NAMES`
         (DBH/BA/Height have no sigma prior, so they're never in the posterior).
     include_bayesian, include_hmc : bool
@@ -565,8 +565,7 @@ def plot_convergence_comparison(
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
     if param_names is None:
-        # param_names = fit_params + [f"err_{var}" for var in PLOT_VARIABLES]
-        param_names = FIT_PARAMS + [
+        param_names = fit_params + [
             f"err_{var}"
             for var in PLOT_VARIABLES
             if f"err_{var}" not in DIAGNOSTIC_ONLY_ERROR_NAMES
@@ -805,7 +804,7 @@ def plot_and_save(
         dpi=200,
         bbox_inches="tight",
     )
-    plt.show()
+    # plt.show()
     # plt.close(_fig)
 
     _conv_fig, _conv_df = plot_convergence_comparison(
@@ -816,21 +815,21 @@ def plot_and_save(
         fit_params=fit_params,
     )
     # print(_conv_df)
-    plt.show()
+    # plt.show()
     _conv_fig.savefig(
         os.path.join(plot_output_dir, f"{combo_prefix}convergence_comparison_{plot_id}.png"),
         dpi=200,
         bbox_inches="tight",
     )
-    plt.show()
-    # plt.close(_conv_fig)
+    # plt.show()
+    plt.close(_conv_fig)
 
     if _include_bayesian:
         _priors = load_priors_from_file(_file_path, fit_params)
         _trace_fig, _posterior_fig = plot_trace_and_posterior(
             os.path.join(_bayesian_output_dir, "inference_data.nc"), fit_params, _priors
         )
-        plt.show()
+        # plt.show()
         _trace_fig.savefig(
             os.path.join(plot_output_dir, f"{combo_prefix}trace_{plot_id}.png"),
             dpi=200,
@@ -842,9 +841,9 @@ def plot_and_save(
             bbox_inches="tight",
         )
 
-        plt.show()
-        # plt.close(_trace_fig)
-        # plt.close(_posterior_fig)
+        # plt.show()
+        plt.close(_trace_fig)
+        plt.close(_posterior_fig)
 
     _param_fig, _param_df = plot_parameter_value_comparison(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
@@ -856,7 +855,7 @@ def plot_and_save(
         gd_cache_dir=_gradient_descent_dir,
     )
     # print(_param_df)
-    plt.show()
+    # plt.show()
     _param_fig.savefig(
         os.path.join(plot_output_dir, f"{combo_prefix}parameter_value_comparison_{plot_id}.png"),
         dpi=200,
@@ -871,7 +870,9 @@ def plot_and_save(
 
 if __name__ == "__main__":
     _calibration_sweep_dir = os.path.join(data_folder, "results/calibration_sweep")
-    plot_ids = ["solling"]
+    # plot_ids = ["solling"]
+
+    plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
 
     plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
 
@@ -879,14 +880,17 @@ if __name__ == "__main__":
 
     _include_bayesian = True
     _include_hmc = True
-    _include_gradient_descent = True
+    _include_gradient_descent = False
 
     for plot_id in plot_ids:
         print(f"Processing plot_id={plot_id}...")
-        plot_and_save(
-            plot_id=plot_id,
-            plot_output_dir=plot_output_dir,
-            output_dir=_calibration_sweep_dir,
-            error_terms="biomass_only",
-            literature_source="",
-        )
+        try:
+            plot_and_save(
+                plot_id=plot_id,
+                plot_output_dir=plot_output_dir,
+                output_dir=_calibration_sweep_dir,
+                error_terms="biomass_only",
+                literature_source="Forrester",
+            )
+        except Exception as e:
+            print(f"Error processing plot_id={plot_id}: {e}")
