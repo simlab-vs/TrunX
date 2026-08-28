@@ -67,18 +67,6 @@ def _load_species_param_bound(
 def prepare_plot_input(plot_id: str, literature_source: str) -> str:
     """Get one plot's 3PG input file for `literature_source`, building it once.
 
-    Cached at `icp_plots/<literature_source>/<plot_id>_data.xlsx`: if that file
-    already exists, it's returned as-is rather than rebuilt. Regenerating from raw
-    ICP data is expensive and deterministic given `(plot_id, literature_source)`.
-    Delete the file to force a fresh rebuild, e.g. after the underlying raw ICP
-    data changes, or if `run_calibration_sweep.py`'s retry logic reports it corrupt.
-
-    Built entirely under a uniquely-named temp file in the same directory, then
-    moved into place with `os.replace` (atomic on POSIX) only once complete — so a
-    job crashing mid-build never leaves a half-written `.xlsx` behind, and several
-    `run_calibration_sweep.py` jobs racing to build the same plot_id/source at once
-    just redo the same work redundantly rather than corrupting each other's output.
-
     Parameters
     ----------
     plot_id : str
@@ -280,7 +268,7 @@ if __name__ == "__main__":
     }
 
     plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species]
-
+    plot_ids = ["04.1402"]
     # Add argument parser
     parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
     parser.add_argument(
