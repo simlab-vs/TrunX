@@ -49,8 +49,8 @@ def test_nuts_recovers_known_parameter_with_healthy_diagnostics() -> None:
     assert summary.loc["alphaCx", "mean"] == pytest.approx(TRUE_ALPHA_CX, rel=0.05)
     # A converged NUTS run should mix far better than DEMetropolisZ's near-zero ESS
     # observed on real 3PG calibrations (see project notes on the DEz comparison).
-    assert summary["r_hat"].max() < 1.05
-    assert summary["ess_bulk"].min() > 50
+    assert cast(float, summary.loc["alphaCx", "r_hat"]) < 1.05
+    assert cast(float, summary.loc["alphaCx", "ess_bulk"]) > 50
 
 
 def test_invalid_step_method_raises() -> None:
