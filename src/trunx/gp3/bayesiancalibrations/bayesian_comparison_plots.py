@@ -22,7 +22,11 @@ from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    DIAGNOSTIC_ONLY_ERROR_NAMES,
+    ERROR_MODES,
+    FIT_PARAMS,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -228,6 +232,7 @@ def plot_comparison(
     hmc_label: str = "HMC (NUTS)",
     site_name: str | None = None,
     gd_cache_dir: str | None = None,
+    series_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
 
@@ -235,6 +240,14 @@ def plot_comparison(
     ----------
     file_path : str
         3PG input Excel file (site, species, climate, observed sheets).
+    series_colors : dict[str, str] | None
+        Override plot color per series name (`"default"`, `"gradient_descent"`,
+        `"bayesian"`, `"hmc"`, `"observed"`). A series without a matching entry
+        falls back to matplotlib's default color cycle (`"observed"` falls back
+        to `"red"`). Set this so multiple series sharing one subplot stay
+        distinguishable under a caller-set narrow-hue `axes.prop_cycle` (e.g. an
+        all-green theme, where cycle order alone can leave two series looking
+        too similar, or land on a shade too pale to see against a white figure).
     bayesian_output_dir : str | None
         Directory containing a saved `predictions.npz` from a prior
         `run_pymc_analysis` run for the same file. Required if `include_bayesian`.
@@ -333,15 +346,22 @@ def plot_comparison(
         assert hmc_output_dir is not None
         hmc_predictions = run_hmc_model(hmc_output_dir)
 
-    fig, axes = plt.subplots(2, 3, figsize=(20, 10))
-    axes = axes.flatten()
+    n_cols = min(3, len(plot_variables))
+    n_rows = int(np.ceil(len(plot_variables) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20 / 3 * n_cols, 5 * n_rows))
+    axes = np.ravel(np.atleast_1d(axes))
+
+    series_colors = series_colors or {}
+
+    def _color_kwargs(name: str) -> dict[str, str]:
+        return {"color": series_colors[name]} if name in series_colors else {}
 
     metrics = []
-    for ax, var in zip(axes, plot_variables, strict=True):
+    for ax, var in zip(axes, plot_variables, strict=False):
         obs_values = np.asarray(observations[var], dtype=np.float64)
         default_at_obs = np.asarray([default_outputs[var][idx] for idx in obs_indices])
 
-        ax.plot(time_months, default_outputs[var], label="Default")
+        ax.plot(time_months, default_outputs[var], label="Default", **_color_kwargs("default"))
         row = {
             "variable": var,
             "default_rmse": rmse(obs_values, default_at_obs),
@@ -351,7 +371,12 @@ def plot_comparison(
 
         if gd_outputs is not None:
             gd_at_obs = np.asarray([gd_outputs[var][idx] for idx in obs_indices])
-            ax.plot(time_months, gd_outputs[var], label="Gradient descent")
+            ax.plot(
+                time_months,
+                gd_outputs[var],
+                label="Gradient descent",
+                **_color_kwargs("gradient_descent"),
+            )
             row["gd_rmse"] = rmse(obs_values, gd_at_obs)
             row["gd_mae"] = mae(obs_values, gd_at_obs)
             title_parts.append(f"GD: {row['gd_rmse']:.2f}")
@@ -362,9 +387,16 @@ def plot_comparison(
             upper_pred = np.asarray(bay_predictions[var][2])
             bay_at_obs = np.asarray([mean_pred[idx] for idx in obs_indices])
             ax.fill_between(
-                time_months, lower_pred, upper_pred, alpha=0.3, label=f"{bayesian_label} 95% CI"
+                time_months,
+                lower_pred,
+                upper_pred,
+                alpha=0.3,
+                label=f"{bayesian_label} 95% CI",
+                **_color_kwargs("bayesian"),
             )
-            ax.plot(time_months, mean_pred, label=f"{bayesian_label} mean")
+            ax.plot(
+                time_months, mean_pred, label=f"{bayesian_label} mean", **_color_kwargs("bayesian")
+            )
             row["bayesian_rmse"] = rmse(obs_values, bay_at_obs)
             row["bayesian_mae"] = mae(obs_values, bay_at_obs)
             title_parts.append(f"{bayesian_label}: {row['bayesian_rmse']:.2f}")
@@ -380,13 +412,20 @@ def plot_comparison(
                 hmc_upper_pred,
                 alpha=0.3,
                 label=f"{hmc_label} 95% CI",
+                **_color_kwargs("hmc"),
             )
-            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean")
+            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean", **_color_kwargs("hmc"))
             row["hmc_rmse"] = rmse(obs_values, hmc_at_obs)
             row["hmc_mae"] = mae(obs_values, hmc_at_obs)
             title_parts.append(f"{hmc_label}: {row['hmc_rmse']:.2f}")
 
-        ax.scatter(obs_time, obs_values, color="red", label="Observations", zorder=5)
+        ax.scatter(
+            obs_time,
+            obs_values,
+            color=series_colors.get("observed", "red"),
+            label="Observations",
+            zorder=5,
+        )
         if var == "DBH" and derived_dbh is not None:
             derived_time, derived_values = derived_dbh
             ax.scatter(
@@ -403,6 +442,9 @@ def plot_comparison(
         ax.grid(alpha=0.3)
         ax.set_title("RMSE — " + ", ".join(title_parts))
         metrics.append(row)
+
+    for ax in axes[len(plot_variables) :]:
+        ax.set_visible(False)
 
     axes[0].legend()
 
@@ -531,8 +573,10 @@ def plot_convergence_comparison(
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
+    excluded_error_names: frozenset[str] = DIAGNOSTIC_ONLY_ERROR_NAMES,
     include_bayesian: bool = True,
     include_hmc: bool = True,
+    method_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Compare PyMC (DEMetropolisZ) and/or HMC (NUTS) convergence diagnostics per parameter.
 
@@ -544,12 +588,21 @@ def plot_convergence_comparison(
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
         Parameters to compare. Defaults to `fit_params` plus one `err_{var}` per
-        variable in `PLOT_VARIABLES` that isn't in `DIAGNOSTIC_ONLY_ERROR_NAMES`
-        (DBH/BA/Height have no sigma prior, so they're never in the posterior).
+        variable in `PLOT_VARIABLES` that isn't in `excluded_error_names`.
+    excluded_error_names : frozenset[str]
+        `err_*` names to leave out of the default `param_names` — the ones with no
+        sigma prior (and so no posterior) in the run being plotted. Defaults to
+        `DIAGNOSTIC_ONLY_ERROR_NAMES`; pass the scenario's own entry from
+        `bayesian_config.ERROR_MODES` instead when plotting a specific named
+        calibration scenario (e.g. `"all_error_terms"` fits every `err_*`, so its
+        exclusion set is empty). Ignored if `param_names` is given explicitly.
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself
         (`None` for older saved files that predate this being stashed).
+    method_colors : dict[str, str] | None
+        Override bar color per method name (`"PyMC (DEz)"`/`"HMC (NUTS)"`). Missing
+        entries fall back to the default blue/orange.
 
     Returns
     -------
@@ -566,10 +619,11 @@ def plot_convergence_comparison(
 
     if param_names is None:
         param_names = fit_params + [
-            f"err_{var}"
-            for var in PLOT_VARIABLES
-            if f"err_{var}" not in DIAGNOSTIC_ONLY_ERROR_NAMES
+            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" not in excluded_error_names
         ]
+
+    default_colors = {"PyMC (DEz)": "tab:blue", "HMC (NUTS)": "tab:orange"}
+    method_colors = {**default_colors, **(method_colors or {})}
 
     colors = {}
     summaries = []
@@ -578,14 +632,14 @@ def plot_convergence_comparison(
         pymc_summary = load_convergence_summary(pymc_inference_path, param_names)
         pymc_summary["method"] = "PyMC (DEz)"
         summaries.append(pymc_summary)
-        colors["PyMC (DEz)"] = "tab:blue"
+        colors["PyMC (DEz)"] = method_colors["PyMC (DEz)"]
 
     if include_hmc:
         assert hmc_inference_path is not None
         hmc_summary = load_convergence_summary(hmc_inference_path, param_names)
         hmc_summary["method"] = "HMC (NUTS)"
         summaries.append(hmc_summary)
-        colors["HMC (NUTS)"] = "tab:orange"
+        colors["HMC (NUTS)"] = method_colors["HMC (NUTS)"]
 
     combined = pd.concat(summaries, ignore_index=True)
 
@@ -635,6 +689,7 @@ def plot_parameter_value_comparison(
     include_bayesian: bool = True,
     include_hmc: bool = True,
     gd_cache_dir: str | None = None,
+    method_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Compare each parameter's fitted value across gradient descent, PyMC (DEz), and HMC (NUTS).
 
@@ -657,6 +712,9 @@ def plot_parameter_value_comparison(
         Directory holding a saved gradient descent fit (see `get_gradient_descent_fit`).
         Required if `include_gradient_descent`; pass the same directory used for
         `plot_comparison`'s `gd_cache_dir` to compare against the same fit.
+    method_colors : dict[str, str] | None
+        Override bar color per method name (`"Gradient descent"`/`"PyMC (DEz)"`/
+        `"HMC (NUTS)"`). Missing entries fall back to the default green/blue/orange.
 
     Returns
     -------
@@ -674,6 +732,13 @@ def plot_parameter_value_comparison(
     if include_hmc and hmc_inference_path is None:
         raise ValueError("hmc_inference_path is required when include_hmc is True")
 
+    default_colors = {
+        "Gradient descent": "tab:green",
+        "PyMC (DEz)": "tab:blue",
+        "HMC (NUTS)": "tab:orange",
+    }
+    method_colors = {**default_colors, **(method_colors or {})}
+
     colors = {}
     rows = []
 
@@ -684,7 +749,7 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
             )
-        colors["Gradient descent"] = "tab:green"
+        colors["Gradient descent"] = method_colors["Gradient descent"]
 
     if include_bayesian:
         assert pymc_inference_path is not None
@@ -693,7 +758,7 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": row["parameter"], "method": "PyMC (DEz)", "value": row["mean"]}
             )
-        colors["PyMC (DEz)"] = "tab:blue"
+        colors["PyMC (DEz)"] = method_colors["PyMC (DEz)"]
 
     if include_hmc:
         assert hmc_inference_path is not None
@@ -702,7 +767,7 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": row["parameter"], "method": "HMC (NUTS)", "value": row["mean"]}
             )
-        colors["HMC (NUTS)"] = "tab:orange"
+        colors["HMC (NUTS)"] = method_colors["HMC (NUTS)"]
 
     combined = pd.DataFrame(rows)
 
@@ -750,6 +815,11 @@ def plot_and_save(
         Directory to save the plots in.
     output_dir : str
         Directory to save the output in.
+    error_terms : str
+        Calibration scenario name, used both for the saved filenames and to look up
+        which `err_*` names were excluded from fitting via `bayesian_config.ERROR_MODES`
+        (falls back to `DIAGNOSTIC_ONLY_ERROR_NAMES` if not a recognized scenario), so
+        the convergence plot only asks for `err_*` posteriors that actually exist.
     literature_source : str
         Source of the literature for the saved filenames.
     method : str
@@ -813,6 +883,7 @@ def plot_and_save(
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
         fit_params=fit_params,
+        excluded_error_names=ERROR_MODES.get(error_terms, DIAGNOSTIC_ONLY_ERROR_NAMES),
     )
     # print(_conv_df)
     # plt.show()
@@ -872,7 +943,20 @@ if __name__ == "__main__":
     _calibration_sweep_dir = os.path.join(data_folder, "results/calibration_sweep")
     # plot_ids = ["solling"]
 
-    plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
+    # plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
+    plot_ids = [
+        "04.0101",
+        "04.0704",
+        "08.0034",
+        "53.0107",
+        "04.0302",
+        "04.1402",
+        "04.1403",
+        "14.0017",
+        "52.0010",
+        "53.0701",
+        "59.0008",
+    ]
 
     plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
 
