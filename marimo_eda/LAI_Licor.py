@@ -49,7 +49,7 @@ def _(files):
 
 @app.cell
 def _(Path, pd):
-    lai_path = Path("data/LAI_Licor_3_rings_all_years.xlsx")
+    lai_path = Path("LAI_Licor_3_rings_all_years.xlsx")
 
     raw_lai = pd.read_excel(
         lai_path,
