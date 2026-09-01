@@ -23,8 +23,8 @@ def _(mo):
 def _():
     import pandas as pd
 
-    df = pd.read_excel("data/legend_deposition_2026-07-28.xlsx")
-    df2 = pd.read_csv("data/monthly_dep_lwf_2026-07-28.csv")
+    df = pd.read_excel("legend_deposition_2026-07-28.xlsx")
+    df2 = pd.read_csv("monthly_dep_lwf_2026-07-28.csv")
     return (pd,)
 
 

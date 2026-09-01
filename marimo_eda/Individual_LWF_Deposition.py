@@ -15,7 +15,7 @@ def _():
 
 @app.cell
 def _(Path, pd):
-    foliage_path = Path("data/lwf_foliage_dw100_i_2026-07-30.csv")
+    foliage_path = Path("lwf_foliage_dw100_i_2026-07-30.csv")
 
     foliage = pd.read_csv(
         foliage_path,
