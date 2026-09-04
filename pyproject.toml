@@ -68,6 +68,13 @@ dev = [
     "ipykernel>=7.3.0",
     "jupyter-client>=8.9.1",
 ]
+lfw = [
+    "basedpyright",
+    "fastexcel",
+    "marimo",
+    "polars",
+    "ruff",
+]
 
 # Build backend
 # -------------
