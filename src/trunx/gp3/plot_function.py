@@ -499,8 +499,19 @@ def plot_combined_3pg_outputs_obv(
     fig_name=None,
     plot_id="",
     show: bool = True,
+    series_colors: dict[str, str] | None = None,
 ):
-    """Visualize R and Python 3PG implementations with observed data."""
+    """Visualize R and Python 3PG implementations with observed data.
+
+    Parameters
+    ----------
+    series_colors : dict[str, str] | None
+        Override line color for `"python"`/`"r"`. A missing key falls back to
+        matplotlib's default color cycle, so pass this when the two lines need
+        to stay distinguishable under a caller-set narrow-hue `axes.prop_cycle`
+        (e.g. an all-green theme).
+    """
+    series_colors = series_colors or {}
     # Prepare data
     df["Dates"] = pd.to_datetime(df["Dates"])
     if observed_data is not None and "period_end" in observed_data.columns:
@@ -562,7 +573,11 @@ def plot_combined_3pg_outputs_obv(
             # Plot Python
             if config["python_col"] in df.columns:
                 axes[idx].plot(
-                    species_data["Dates"], species_data[config["python_col"]], "-", label="Python"
+                    species_data["Dates"],
+                    species_data[config["python_col"]],
+                    "-",
+                    label="Python",
+                    **({"color": series_colors["python"]} if "python" in series_colors else {}),
                 )
 
             # Plot R
@@ -573,6 +588,7 @@ def plot_combined_3pg_outputs_obv(
                     "--",
                     label="R",
                     alpha=0.7,
+                    **({"color": series_colors["r"]} if "r" in series_colors else {}),
                 )
 
             # Plot observed data

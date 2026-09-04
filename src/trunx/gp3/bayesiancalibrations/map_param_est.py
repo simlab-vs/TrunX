@@ -37,6 +37,7 @@ from trunx.gp3.bayesiancalibrations.map_uncertainty import (
 )
 from trunx.gp3.bayesiancalibrations.pymc_param_est import (
     build_loglikelihood_fn,
+    clip_defaults_to_priors,
     predict_with_uncertainity,
     pymc_model,
 )
@@ -326,6 +327,7 @@ def run_map_analysis(
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    param_defaults = clip_defaults_to_priors(param_defaults, priors)
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]

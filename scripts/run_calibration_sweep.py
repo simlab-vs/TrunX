@@ -34,7 +34,7 @@ import trunx.gp3.bayesiancalibrations.map_param_est as map_param_est
 import trunx.gp3.bayesiancalibrations.pymc_param_est as pymc_param_est
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import PLOT_VARIABLES
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.load_files import (
     literature_bound_overrides,
     load_priors_from_file,
@@ -48,12 +48,6 @@ from trunx.gp3.gradient_descent import GradientDescentConfig, fit_with_gradient_
 # is Solling's own hand-curated file; every other entry is an ICP plot_id, resolved to
 # its input file by (re)generating it — see resolve_source_file_path.
 SITES = ["solling", "04.1605", "14.0003", "14.0012"]
-
-ERROR_MODES: dict[str, frozenset[str]] = {
-    "all_error_terms": frozenset(),
-    "biomass_only": frozenset({"err_DBH", "err_BA", "err_Height"}),
-    "biomass_DBH_only": frozenset({"err_BA", "err_Height"}),
-}
 
 # METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
 METHODS = ["nuts", "map"]
