@@ -9,11 +9,29 @@ two main components:
 Reference: Landsberg and Sands (2011): Eqs (9.1) and (9.2)
 """
 
+from dataclasses import dataclass
 from typing import Self
 
 import numpy as np
 
-from trunx.models.pppg.quantities import DayRate, SpecificArea
+from trunx.models.pppg.quantities import (
+    Month,
+    MonthRate,
+    PopulationDensity,
+    SpecificArea,
+    SurfaceBiomass,
+)
+
+
+@dataclass(frozen=True)
+class StandInitializationData:
+    """Stand initialization data."""
+
+    population: PopulationDensity
+    foliage_biomass: SurfaceBiomass
+    stem_biomass: SurfaceBiomass
+    root_biomass: SurfaceBiomass
+    age: Month
 
 
 class PoolsQuantity:
@@ -103,8 +121,8 @@ class TurnoverRates(PoolsQuantity):
 
 
 def litterfall_rate(
-    age, litterfall_init: DayRate, litterfall_mature: DayRate, litterfall_age
-) -> DayRate:
+    age, litterfall_init: MonthRate, litterfall_mature: MonthRate, litterfall_age
+) -> MonthRate:
     """Compute the age-dependent foliage turnover (litterfall) rate.
 
     References
@@ -116,9 +134,9 @@ def litterfall_rate(
     ----------
     age: float
         Current age of the stand
-    litterfal_init: DayRate
+    litterfal_init: MonthRate
         Species specific litterfall rate at age 0
-    litterfall_mature: DayRate
+    litterfall_mature: MonthRate
         Species specific litterfall rate at maturity
     litterfall_age: float
         Species specific parameter defining age at which litterfall rate
@@ -149,7 +167,7 @@ def compute_specific_leaf_area(
         Current age of the stand
     specific_area_init: SpecificArea
         Species specific specific area at age 0
-    specific_area_mature: DayRate
+    specific_area_mature: SpecificArea
         Species specific specific area at maturity
     speficif_area_age: float
         Species specific parameter defining age at which

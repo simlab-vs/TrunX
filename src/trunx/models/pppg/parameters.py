@@ -11,23 +11,13 @@ Documentation of the 3GP model can be found at
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Params(BaseModel):
+class Parameters(BaseModel):
     """Class for immutable model parameters."""
 
     model_config = ConfigDict(frozen=True)
 
 
-class StandInitializationData(Params):
-    """Stand initialization data."""
-
-    population: float = Field(gt=0.0, description="initial population (stocking) [trees/ha]")
-    foliage_biomass: float = Field(gt=0.0, description="initial foliage biomass [t/ha]")
-    stem_biomass: float = Field(gt=0.0, description="initial stem biomass in [t/ha]")
-    root_biomass: float = Field(gt=0.0, description="initial root biomass [t/ha]")
-    age: float = Field(gt=0.0, description="initial stand age [months]")
-
-
-class SiteFactors(Params):
+class SiteFactors(Parameters):
     """Site-specific factors."""
 
     latitude: float = Field(
@@ -42,7 +32,7 @@ class SiteFactors(Params):
     asw_max: float = Field(ge=0.0, description="Maximum available soil water [mm]")
 
 
-class WeatherData(Params):
+class WeatherData(Parameters):
     """Monthly weather data."""
 
     average_max_temp: float = Field(
@@ -60,7 +50,7 @@ class WeatherData(Params):
     n_frost_days: float = Field(ge=0.0, le=30.0, description="number of frost days in the month")
 
 
-class AllocationRatios(Params):
+class AllocationRatios(Parameters):
     """Allocation ratios of the net primary production to the different biomass pools."""
 
     foliage_ratio: float = Field(ge=0.0, le=1.0, description="foliage allocation ratio")
@@ -68,7 +58,7 @@ class AllocationRatios(Params):
     roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")
 
 
-class SpeciesParameters(Params):
+class SpeciesParameters(Parameters):
     """Species-specific parameters for the 3PG model."""
 
     # Allocation
@@ -132,7 +122,7 @@ class SpeciesParameters(Params):
     )
 
 
-class TurnoverRates(Params):
+class TurnoverRates(Parameters):
     """Monthly turnover rates (loss) for the different biomass pools."""
 
     foliage_rate: float = Field(
@@ -145,7 +135,7 @@ class TurnoverRates(Params):
     )
 
 
-class WaterParameters(Params):
+class WaterParameters(Parameters):
     """Parameters of the water model."""
 
     interception_rate_max: float = Field(

@@ -1,6 +1,9 @@
 """Types for physical quantities used in the 3PG model."""
 
-type DayRate = float  # daily rates [1 / d]
+type Month = float
+type MonthRate = float  # monthly rates [1 / month]
+
+type PopulationDensity = float  # trees / ha
 
 type SurfaceBiomass = float  # [t / ha]
 type SurfaceMassRate = float  # [t / month * ha]
