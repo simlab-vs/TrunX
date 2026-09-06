@@ -8,6 +8,9 @@ docs/
 data/
 containers/
 models/*
+.claude/*
+images/*
+external/*
 
 # secrets
 .env

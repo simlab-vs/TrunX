@@ -13,8 +13,7 @@ from typing import Self
 
 import numpy as np
 
-type DayRate = float  # daily rates [1 / d]
-type SpecificArea = float  # [m2 / kg]
+from trunx.models.pppg.quantities import DayRate, SpecificArea
 
 
 class PoolsQuantity:
@@ -179,4 +178,5 @@ class Biomass(PoolsQuantity):
     def vector_field(
         self, production: float, allocation_ratios: AllocationRatios, turnover_rates: TurnoverRates
     ):
+        # TODO: Missing mortality.
         return production * allocation_ratios - turnover_rates * self.pools

@@ -2,11 +2,11 @@
 
 import numpy as np
 
-from trunx.models.pppg.schemas import EnergyFlow, MassPerEnergy
+from trunx.models.pppg.quantities import EnergyFlow, MassPerEnergy
 
 photosynth_active_ratio = 0.5  # converts total radiation to photosynthetically active
 carbon_moles_to_plant_grams = 24  # [g / mol] converts moles of produced carbon to grams of plant
-moles_photons_to_MJ = 4.6  # [MJ / mol] converts moles of radiation into mega joules.
+par_photons_per_MJ = 4.6  # [mol / MJ] photosynthetically active photons per MJ of radiation
 # TODO: the above is copied from the Sands book, but seems inverted.
 
 
@@ -30,4 +30,4 @@ def photo_efficiency(effective_quantum_efficiency: float) -> MassPerEnergy:
         Effective canopy quantum efficiency, computed by applying
         the environmental modifiers.
     """
-    return carbon_moles_to_plant_grams * moles_photons_to_MJ * effective_quantum_efficiency
+    return carbon_moles_to_plant_grams * par_photons_per_MJ * effective_quantum_efficiency

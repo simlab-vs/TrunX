@@ -1,6 +1,6 @@
 """Carbon production sub-model."""
 
-from trunx.models.pppg.schemas import EnergyFlow, MassPerEnergy, SurfaceMassRate
+from trunx.models.pppg.quantities import EnergyFlow, MassPerEnergy, SurfaceMassRate
 
 conversion_g_per_m2_t_per_ha = 0.01  # [grams/m2 -> tonnes/ha]
 

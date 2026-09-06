@@ -4,10 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from trunx.models.pppg.schemas import Modifier
+from trunx.models.pppg.quantities import Modifier
 
 
-@dataclass
+@dataclass(frozen=True)
 class Modifiers:
     """Bundle of the environmental and physiological modifiers used across the 3PG equations."""
 
@@ -19,6 +19,7 @@ class Modifiers:
     physiological: Modifier
     vapour: Modifier
     water: Modifier
+    temperature: Modifier
 
 
 def effective_quantum_efficiency(quantum_efficiency: float, mods: Modifiers) -> float:
@@ -34,7 +35,7 @@ def effective_quantum_efficiency(quantum_efficiency: float, mods: Modifiers) -> 
         [age, fros, fertility, salinity, co2, physiological]
     """
     return (
-        mods.age * mods.frost * mods.fertility * mods.salinity * mods.co2 * mods.physiological
+        mods.frost * mods.fertility * mods.temperature * mods.physiological
     ) * quantum_efficiency
 
 
@@ -55,7 +56,7 @@ def physiological_modifier(
     water_mod: float
 
     """
-    return age_mod * np.min([vapour_mod, water_mod])
+    return age_mod * np.minimum(vapour_mod, water_mod)
 
 
 def temperature_modifier(

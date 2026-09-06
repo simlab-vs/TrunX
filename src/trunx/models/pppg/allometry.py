@@ -11,10 +11,7 @@ as a function of other charateristics of the tree (mostly biomass).
 
 import numpy as np
 
-from trunx.models.pppg.schemas import SurfaceBiomass
-
-type LeafAreaIndex = float  # [m2/m2]
-type DiameterBreastHeight = float  # [cm]
+from trunx.models.pppg.quantities import DiameterBreastHeight, LeafAreaIndex, SurfaceBiomass
 
 conversion_t_per_ha_kg_per_m2 = 0.1  # [tonnes/ha -> kg/m2]
 conversion_t_to_kg = 1000  # [tonnes -> kg]

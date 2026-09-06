@@ -1,15 +1,14 @@
-"""Dataclasses for parameters of the 3GP model.
+"""Dataclasses and validators for parameters of the 3GP model.
 
-Documentation can be found at [https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_UserManual.pdf](https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_UserManual.pdf).
+This submodule provides containers for parameters of the 3GP model.
+These containers should be used to validate external data.
+Data is only validated at the model boundaries.
+
+Documentation of the 3GP model can be found at
+[https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_UserManual.pdf](https://3pg.forestry.ubc.ca/files/2014/04/3PGpjs_UserManual.pdf).
 """
 
 from pydantic import BaseModel, ConfigDict, Field
-
-type SurfaceBiomass = float  # [t / ha]
-type SurfaceMassRate = float  # [t / month * ha]
-type EnergyFlow = float  # [MJ / day * m2]
-type MassPerEnergy = float  # [g / MJ]
-type Modifier = float  # [0-1]
 
 
 class Params(BaseModel):

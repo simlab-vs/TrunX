@@ -2,12 +2,9 @@
 
 import numpy as np
 
-from trunx.models.pppg.allometry import LeafAreaIndex
 from trunx.models.pppg.environment import Modifiers
+from trunx.models.pppg.quantities import Conductance, LeafAreaIndex, WaterHeight
 from trunx.models.pppg.schemas import SiteFactors, WaterParameters, WeatherData
-
-type WaterHeight = float  # [mm]
-type Conductance = float
 
 
 def compute_conductance(

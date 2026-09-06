@@ -2,6 +2,8 @@
 
 Default species parameters are the ones for E. Globulus,
 taken from Sands (2004).
+Note that the values for the litterfall_init and litterfall_mature found in Sands (2004)
+seem to be inverted.
 
 """
 
@@ -12,8 +14,8 @@ default_species_parameters = SpeciesParameters(
     max_root_ratio=0.8,
     fertility_allocation_param=0.0,
     root_turnover_rate=0.015,  # [1 / month]
-    litterfall_init=0.027,  # [1 / month]
-    litterfall_mature=0.001,  # [1 / month]
+    litterfall_init=0.001,  # [1 / month]
+    litterfall_mature=0.027,  # [1 / month]
     litterfall_age=12,  # [month]
     min_temp=8.5,  # [C°]
     opt_temp=16,  # [C°]
