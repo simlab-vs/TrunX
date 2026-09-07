@@ -10,6 +10,8 @@ Documentation of the 3GP model can be found at
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from trunx.models.pppg.quantities import Ratio
+
 
 class Parameters(BaseModel):
     """Class for immutable model parameters."""
@@ -53,13 +55,13 @@ class WeatherData(Parameters):
 class AllocationParameters(Parameters):
     """Parameters of the biomass allocation submodel."""
 
-    min_root_ratio: float = Field(
+    min_root_ratio: Ratio = Field(
         gt=0.0, le=1.0, description="minimum fraction of NPP allocated to roots"
     )
-    max_root_ratio: float = Field(
+    max_root_ratio: Ratio = Field(
         gt=0.0, le=1.0, description="maximum fraction of NPP allocated to roots"
     )
-    fertility_allocation_param: float = Field(
+    fertility_allocation: float = Field(
         ge=0.0, le=1.0, description="modifier of root allocation response to fertility"
     )
 
@@ -153,24 +155,3 @@ class SpeciesParameters(Parameters):
     light: LightParameters
     allometry: AllometryParameters
     water: WaterParameters
-
-
-class TurnoverRates(Parameters):
-    """Monthly turnover rates (loss) for the different biomass pools."""
-
-    foliage_rate: float = Field(
-        ge=0.0, le=1.0, description="monthly foliage turnover rate [1/month]"
-    )
-    stem_rate: float = Field(ge=0.0, le=1.0, description="monthly stem turnover rate [1/month]")
-    roots_rate: float = Field(ge=0.0, le=1.0, description="monthly roots turnover rate [1/month]")
-    stem_number_rate: float = Field(
-        ge=0.0, le=1.0, description="monthly stem number turnover rate (mortality) [1/month]"
-    )
-
-
-class AllocationRatios(Parameters):
-    """Allocation ratios of the net primary production to the different biomass pools."""
-
-    foliage_ratio: float = Field(ge=0.0, le=1.0, description="foliage allocation ratio")
-    stem_ratio: float = Field(ge=0.0, le=1.0, description="stem allocation ratio")
-    roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")

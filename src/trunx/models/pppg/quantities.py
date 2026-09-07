@@ -1,7 +1,9 @@
 """Types for physical quantities used in the 3PG model."""
 
+type Ratio = float  # ratio (for allocations etc...)
+
 type Month = float
-type MonthRate = float  # monthly rates [1 / month]
+type Rate = float  # monthly rates [1 / month]
 
 type PopulationDensity = float  # trees / ha
 

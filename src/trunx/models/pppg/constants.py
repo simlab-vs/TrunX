@@ -20,7 +20,7 @@ from trunx.models.pppg.parameters import (
 default_allocation_parameters = AllocationParameters(
     min_root_ratio=0.25,
     max_root_ratio=0.8,
-    fertility_allocation_param=0.0,
+    fertility_allocation=0.0,
 )
 
 default_turnover_parameters = TurnoverParameters(
