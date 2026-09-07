@@ -7,7 +7,7 @@ In particular, this does not include the constrained conductance model from r3PG
 import numpy as np
 
 from trunx.models.pppg.environment import Modifiers
-from trunx.models.pppg.parameters import SiteFactors, WaterParameters, WeatherData
+from trunx.models.pppg.parameters import SiteParameters, WaterParameters, WeatherData
 from trunx.models.pppg.quantities import Conductance, LeafAreaIndex, WaterHeight
 
 
@@ -53,7 +53,7 @@ def compute_available_soil_water(
     LAI: LeafAreaIndex,
     forcings: WeatherData,
     params: WaterParameters,
-    site: SiteFactors,
+    site: SiteParameters,
 ) -> WaterHeight:
     """Compute available soil water (ASW) at t+1.
 

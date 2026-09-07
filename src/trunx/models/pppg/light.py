@@ -12,18 +12,14 @@ par_photons_per_MJ = 4.6  # [mol / MJ] photosynthetically active photons per MJ 
 
 
 def absorbed_radiation(
-    species_params: SpeciesParameters,
-    site_params: SiteParameters,
+    params: SpeciesParameters,
+    site: SiteParameters,
     leaf_ai: float,
     total_radiation: EnergyFlow,
 ) -> EnergyFlow:
     """Compute absorbed radiation."""
-    beer_factor = 1 - np.exp(
-        -species_params.light.extinction_coeff * leaf_ai / site_params.canopy_cover_fraction
-    )
-    return (
-        photosynth_active_ratio * beer_factor * total_radiation * site_params.canopy_cover_fraction
-    )
+    beer_factor = 1 - np.exp(-params.light.extinction_coeff * leaf_ai / site.canopy_cover_fraction)
+    return photosynth_active_ratio * beer_factor * total_radiation * site.canopy_cover_fraction
 
 
 def photo_efficiency(effective_quantum_efficiency: float) -> MassPerEnergy:

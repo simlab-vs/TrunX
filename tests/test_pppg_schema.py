@@ -8,7 +8,7 @@ from trunx.models.pppg.constants import default_species_parameters
 from trunx.models.pppg.dynamics import StandState
 from trunx.models.pppg.parameters import (
     AllocationParameters,
-    SiteFactors,
+    SiteParameters,
     TurnoverParameters,
     WeatherData,
 )
@@ -24,7 +24,7 @@ def test_inits():
     stand_state = StandState(
         population=100, foliage=100, stem=100, roots=100, age=1, available_soil_water=100
     )
-    site_factors = SiteFactors(latitude=50, fertility_rating=0.3, asw_min=0.0, asw_max=200.0)
+    site_params = SiteParameters(latitude=50, fertility_rating=0.3, asw_min=0.0, asw_max=200.0)
 
     weather_data = WeatherData(
         average_max_temp=10,
@@ -37,8 +37,9 @@ def test_inits():
     )
 
     assert stand_state.population == 100
-    assert site_factors.latitude == 50
-    assert site_factors.asw_min == 0.0
+    assert site_params.latitude == 50
+    assert site_params.asw_min == 0.0
+    assert site_params.canopy_cover_fraction == 1.0
     assert weather_data.average_max_temp == 10
     assert weather_data.irrigation == 0
 
