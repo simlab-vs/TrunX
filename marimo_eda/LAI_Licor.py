@@ -1,3 +1,5 @@
+"""Interactive EDA for LI-COR LAI measurements."""
+
 import marimo
 
 __generated_with = "0.24.0"
@@ -13,7 +15,7 @@ def _():
 
 @app.cell
 def _(mo):
-    sites = [1,2,3]
+    sites = [1, 2, 3]
 
     mo.ui.dropdown(sites)
     return
@@ -23,8 +25,8 @@ def _(mo):
 def _():
     import pandas as pd
 
-    df = pd.read_excel("legend_deposition_2026-07-28.xlsx")
-    df2 = pd.read_csv("monthly_dep_lwf_2026-07-28.csv")
+    df = pd.read_excel("legend_deposition_2026-07-28.xlsx")  # noqa: F841
+    df2 = pd.read_csv("monthly_dep_lwf_2026-07-28.csv")  # noqa: F841
     return (pd,)
 
 
@@ -36,7 +38,7 @@ def _():
 
     files = sorted(data_dir.iterdir())
 
-    files
+    files  # noqa: B018
     return Path, files
 
 
@@ -116,33 +118,25 @@ def _(pd, raw_lai):
 @app.cell
 def _(lai, mo):
     plot_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            lai["plot"].dropna().unique().tolist()
-        ),
+        options=["All"] + sorted(lai["plot"].dropna().unique().tolist()),
         value="All",
         label="Plot",
     )
 
     subplot_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            lai["subplot"].dropna().unique().tolist()
-        ),
+        options=["All"] + sorted(lai["subplot"].dropna().unique().tolist()),
         value="All",
         label="Subplot",
     )
 
     plot_type_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            lai["plot_type"].dropna().unique().tolist()
-        ),
+        options=["All"] + sorted(lai["plot_type"].dropna().unique().tolist()),
         value="All",
         label="Plot type",
     )
 
     season_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            lai["season"].dropna().unique().tolist()
-        ),
+        options=["All"] + sorted(lai["season"].dropna().unique().tolist()),
         value="All",
         label="Season",
     )
@@ -169,26 +163,18 @@ def _(
     filtered_lai = lai.copy()
 
     if plot_selector.value != "All":
-        filtered_lai = filtered_lai[
-            filtered_lai["plot"] == plot_selector.value
-        ]
+        filtered_lai = filtered_lai[filtered_lai["plot"] == plot_selector.value]
 
     if subplot_selector.value != "All":
-        filtered_lai = filtered_lai[
-            filtered_lai["subplot"] == subplot_selector.value
-        ]
+        filtered_lai = filtered_lai[filtered_lai["subplot"] == subplot_selector.value]
 
     if plot_type_selector.value != "All":
-        filtered_lai = filtered_lai[
-            filtered_lai["plot_type"] == plot_type_selector.value
-        ]
+        filtered_lai = filtered_lai[filtered_lai["plot_type"] == plot_type_selector.value]
 
     if season_selector.value != "All":
-        filtered_lai = filtered_lai[
-            filtered_lai["season"] == season_selector.value
-        ]
+        filtered_lai = filtered_lai[filtered_lai["season"] == season_selector.value]
 
-    filtered_lai
+    filtered_lai  # noqa: B018
     return (filtered_lai,)
 
 
@@ -207,39 +193,30 @@ def _(mo):
         label="Measurement",
     )
 
-    measurement_selector
+    measurement_selector  # noqa: B018
     return measurement_options, measurement_selector
 
 
 @app.cell
 def _(measurement_options, measurement_selector):
-    selected_measurement = measurement_options[
-        measurement_selector.value
-    ]
+    selected_measurement = measurement_options[measurement_selector.value]
 
-    selected_measurement
+    selected_measurement  # noqa: B018
     return (selected_measurement,)
 
 
 @app.cell
 def _():
     import plotly.graph_objects as go
-    import numpy as np
 
     return (go,)
 
 
 @app.cell
 def _(filtered_lai, go, measurement_selector, selected_measurement):
-    plot_data = filtered_lai[
-        ["date", selected_measurement]
-    ].copy()
+    plot_data = filtered_lai[["date", selected_measurement]].copy()
 
-    plot_data = (
-        plot_data
-        .sort_values("date")
-        .reset_index(drop=True)
-    )
+    plot_data = plot_data.sort_values("date").reset_index(drop=True)
 
     # ============================================================
     # SETTINGS
@@ -248,21 +225,18 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
     # Gaps longer than this are shown as dashed lines
     max_gap_days = 365 * 2
 
-
     # ============================================================
     # FIGURE
     # ============================================================
 
     fig = go.Figure()
 
-
     # ============================================================
     # 1. MEASURED OBSERVATIONS
     # ============================================================
 
     measured = (
-        plot_data
-        .dropna(subset=[selected_measurement])
+        plot_data.dropna(subset=[selected_measurement])
         .sort_values("date")
         .reset_index(drop=True)
     )
@@ -274,7 +248,6 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
             mode="markers",
             name="Measured",
             marker=dict(size=8),
-
             # Full date shown when hovering
             hovertemplate=(
                 "<b>Date:</b> %{x|%d %B %Y}"
@@ -283,31 +256,25 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
                 "%{y:.2f}"
                 "<extra></extra>"
             ),
-
             showlegend=True,
         )
     )
-
 
     # ============================================================
     # 2. CONNECT MEASUREMENTS
     # ============================================================
 
     for i in range(len(measured) - 1):
-
         current = measured.iloc[i]
         next_row = measured.iloc[i + 1]
 
-        gap_days = (
-            next_row["date"] - current["date"]
-        ).days
+        gap_days = (next_row["date"] - current["date"]).days
 
         # --------------------------------------------------------
         # Normal gap → solid line
         # --------------------------------------------------------
 
         if gap_days <= max_gap_days:
-
             fig.add_trace(
                 go.Scatter(
                     x=[
@@ -330,7 +297,6 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
         # --------------------------------------------------------
 
         else:
-
             fig.add_trace(
                 go.Scatter(
                     x=[
@@ -352,23 +318,18 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
                 )
             )
 
-
     # ============================================================
     # 3. HIGHLIGHT NaN DATES
     # ============================================================
 
     missing_dates = (
-        plot_data.loc[
-            plot_data[selected_measurement].isna(),
-            "date"
-        ]
+        plot_data.loc[plot_data[selected_measurement].isna(), "date"]
         .dropna()
         .drop_duplicates()
         .sort_values()
     )
 
     for date in missing_dates:
-
         fig.add_vline(
             x=date,
             line_width=2,
@@ -377,13 +338,11 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
             showlegend=False,
         )
 
-
     # ============================================================
     # 4. LEGEND ENTRY FOR MISSING OBSERVATIONS
     # ============================================================
 
     if len(missing_dates) > 0:
-
         fig.add_trace(
             go.Scatter(
                 x=[None],
@@ -400,7 +359,6 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
             )
         )
 
-
     # ============================================================
     # 5. LAYOUT
     # ============================================================
@@ -409,12 +367,11 @@ def _(filtered_lai, go, measurement_selector, selected_measurement):
         title=f"{measurement_selector.value} over time",
         xaxis_title="Date",
         yaxis_title=measurement_selector.value,
-
         # Important: inspect individual observations
         hovermode="closest",
     )
 
-    fig
+    fig  # noqa: B018
     return
 
 

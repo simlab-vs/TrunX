@@ -1,14 +1,17 @@
+"""Interactive EDA for individual LWF foliage dry-weight measurements."""
+
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-    import pandas as pd
-    import marimo as mo
     from pathlib import Path
+
+    import marimo as mo
+    import pandas as pd
 
     return Path, mo, pd
 
@@ -42,59 +45,45 @@ def _(foliage, pd):
 @app.cell
 def _(foliage, mo):
     plot_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            foliage["plot_id"]
-            .dropna()
-            .unique()
-            .tolist()
-        ),
+        options=["All"] + sorted(foliage["plot_id"].dropna().unique().tolist()),
         value="All",
         label="LWF site",
     )
 
     species_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            foliage["species"]
-            .dropna()
-            .unique()
-            .tolist()
-        ),
+        options=["All"] + sorted(foliage["species"].dropna().unique().tolist()),
         value="All",
         label="Species",
     )
 
     leaf_type_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            foliage["leaf_type"]
-            .dropna()
-            .unique()
-            .tolist()
-        ),
+        options=["All"] + sorted(foliage["leaf_type"].dropna().unique().tolist()),
         value="All",
         label="Leaf type",
     )
 
     age_selector = mo.ui.dropdown(
-        options=["All"] + sorted(
-            foliage["leaf_age_class"]
-            .dropna()
-            .unique()
-            .tolist()
-        ),
+        options=["All"] + sorted(foliage["leaf_age_class"].dropna().unique().tolist()),
         value="All",
         label="Leaf age class",
     )
 
-    mo.vstack([
-        mo.hstack([
-            plot_selector,
-            species_selector,
-        ]),
-        mo.hstack([
-            leaf_type_selector,
-            age_selector,
-        ]),
-    ])
+    mo.vstack(
+        [
+            mo.hstack(
+                [
+                    plot_selector,
+                    species_selector,
+                ]
+            ),
+            mo.hstack(
+                [
+                    leaf_type_selector,
+                    age_selector,
+                ]
+            ),
+        ]
+    )
     return age_selector, leaf_type_selector, plot_selector, species_selector
 
 
@@ -103,6 +92,7 @@ def _(
     age_selector,
     foliage,
     leaf_type_selector,
+    mo,
     plot_selector,
     species_selector,
 ):
@@ -128,7 +118,7 @@ def _(
             filtered_foliage["leaf_age_class"] == age_selector.value
         ]
 
-    filtered_foliage
+    mo.output.replace(filtered_foliage)
     return (filtered_foliage,)
 
 
@@ -145,13 +135,11 @@ def _(filtered_foliage):
 
 
 @app.cell
-def _(filtered_foliage):
+def _(filtered_foliage, mo):
     import plotly.graph_objects as go
 
     plot_data = (
-        filtered_foliage[
-            ["survey_date", "gew100", "sample_id"]
-        ]
+        filtered_foliage[["survey_date", "gew100", "sample_id"]]
         .dropna(subset=["survey_date", "gew100"])
         .sort_values("survey_date")
     )
@@ -182,15 +170,14 @@ def _(filtered_foliage):
         hovermode="closest",
     )
 
-    fig
+    mo.output.replace(fig)
     return (go,)
 
 
 @app.cell
-def _(foliage):
+def _(foliage, mo):
     samples_per_group = (
-        foliage
-        .groupby(
+        foliage.groupby(
             [
                 "survey_date",
                 "species",
@@ -209,12 +196,23 @@ def _(foliage):
         .sort_values("survey_date")
     )
 
-    samples_per_group
+    mo.output.replace(samples_per_group)
     return
 
 
 @app.cell
-def _(go, samples_per_date):
+def _(foliage):
+    samples_per_date = (
+        foliage.groupby("survey_date", dropna=False)
+        .agg(n_samples=("sample_id", "nunique"))
+        .reset_index()
+        .sort_values("survey_date")
+    )
+    return (samples_per_date,)
+
+
+@app.cell
+def _(go, mo, samples_per_date):
     fig_1 = go.Figure()
 
     fig_1.add_trace(
@@ -235,7 +233,7 @@ def _(go, samples_per_date):
         yaxis_title="Number of individual samples",
     )
 
-    fig_1
+    mo.output.replace(fig_1)
     return
 
 
