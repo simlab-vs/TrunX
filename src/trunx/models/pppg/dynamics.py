@@ -20,6 +20,7 @@ from trunx.models.pppg.quantities import (
     PopulationDensity,
     SpecificArea,
     SurfaceBiomass,
+    WaterHeight,
 )
 
 
@@ -32,6 +33,7 @@ class StandInitializationData:
     stem_biomass: SurfaceBiomass
     root_biomass: SurfaceBiomass
     age: Month
+    available_soil_water: WaterHeight
 
 
 class PoolsQuantity:

@@ -1,10 +1,14 @@
-"""Water balance models (available soil water)."""
+"""Water balance models (available soil water).
+
+This implementation follows the original from Sands (2004).
+In particular, this does not include the constrained conductance model from r3PG.
+"""
 
 import numpy as np
 
 from trunx.models.pppg.environment import Modifiers
+from trunx.models.pppg.parameters import SiteFactors, WaterParameters, WeatherData
 from trunx.models.pppg.quantities import Conductance, LeafAreaIndex, WaterHeight
-from trunx.models.pppg.schemas import SiteFactors, WaterParameters, WeatherData
 
 
 def compute_conductance(
@@ -21,39 +25,18 @@ def compute_conductance(
     )
 
 
-def compute_unconstrained_conductance(LAI: LeafAreaIndex, params: WaterParameters) -> Conductance:
-    """Compute the unconstrained canopy conductance used in the P.M. equations.
-
-    Reference: Sands and Landsberg (2011) Eq. 9.17.
-    """
-    if params.lai_at_max_conductance <= LAI:
-        return params.conductance_max
-
-    return params.conductance_at_lai0 + (params.conductance_max - params.conductance_at_lai0) * (
-        LAI / params.lai_at_max_conductance
-    )
-
-
-def bulked_canopy_conductance(
-    LAI: LeafAreaIndex, mods: Modifiers, params: WaterParameters
-) -> Conductance:
-    """Compute bulked (leaves + ground) canopy conductance for the P.M. equations.
-
-    The bulked canopy conductance is a proxy used in the Penman-Monteith equations
-    to compute total evapotranspiration.
-
-    Reference: Sands and Landsberg (2011) Eq. 9.16.
-    """
-    conductance_unconstrained = compute_unconstrained_conductance(LAI, params)
-    return mods.co2 * mods.physiological * conductance_unconstrained
-
-
 def compute_interception_rate(LAI: LeafAreaIndex, params: WaterParameters) -> float:
     """Compute rainfall interception rate.
 
     Reference: Sands (2004) Eq. 15
     """
-    return params.interception_rate_max * np.minimum(1, LAI / params.lai_at_max_interception)
+    epsilon = 1e-8
+    if params.lai_at_max_interception > 0:
+        return params.interception_rate_max * np.minimum(
+            1.0, LAI / (params.lai_at_max_interception + epsilon)
+        )
+    else:
+        return params.interception_rate_max
 
 
 def compute_transpiration() -> WaterHeight:

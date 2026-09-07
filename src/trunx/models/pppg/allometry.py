@@ -11,6 +11,7 @@ as a function of other charateristics of the tree (mostly biomass).
 
 import numpy as np
 
+from trunx.models.pppg.parameters import AllometryParameters
 from trunx.models.pppg.quantities import DiameterBreastHeight, LeafAreaIndex, SurfaceBiomass
 
 conversion_t_per_ha_kg_per_m2 = 0.1  # [tonnes/ha -> kg/m2]
@@ -35,11 +36,11 @@ def compute_LAI_from_biomass(
 def compute_dbh_from_biomass(
     stem_biomass: SurfaceBiomass,
     population: float,
-    dbh_allometric_param: tuple[float, float],
+    params: AllometryParameters,
 ) -> DiameterBreastHeight:
     """Compute the diameter at breast height (DBH)."""
-    return (conversion_t_to_kg * stem_biomass / (dbh_allometric_param[1] * population)) ** (
-        1 / dbh_allometric_param[0]
+    return (conversion_t_to_kg * stem_biomass / (params.dbh_scale * population)) ** (
+        1 / params.dbh_power
     )
 
 

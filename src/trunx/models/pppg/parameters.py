@@ -50,18 +50,9 @@ class WeatherData(Parameters):
     n_frost_days: float = Field(ge=0.0, le=30.0, description="number of frost days in the month")
 
 
-class AllocationRatios(Parameters):
-    """Allocation ratios of the net primary production to the different biomass pools."""
+class AllocationParameters(Parameters):
+    """Parameters of the biomass allocation submodel."""
 
-    foliage_ratio: float = Field(ge=0.0, le=1.0, description="foliage allocation ratio")
-    stem_ratio: float = Field(ge=0.0, le=1.0, description="stem allocation ratio")
-    roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")
-
-
-class SpeciesParameters(Parameters):
-    """Species-specific parameters for the 3PG model."""
-
-    # Allocation
     min_root_ratio: float = Field(
         gt=0.0, le=1.0, description="minimum fraction of NPP allocated to roots"
     )
@@ -72,7 +63,10 @@ class SpeciesParameters(Parameters):
         ge=0.0, le=1.0, description="modifier of root allocation response to fertility"
     )
 
-    # Turnover
+
+class TurnoverParameters(Parameters):
+    """Parameters of the turnover submodel."""
+
     root_turnover_rate: float = Field(
         gt=0.0, le=1.0, description="monthly root turnover rate [1/month]"
     )
@@ -87,6 +81,10 @@ class SpeciesParameters(Parameters):
         description="age at which litterfall rate reaches its mean value [months]",
     )
 
+
+class GrowthModifierParameters(Parameters):
+    """Parameters of the growth modifier submodel."""
+
     # Temperature response
     min_temp: float = Field(description="minimum temperature for growth [°C]")
     opt_temp: float = Field(description="optimum temperature for growth [°C]")
@@ -99,7 +97,10 @@ class SpeciesParameters(Parameters):
     )
     max_age: float = Field(gt=0.0, description="maximum stand age [months]")
 
-    # Light and allometry
+
+class LightParameters(Parameters):
+    """Parameters of the light submodel."""
+
     canopy_quantum_efficiency: float = Field(
         gt=0.0, description="canopy quantum efficiency [mol/mol]"
     )
@@ -107,12 +108,20 @@ class SpeciesParameters(Parameters):
         gt=0.0, description="light extinction coefficient for Beer's law"
     )
 
-    dbh_allometric_param: tuple[float, float] = (
-        Field(description="parameters for the dbh to stem mass allometric equation (power)"),
-        Field(description="parameters for the dbh to stem mass allometric equation (scaling)"),
+
+class AllometryParameters(Parameters):
+    """Parameters of the allometric relations."""
+
+    dbh_power: float = Field(
+        description="parameters for the dbh to stem mass allometric equation (power)"
     )
+    dbh_scale: float = Field(
+        description="parameters for the dbh to stem mass allometric equation (scaling)"
+    )
+
     fs_ratio_2: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=2")
     fs_ratio_20: float = Field(gt=0.0, description="foliage to stem allocation ration at dbh=20")
+
     specific_area_init: float = Field(gt=0.0, description="specific leaf area at age 0 [m2 / kg]")
     specific_area_mature: float = Field(
         gt=0.0, description="specific leaf area for mature stands [m2 / kg]"
@@ -120,6 +129,30 @@ class SpeciesParameters(Parameters):
     specific_area_age: float = Field(
         gt=0.0, description="age at which specific leaf area reaches its mean value [month]"
     )
+
+
+class WaterParameters(Parameters):
+    """Parameters of the water model."""
+
+    interception_rate_max: float = Field(
+        ge=0.0, le=1.0, description="Maximum rainfall interception rate"
+    )
+    lai_at_max_interception: float = Field(
+        ge=0.0, description="LAI at maximum rainfall interception"
+    )
+    lai_at_max_conductance: float = Field(ge=0.0, description="LAI at maximal canopy conductance")
+    conductance_max: float = Field(ge=0.0, description="Maximal canopy conductance")
+
+
+class SpeciesParameters(Parameters):
+    """Species-specific parameters for the 3PG model."""
+
+    allocation: AllocationParameters
+    turnover: TurnoverParameters
+    growth: GrowthModifierParameters
+    light: LightParameters
+    allometry: AllometryParameters
+    water: WaterParameters
 
 
 class TurnoverRates(Parameters):
@@ -135,15 +168,9 @@ class TurnoverRates(Parameters):
     )
 
 
-class WaterParameters(Parameters):
-    """Parameters of the water model."""
+class AllocationRatios(Parameters):
+    """Allocation ratios of the net primary production to the different biomass pools."""
 
-    interception_rate_max: float = Field(
-        ge=0.0, le=1.0, description="Maximum rainfall interception rate"
-    )
-    lai_at_max_interception: float = Field(
-        ge=0.0, description="LAI at maximum rainfall interception"
-    )
-    lai_at_max_conductance: float = Field(ge=0.0, description="LAI at maximal canopy conductance")
-    conductance_at_lai0: float = Field(ge=0.0, description="Canopy conductance at 0 LAI")
-    conductance_max: float = Field(ge=0.0, description="Maximal canopy conductance")
+    foliage_ratio: float = Field(ge=0.0, le=1.0, description="foliage allocation ratio")
+    stem_ratio: float = Field(ge=0.0, le=1.0, description="stem allocation ratio")
+    roots_ratio: float = Field(ge=0.0, le=1.0, description="roots allocation ratio")

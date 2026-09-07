@@ -124,9 +124,8 @@ def water_modifier(relative_available_water: float, water_modifier_shape) -> Mod
     water_modifier_shape
         Soil texture specific shape parameters for the soil modifier
     """
-    a = 1 - (1 - relative_available_water) ** water_modifier_shape[0]
     b = 1 + ((1 - relative_available_water) / water_modifier_shape[1]) ** water_modifier_shape[0]
-    return a / b
+    return 1 / b
 
 
 def fertility_modifier(
