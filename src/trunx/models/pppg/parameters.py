@@ -19,7 +19,7 @@ class Parameters(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class SiteFactors(Parameters):
+class SiteParameters(Parameters):
     """Site-specific factors."""
 
     latitude: float = Field(
@@ -32,6 +32,13 @@ class SiteFactors(Parameters):
     )
     asw_min: float = Field(ge=0.0, description="Minimum available soil water [mm]")
     asw_max: float = Field(ge=0.0, description="Maximum available soil water [mm]")
+
+    canopy_cover_fraction: float = Field(
+        ge=0.0,
+        le=1.0,
+        default=1.0,
+        description="Canopy cover fraction [0-1]. Defaults to 1 in Sands (2004)",
+    )
 
 
 class WeatherData(Parameters):
@@ -106,7 +113,7 @@ class LightParameters(Parameters):
     canopy_quantum_efficiency: float = Field(
         gt=0.0, description="canopy quantum efficiency [mol/mol]"
     )
-    light_extinction_coeff: float = Field(
+    extinction_coeff: float = Field(
         gt=0.0, description="light extinction coefficient for Beer's law"
     )
 

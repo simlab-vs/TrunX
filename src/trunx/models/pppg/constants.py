@@ -41,7 +41,7 @@ default_growth_mod_parameters = GrowthModifierParameters(
 
 default_light_parameters = LightParameters(
     canopy_quantum_efficiency=0.06,
-    light_extinction_coeff=0.5,
+    extinction_coeff=0.5,
 )
 
 default_allometry_parameters = AllometryParameters(

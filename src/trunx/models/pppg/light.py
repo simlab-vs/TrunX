@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from trunx.models.pppg.parameters import SiteParameters, SpeciesParameters
 from trunx.models.pppg.quantities import EnergyFlow, MassPerEnergy
 
 photosynth_active_ratio = 0.5  # converts total radiation to photosynthetically active
@@ -11,14 +12,18 @@ par_photons_per_MJ = 4.6  # [mol / MJ] photosynthetically active photons per MJ 
 
 
 def absorbed_radiation(
-    extinction_coeff: float,
+    species_params: SpeciesParameters,
+    site_params: SiteParameters,
     leaf_ai: float,
-    canopy_cover_fraction: float,
     total_radiation: EnergyFlow,
 ) -> EnergyFlow:
     """Compute absorbed radiation."""
-    beer_factor = 1 - np.exp(-extinction_coeff * leaf_ai / canopy_cover_fraction)
-    return photosynth_active_ratio * beer_factor * total_radiation * canopy_cover_fraction
+    beer_factor = 1 - np.exp(
+        -species_params.light.extinction_coeff * leaf_ai / site_params.canopy_cover_fraction
+    )
+    return (
+        photosynth_active_ratio * beer_factor * total_radiation * site_params.canopy_cover_fraction
+    )
 
 
 def photo_efficiency(effective_quantum_efficiency: float) -> MassPerEnergy:
