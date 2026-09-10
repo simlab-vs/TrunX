@@ -122,8 +122,6 @@ def setup_parameters(
     output_vars,
     param_bounds,
     sigma_param_names,
-    n_levels,
-    n_trajectories,
     seed,
     species_index,
 ):
@@ -145,7 +143,7 @@ def setup_parameters(
             raise KeyError(f"Missing bounds for sigma parameter '{sigma_param}'")
         full_param_bounds[sigma_param] = list(param_bounds[sigma_param])
 
-    print(f"\nAnalyzing {len(all_param_names)} parameters (r={n_trajectories}, p={n_levels}):")
+    print(f"\nAnalyzing {len(all_param_names)} parameters:")
     print(f"  Parameters: {', '.join(all_param_names)}")
     print(f"  Outputs: {', '.join(output_vars)}")
 
@@ -181,6 +179,7 @@ def setup_parameters(
         "all_param_names": all_param_names,
         "full_param_bounds": full_param_bounds,
         "batched_log_likelihood": batched_log_likelihood,
+        "log_likelihood_fn": _log_likelihood_components,
     }
 
 
@@ -224,8 +223,6 @@ def run_morris_analysis(
         output_vars,
         param_bounds,
         sigma_param_names,
-        n_levels,
-        n_trajectories,
         seed,
         species_index,
     )
@@ -238,7 +235,7 @@ def run_morris_analysis(
     }
 
     # Generate samples
-    print("\nGenerating Morris samples...")
+    print(f"\nGenerating Morris samples (r={n_trajectories}, p={n_levels})...")
     param_values = morris_sample.sample(problem, n_trajectories, num_levels=n_levels, seed=seed)
     print(f"Generated {param_values.shape[0]} samples")
 
@@ -246,6 +243,8 @@ def run_morris_analysis(
     df_samples = pl.DataFrame(param_values, schema=param_names)
 
     # Save to parquet
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
     output_path = os.path.join(save_dir, "morris_samples.parquet")
     df_samples.write_parquet(output_path)
 
