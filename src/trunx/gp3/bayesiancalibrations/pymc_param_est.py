@@ -1,9 +1,12 @@
 """Bayesian calibration of 3PG parameters using PyMC and JAX."""
 
+import itertools
 import os
 import shutil
+import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, NamedTuple, cast
 
 import arviz as az
@@ -199,6 +202,96 @@ class Run3PGLogLikeOp(Op):
         (output_grad,) = output_grads
         grad_value = cast(Any, self._grad_op(param_vector))
         return [cast(Any, output_grad) * grad_value]
+
+
+def _child_pids(parent_pid: int) -> list[int]:
+    """Return the PIDs of `parent_pid`'s direct child processes, read from /proc.
+
+    Linux-only (this only runs inside the Apptainer container the sbatch job
+    launches). Avoids adding psutil as a direct dependency for what
+    `/proc/<pid>/stat`'s PPID field already gives us.
+    """
+    children = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as f:
+                stat = f.read()
+            # `comm` (2nd field) is parenthesized and may itself contain spaces/
+            # parens, so split on the *last* ")" before reading the fields after it;
+            # PPID is the first of those.
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        if ppid == parent_pid:
+            children.append(int(entry))
+    return children
+
+
+@contextmanager
+def _pin_sample_workers_to_distinct_cores() -> Iterator[None]:
+    """Pin each of `pm.sample`'s chain-worker processes to one core apiece.
+
+    `pm.sample(cores=N, mp_ctx="spawn")` spawns one process per chain; every one
+    of them otherwise inherits this process's full CPU affinity (the SLURM job's
+    whole cpuset), and any per-process thread pool that sizes itself off
+    `sched_getaffinity` then creates its own *cpuset-wide* pool instead of a fair
+    share of it — `chains`-fold oversubscription of the job's own CPU allocation.
+    numpy/BLAS pools are already pinned to 1 thread via `*_NUM_THREADS` env vars
+    (see calibration_sweep_test.sbatch), but JAX/XLA's CPU "Eigen" thread pool
+    (used on every `run_3pg` log-likelihood evaluation here, regardless of step
+    method) has no such override in the jaxlib build this runs on — confirmed
+    empirically that neither `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` nor
+    `OMP_NUM_THREADS=1` change its size, while restricting a process's own
+    affinity does (it correctly follows `sched_getaffinity`, just not any
+    thread-count env var). Restricting each worker's own affinity to a single
+    core is therefore the only lever that actually caps it.
+
+    Polls for newly spawned children rather than hooking `pm.sample` directly:
+    PyMC's process-pool internals (`pymc.sampling.parallel.ProcessAdapter`)
+    aren't a public API to inject a per-worker initializer into.
+    """
+    # sched_(get|set)affinity are Linux-only; absent on macOS/Windows dev machines
+    # (see the same pattern in pymc_icp_plots.py's cpu-count fallback).
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    sched_setaffinity = getattr(os, "sched_setaffinity", None)
+    if sched_getaffinity is None or sched_setaffinity is None:
+        yield
+        return
+
+    cores = sorted(sched_getaffinity(0))
+    if len(cores) <= 1:
+        yield
+        return
+
+    stop_event = threading.Event()
+    pinned: set[int] = set()
+    core_cycle = itertools.cycle(cores)
+    parent_pid = os.getpid()
+
+    def _watch() -> None:
+        # Poll fast: a freshly spawned worker takes at least a few hundred ms to
+        # import jax/pymc before it can create any thread pool, but the pool is
+        # sized once at creation and won't shrink if we pin affinity too late.
+        while not stop_event.wait(0.05):
+            for pid in _child_pids(parent_pid):
+                if pid in pinned:
+                    continue
+                try:
+                    sched_setaffinity(pid, {next(core_cycle)})
+                except OSError:
+                    # Process already exited between listing and pinning it.
+                    continue
+                pinned.add(pid)
+
+    watcher = threading.Thread(target=_watch, daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        watcher.join(timeout=1)
 
 
 def _configure_gpu_memory_sharing(num_workers: int) -> None:
@@ -401,22 +494,23 @@ def run_pymc_inference(
                 if step_method == "nuts"
                 else pm.DEMetropolisZ()
             )
-            chunk_trace = pm.sample(
-                draws=chunk_draws,
-                tune=chunk_tune,
-                step=step,
-                chains=chains,
-                cores=cores,
-                initvals=cast(Any, initvals),
-                # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
-                # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
-                mp_ctx="spawn",
-                random_seed=42,
-                return_inferencedata=True,
-                progressbar=True,
-                # Convergence is checked once on the full trace in run_pymc_analysis.
-                compute_convergence_checks=False,
-            )
+            with _pin_sample_workers_to_distinct_cores():
+                chunk_trace = pm.sample(
+                    draws=chunk_draws,
+                    tune=chunk_tune,
+                    step=step,
+                    chains=chains,
+                    cores=cores,
+                    initvals=cast(Any, initvals),
+                    # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
+                    # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
+                    mp_ctx="spawn",
+                    random_seed=42,
+                    return_inferencedata=True,
+                    progressbar=True,
+                    # Convergence is checked once on the full trace in run_pymc_analysis.
+                    compute_convergence_checks=False,
+                )
             idata = (
                 chunk_trace
                 if idata is None
@@ -430,6 +524,26 @@ def run_pymc_inference(
                 print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
 
     return cast(az.InferenceData, idata), model
+
+
+def clip_defaults_to_priors(
+    param_defaults: dict[str, float], priors: dict[str, tuple[float, float]]
+) -> dict[str, float]:
+    """Nudge each default strictly inside its prior's (lower, upper) bound.
+
+    A default sitting exactly on (or outside) its `pm.Uniform` bound maps to
+    +-inf under PyMC's interval transform, which is used as `initvals` and
+    causes NUTS to fail immediately with a "Bad initial energy" error (e.g.
+    the Forrester literature table's `MaxAge` default for Fagus sylvatica
+    equals its own upper bound).
+    """
+    clipped = dict(param_defaults)
+    for name, (lower, upper) in priors.items():
+        if name not in clipped:
+            continue
+        margin = 1e-6 * (upper - lower)
+        clipped[name] = min(max(clipped[name], lower + margin), upper - margin)
+    return clipped
 
 
 def run_pymc_analysis(
@@ -468,6 +582,7 @@ def run_pymc_analysis(
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    param_defaults = clip_defaults_to_priors(param_defaults, priors)
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
     skipped = [name for name in observations if f"err_{name}" not in priors]

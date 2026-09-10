@@ -1,6 +1,7 @@
 """Morris sensitivity analysis on log-likelihood."""
 
 import os
+import timeit
 import warnings
 from typing import Any
 
@@ -196,8 +197,19 @@ def run_morris_analysis(
     species_index: int = 0,
     export_csv: bool = True,
     save_dir: str = "",
+    include_individual_components: bool = True,
 ) -> dict[str, Any]:
-    """Run Morris sensitivity analysis with individual output components."""
+    """Run Morris sensitivity analysis on the combined total log-likelihood.
+
+    Parameters
+    ----------
+    include_individual_components : bool
+        Whether to also run and report Morris analysis for each `output_vars`
+        component individually, in addition to the combined `"total"`
+        log-likelihood. `"total"` is always analyzed; set this to False to
+        analyze only `"total"` (still computed from every output variable's
+        likelihood, just not reported per-variable).
+    """
     if not output_vars:
         if sigma_param_names:
             output_vars = [name for name in sigma_param_names if name in observed_data.columns]
@@ -243,7 +255,7 @@ def run_morris_analysis(
     component_values = {name: np.zeros(param_values.shape[0]) for name in component_names}
     invalid_counts = {name: 0 for name in component_names}
 
-    batch_size = min(100, param_values.shape[0])
+    batch_size = min(10000, param_values.shape[0])
     batch_starts = list(range(0, param_values.shape[0], batch_size))
     print_every = max(1, len(batch_starts) // 10)
     for batch_idx, start in enumerate(batch_starts):
@@ -259,9 +271,10 @@ def run_morris_analysis(
             component_values[name][start:stop] = batch_results[:, comp_idx]
             invalid_counts[name] += int(np.sum(~np.isfinite(batch_results[:, comp_idx])))
 
-    # Analyze each component
+    # Analyze each component (always "total"; individual output_vars only if requested)
+    analyzed_component_names = component_names if include_individual_components else ["total"]
     results: dict[str, dict[str, Any]] = {}
-    for component_name in component_names:
+    for component_name in analyzed_component_names:
         values = component_values[component_name]
         n_invalid = invalid_counts[component_name]
 
@@ -363,6 +376,7 @@ if __name__ == "__main__":
     output_vars = ["DBH", "WS", "WR", "WF", "Height", "BA"]
     sigma_param_names = {var: f"err_{var}" for var in output_vars}
 
+    start_time = timeit.default_timer()
     # Run analysis
     results = run_morris_analysis(
         file_path=file_path,
@@ -376,4 +390,7 @@ if __name__ == "__main__":
         export_csv=True,
         save_dir=os.path.join(results_data_folder, "morris_analysis_results_jax"),
         seed=432,
+        include_individual_components=False,
     )
+    end_time = timeit.default_timer()
+    print(f"\nMorris sensitivity analysis completed in {end_time - start_time:.2f} seconds.")

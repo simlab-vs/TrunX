@@ -1,6 +1,6 @@
-"""Compare default, gradient-descent, PyMC-Bayesian, and HMC-Bayesian 3PG predictions.
+"""Compare default, gradient-descent, PyMC-Bayesian, HMC-Bayesian, and MAP 3PG predictions.
 
-Plots the default prediction plus any of gradient-descent/PyMC-/HMC-Bayesian
+Plots the default prediction plus any of gradient-descent/PyMC-/HMC-Bayesian/MAP
 sources enabled via their `include_*` flags, against observations for one
 site, with per-variable RMSE/MAE printed for comparison.
 """
@@ -17,12 +17,17 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    DIAGNOSTIC_ONLY_ERROR_NAMES,
+    ERROR_MODES,
+    FIT_PARAMS,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
     load_param_defaults_from_file,
     load_priors_from_file,
@@ -183,6 +188,14 @@ def run_hmc_model(output_dir: str) -> dict[str, Any]:
     return load_predictions(os.path.join(output_dir, "predictions.npz"))
 
 
+def run_map_model(output_dir: str) -> dict[str, Any]:
+    """Load mean/lower/upper prediction bands from a saved MAP (+ Laplace) run.
+
+    See `trunx.gp3.bayesiancalibrations.map_param_est.run_map_analysis`.
+    """
+    return load_predictions(os.path.join(output_dir, "predictions.npz"))
+
+
 def dbh_from_observed_biomass(
     ws_per_ha: np.ndarray, stems_per_ha: np.ndarray, aWS: float, nWS: float
 ) -> np.ndarray:
@@ -220,21 +233,33 @@ def plot_comparison(
     fit_params: list[str],
     bayesian_output_dir: str | None = None,
     hmc_output_dir: str | None = None,
+    map_output_dir: str | None = None,
     plot_variables: list[str] = PLOT_VARIABLES,
     include_gradient_descent: bool = False,
     include_bayesian: bool = False,
     include_hmc: bool = False,
+    include_map: bool = False,
     bayesian_label: str = "PyMC (DEz)",
     hmc_label: str = "HMC (NUTS)",
+    map_label: str = "MAP + Laplace",
     site_name: str | None = None,
     gd_cache_dir: str | None = None,
+    series_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
-    """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian predictions vs. obs.
+    """Plot default, and optionally gradient-descent/PyMC-/HMC-Bayesian/MAP predictions vs. obs.
 
     Parameters
     ----------
     file_path : str
         3PG input Excel file (site, species, climate, observed sheets).
+    series_colors : dict[str, str] | None
+        Override plot color per series name (`"default"`, `"gradient_descent"`,
+        `"bayesian"`, `"hmc"`, `"map"`, `"observed"`). A series without a matching
+        entry falls back to matplotlib's default color cycle (`"observed"` falls
+        back to `"red"`). Set this so multiple series sharing one subplot stay
+        distinguishable under a caller-set narrow-hue `axes.prop_cycle` (e.g. an
+        all-green theme, where cycle order alone can leave two series looking
+        too similar, or land on a shade too pale to see against a white figure).
     bayesian_output_dir : str | None
         Directory containing a saved `predictions.npz` from a prior
         `run_pymc_analysis` run for the same file. Required if `include_bayesian`.
@@ -242,12 +267,15 @@ def plot_comparison(
         Directory containing a saved `predictions.npz` from a prior
         `run_hmc_analysis` run for the same file (see `parameter_estimation.py`).
         Required if `include_hmc`.
+    map_output_dir : str | None
+        Directory containing a saved `predictions.npz` from a prior
+        `run_map_analysis` run for the same file. Required if `include_map`.
     plot_variables : list[str]
         Output variables to plot and score.
     fit_params : list[str]
         Parameter names to optimize during gradient descent (and that the
         loaded Bayesian runs were calibrated on).
-    include_gradient_descent, include_bayesian, include_hmc : bool
+    include_gradient_descent, include_bayesian, include_hmc, include_map : bool
         Whether to run, plot, and score each source. The default model
         always runs.
     gd_cache_dir : str | None
@@ -255,18 +283,21 @@ def plot_comparison(
         `run_gradient_descent_model`. If omitted, gradient descent is always
         re-run from scratch when `include_gradient_descent` is True.
     bayesian_label : str
-        Legend/title label for the `bayesian_output_dir` source, e.g. "MAP + Laplace"
-        when the saved predictions come from `run_map_analysis` instead of MCMC.
+        Legend/title label for the `bayesian_output_dir` source.
     hmc_label : str
         Legend/title label for the `hmc_output_dir` source. Despite the parameter name
         (`run_hmc_model` originally only loaded NUTS runs), this slot works for any
-        saved `predictions.npz`, e.g. "MAP + Laplace" or "MCMC (DEz)".
+        saved `predictions.npz`, e.g. "MCMC (DEz)".
+    map_label : str
+        Legend/title label for the `map_output_dir` source.
     site_name : str | None
         If given, adds a figure title with this name, the mean RMSE across the
         variables actually calibrated on (`plot_variables` minus
         `bayesian_config.DIAGNOSTIC_ONLY_ERROR_NAMES` — DBH/BA/Height are excluded,
         since they're diagnostic-only, see TODO.md), and the MAP log posterior read
-        from `bayesian_output_dir/map_estimate.json`, if present.
+        from `map_output_dir/map_estimate.json` (falling back to
+        `bayesian_output_dir/map_estimate.json` if `map_output_dir` isn't given), if
+        present.
 
     Returns
     -------
@@ -279,6 +310,8 @@ def plot_comparison(
         raise ValueError("bayesian_output_dir is required when include_bayesian is True")
     if include_hmc and hmc_output_dir is None:
         raise ValueError("hmc_output_dir is required when include_hmc is True")
+    if include_map and map_output_dir is None:
+        raise ValueError("map_output_dir is required when include_map is True")
 
     input_data = prepare_data(file_path)
     time_months = build_time_index(input_data.climate, input_data.site)
@@ -333,15 +366,27 @@ def plot_comparison(
         assert hmc_output_dir is not None
         hmc_predictions = run_hmc_model(hmc_output_dir)
 
-    fig, axes = plt.subplots(2, 3, figsize=(20, 10))
-    axes = axes.flatten()
+    map_predictions = None
+    if include_map:
+        assert map_output_dir is not None
+        map_predictions = run_map_model(map_output_dir)
+
+    n_cols = min(3, len(plot_variables))
+    n_rows = int(np.ceil(len(plot_variables) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20 / 3 * n_cols, 5 * n_rows))
+    axes = np.ravel(np.atleast_1d(axes))
+
+    series_colors = series_colors or {}
+
+    def _color_kwargs(name: str) -> dict[str, str]:
+        return {"color": series_colors[name]} if name in series_colors else {}
 
     metrics = []
-    for ax, var in zip(axes, plot_variables, strict=True):
+    for ax, var in zip(axes, plot_variables, strict=False):
         obs_values = np.asarray(observations[var], dtype=np.float64)
         default_at_obs = np.asarray([default_outputs[var][idx] for idx in obs_indices])
 
-        ax.plot(time_months, default_outputs[var], label="Default")
+        ax.plot(time_months, default_outputs[var], label="Default", **_color_kwargs("default"))
         row = {
             "variable": var,
             "default_rmse": rmse(obs_values, default_at_obs),
@@ -351,7 +396,12 @@ def plot_comparison(
 
         if gd_outputs is not None:
             gd_at_obs = np.asarray([gd_outputs[var][idx] for idx in obs_indices])
-            ax.plot(time_months, gd_outputs[var], label="Gradient descent")
+            ax.plot(
+                time_months,
+                gd_outputs[var],
+                label="Gradient descent",
+                **_color_kwargs("gradient_descent"),
+            )
             row["gd_rmse"] = rmse(obs_values, gd_at_obs)
             row["gd_mae"] = mae(obs_values, gd_at_obs)
             title_parts.append(f"GD: {row['gd_rmse']:.2f}")
@@ -362,9 +412,16 @@ def plot_comparison(
             upper_pred = np.asarray(bay_predictions[var][2])
             bay_at_obs = np.asarray([mean_pred[idx] for idx in obs_indices])
             ax.fill_between(
-                time_months, lower_pred, upper_pred, alpha=0.3, label=f"{bayesian_label} 95% CI"
+                time_months,
+                lower_pred,
+                upper_pred,
+                alpha=0.3,
+                label=f"{bayesian_label} 95% CI",
+                **_color_kwargs("bayesian"),
             )
-            ax.plot(time_months, mean_pred, label=f"{bayesian_label} mean")
+            ax.plot(
+                time_months, mean_pred, label=f"{bayesian_label} mean", **_color_kwargs("bayesian")
+            )
             row["bayesian_rmse"] = rmse(obs_values, bay_at_obs)
             row["bayesian_mae"] = mae(obs_values, bay_at_obs)
             title_parts.append(f"{bayesian_label}: {row['bayesian_rmse']:.2f}")
@@ -380,13 +437,38 @@ def plot_comparison(
                 hmc_upper_pred,
                 alpha=0.3,
                 label=f"{hmc_label} 95% CI",
+                **_color_kwargs("hmc"),
             )
-            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean")
+            ax.plot(time_months, hmc_mean_pred, label=f"{hmc_label} mean", **_color_kwargs("hmc"))
             row["hmc_rmse"] = rmse(obs_values, hmc_at_obs)
             row["hmc_mae"] = mae(obs_values, hmc_at_obs)
             title_parts.append(f"{hmc_label}: {row['hmc_rmse']:.2f}")
 
-        ax.scatter(obs_time, obs_values, color="red", label="Observations", zorder=5)
+        if map_predictions is not None:
+            map_mean_pred = np.asarray(map_predictions[var][0])
+            map_lower_pred = np.asarray(map_predictions[var][1])
+            map_upper_pred = np.asarray(map_predictions[var][2])
+            map_at_obs = np.asarray([map_mean_pred[idx] for idx in obs_indices])
+            ax.fill_between(
+                time_months,
+                map_lower_pred,
+                map_upper_pred,
+                alpha=0.3,
+                label=f"{map_label} 95% CI",
+                **_color_kwargs("map"),
+            )
+            ax.plot(time_months, map_mean_pred, label=f"{map_label} mean", **_color_kwargs("map"))
+            row["map_rmse"] = rmse(obs_values, map_at_obs)
+            row["map_mae"] = mae(obs_values, map_at_obs)
+            title_parts.append(f"{map_label}: {row['map_rmse']:.2f}")
+
+        ax.scatter(
+            obs_time,
+            obs_values,
+            color=series_colors.get("observed", "red"),
+            label="Observations",
+            zorder=5,
+        )
         if var == "DBH" and derived_dbh is not None:
             derived_time, derived_values = derived_dbh
             ax.scatter(
@@ -401,8 +483,11 @@ def plot_comparison(
         ax.set_xlabel("Year")
         ax.set_ylabel(LABEL_MAP.get(var, var))
         ax.grid(alpha=0.3)
-        ax.set_title("RMSE — " + ", ".join(title_parts))
+        # ax.set_title("RMSE — " + ", ".join(title_parts))
         metrics.append(row)
+
+    for ax in axes[len(plot_variables) :]:
+        ax.set_visible(False)
 
     axes[0].legend()
 
@@ -418,8 +503,9 @@ def plot_comparison(
             mean_rmse = np.mean([row["bayesian_rmse"] for row in calibrated_metrics])
             calibrated_names = "/".join(row["variable"] for row in calibrated_metrics)
             title += f" — mean RMSE ({calibrated_names}): {mean_rmse:.2f}"
-        if bayesian_output_dir is not None:
-            map_estimate_path = os.path.join(bayesian_output_dir, "map_estimate.json")
+        map_estimate_dir = map_output_dir if map_output_dir is not None else bayesian_output_dir
+        if map_estimate_dir is not None:
+            map_estimate_path = os.path.join(map_estimate_dir, "map_estimate.json")
             if os.path.exists(map_estimate_path):
                 _, logp = load_map_estimate(map_estimate_path)
                 title += f", log posterior: {logp:.2f}"
@@ -526,13 +612,204 @@ def plot_trace_and_posterior(
     return trace_fig, posterior_fig
 
 
+def plot_posterior_comparison(
+    pymc_inference_path: str,
+    hmc_inference_path: str,
+    param_names: list[str],
+    priors: dict[str, tuple[float, float]] | None = None,
+    map_output_dir: str | None = None,
+    gd_cache_dir: str | None = None,
+    pymc_label: str = "PyMC (DEz)",
+    hmc_label: str = "HMC (NUTS)",
+    method_colors: dict[str, str] | None = None,
+) -> Figure:
+    """Overlay PyMC (DEMetropolisZ) and HMC (NUTS) posterior plots, per parameter.
+
+    One small subplot per parameter, overlaying both methods' `arviz.plot_posterior`
+    KDE curve (the same rendering as `plot_trace_and_posterior`'s posterior figure —
+    one call per method on shared axes, each in its own color) with its own HDI bar
+    and point-estimate text suppressed, since two independent sets of those labels
+    stacked on one axis overlap and become unreadable. Values are shown instead as one
+    color-coded vertical line per method: a dotted line at the posterior mean for the
+    two full Bayesian calibrations (PyMC/HMC), and a bold dashed line for the two point
+    estimates (MAP, gradient descent fit), each optional except the means, plus the
+    prior (lower, upper) bounds marked in gray.
+
+    Parameters
+    ----------
+    pymc_inference_path : str
+        Path to the saved PyMC (DEMetropolisZ) `inference_data.nc`.
+    hmc_inference_path : str
+        Path to the saved HMC (NUTS) `inference_data.nc`.
+    param_names : list[str]
+        Parameters to plot.
+    priors : dict[str, tuple[float, float]] | None
+        Prior (lower, upper) bounds per parameter, drawn as gray vertical lines.
+        Parameters without a matching entry are plotted without prior lines.
+    map_output_dir : str | None
+        Directory containing a saved `map_estimate.json` (see `run_map_analysis`).
+        A parameter missing from it is plotted without a MAP line.
+    gd_cache_dir : str | None
+        Directory containing a saved `gradient_descent_result.json` (see
+        `get_gradient_descent_fit`). A parameter missing from it is plotted
+        without a gradient descent line.
+    pymc_label, hmc_label : str
+        Legend labels for the two posterior plots.
+    method_colors : dict[str, str] | None
+        Override color per method (`pymc_label`/`hmc_label`/`"MAP"`/
+        `"Gradient descent"`). Missing entries fall back to the default palette
+        (blue/orange/reddish-purple/bluish-green — chosen, over a plain
+        red/green pair, to stay distinguishable for red-green color blindness).
+
+    Returns
+    -------
+    Figure
+        The comparison figure.
+    """
+    pymc_idata = az.from_netcdf(pymc_inference_path)
+    hmc_idata = az.from_netcdf(hmc_inference_path)
+
+    priors = priors or {}
+    map_estimate = (
+        load_map_estimate(os.path.join(map_output_dir, "map_estimate.json"))[0]
+        if map_output_dir is not None
+        else {}
+    )
+    gd_fit = get_gradient_descent_fit(gd_cache_dir) if gd_cache_dir is not None else {}
+
+    default_colors = {
+        pymc_label: "#0072B2",  # blue
+        hmc_label: "#E69F00",  # orange
+        "MAP": "#CC79A7",  # reddish purple
+        "Gradient descent": "#009E73",  # bluish green
+    }
+    method_colors = {**default_colors, **(method_colors or {})}
+    bayesian_linestyle = ":"
+    point_estimate_linestyle = "--"
+    point_estimate_linewidth = 2.5
+
+    ncols = 4
+    nrows = int(np.ceil(len(param_names) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+    plot_axes = axes[: len(param_names)]
+
+    # `plot.max_subplots` (default 40) otherwise silently truncates the plot
+    # instead of raising once `param_names` exceeds it (same guard as
+    # `plot_trace_and_posterior`). `point_estimate=None, hdi_prob="hide"` drop each
+    # call's own text/HDI-bar annotations, which would otherwise overlap unreadably
+    # once both methods' calls land on the same axes.
+    with az.rc_context(rc={"plot.max_subplots": None}):
+        az.plot_posterior(
+            pymc_idata,
+            var_names=param_names,
+            color=method_colors[pymc_label],
+            point_estimate=None,
+            hdi_prob="hide",
+            ax=plot_axes,
+        )
+        az.plot_posterior(
+            hmc_idata,
+            var_names=param_names,
+            color=method_colors[hmc_label],
+            point_estimate=None,
+            hdi_prob="hide",
+            ax=plot_axes,
+        )
+
+    line_handles = [
+        Line2D(
+            [],
+            [],
+            color=method_colors[pymc_label],
+            linestyle=bayesian_linestyle,
+            label=f"{pymc_label} mean",
+        ),
+        Line2D(
+            [],
+            [],
+            color=method_colors[hmc_label],
+            linestyle=bayesian_linestyle,
+            label=f"{hmc_label} mean",
+        ),
+    ]
+    if map_estimate:
+        line_handles.append(
+            Line2D(
+                [],
+                [],
+                color=method_colors["MAP"],
+                linestyle=point_estimate_linestyle,
+                linewidth=point_estimate_linewidth,
+                label="MAP",
+            )
+        )
+    if gd_fit:
+        line_handles.append(
+            Line2D(
+                [],
+                [],
+                color=method_colors["Gradient descent"],
+                linestyle=point_estimate_linestyle,
+                linewidth=point_estimate_linewidth,
+                label="Gradient descent",
+            )
+        )
+    if priors:
+        line_handles.append(Line2D([], [], color="gray", linestyle="-", label="Prior bounds"))
+
+    for ax, name in zip(plot_axes, param_names, strict=True):
+        if name in pymc_idata.posterior.data_vars:
+            ax.axvline(
+                float(pymc_idata.posterior[name].mean()),
+                color=method_colors[pymc_label],
+                linestyle=bayesian_linestyle,
+            )
+        if name in hmc_idata.posterior.data_vars:
+            ax.axvline(
+                float(hmc_idata.posterior[name].mean()),
+                color=method_colors[hmc_label],
+                linestyle=bayesian_linestyle,
+            )
+        if name in map_estimate:
+            ax.axvline(
+                map_estimate[name],
+                color=method_colors["MAP"],
+                linestyle=point_estimate_linestyle,
+                linewidth=point_estimate_linewidth,
+            )
+        if name in gd_fit:
+            ax.axvline(
+                gd_fit[name],
+                color=method_colors["Gradient descent"],
+                linestyle=point_estimate_linestyle,
+                linewidth=point_estimate_linewidth,
+            )
+        bounds = priors.get(name)
+        if bounds is not None:
+            for bound in bounds:
+                ax.axvline(bound, color="gray", linestyle="-")
+
+    plot_axes[0].legend(handles=line_handles, fontsize=8)
+
+    for ax in axes[len(param_names) :]:
+        ax.axis("off")
+
+    fig.suptitle(f"Posterior comparison: {pymc_label} vs. {hmc_label}")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+
+    return fig
+
+
 def plot_convergence_comparison(
     fit_params: list[str],
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
+    excluded_error_names: frozenset[str] = DIAGNOSTIC_ONLY_ERROR_NAMES,
     include_bayesian: bool = True,
     include_hmc: bool = True,
+    method_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
     """Compare PyMC (DEMetropolisZ) and/or HMC (NUTS) convergence diagnostics per parameter.
 
@@ -544,12 +821,21 @@ def plot_convergence_comparison(
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
         Parameters to compare. Defaults to `fit_params` plus one `err_{var}` per
-        variable in `PLOT_VARIABLES` that isn't in `DIAGNOSTIC_ONLY_ERROR_NAMES`
-        (DBH/BA/Height have no sigma prior, so they're never in the posterior).
+        variable in `PLOT_VARIABLES` that isn't in `excluded_error_names`.
+    excluded_error_names : frozenset[str]
+        `err_*` names to leave out of the default `param_names` — the ones with no
+        sigma prior (and so no posterior) in the run being plotted. Defaults to
+        `DIAGNOSTIC_ONLY_ERROR_NAMES`; pass the scenario's own entry from
+        `bayesian_config.ERROR_MODES` instead when plotting a specific named
+        calibration scenario (e.g. `"all_error_terms"` fits every `err_*`, so its
+        exclusion set is empty). Ignored if `param_names` is given explicitly.
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself
         (`None` for older saved files that predate this being stashed).
+    method_colors : dict[str, str] | None
+        Override bar color per method name (`"PyMC (DEz)"`/`"HMC (NUTS)"`). Missing
+        entries fall back to the default blue/orange.
 
     Returns
     -------
@@ -566,10 +852,11 @@ def plot_convergence_comparison(
 
     if param_names is None:
         param_names = fit_params + [
-            f"err_{var}"
-            for var in PLOT_VARIABLES
-            if f"err_{var}" not in DIAGNOSTIC_ONLY_ERROR_NAMES
+            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" not in excluded_error_names
         ]
+
+    default_colors = {"PyMC (DEz)": "tab:blue", "HMC (NUTS)": "tab:orange"}
+    method_colors = {**default_colors, **(method_colors or {})}
 
     colors = {}
     summaries = []
@@ -578,14 +865,14 @@ def plot_convergence_comparison(
         pymc_summary = load_convergence_summary(pymc_inference_path, param_names)
         pymc_summary["method"] = "PyMC (DEz)"
         summaries.append(pymc_summary)
-        colors["PyMC (DEz)"] = "tab:blue"
+        colors["PyMC (DEz)"] = method_colors["PyMC (DEz)"]
 
     if include_hmc:
         assert hmc_inference_path is not None
         hmc_summary = load_convergence_summary(hmc_inference_path, param_names)
         hmc_summary["method"] = "HMC (NUTS)"
         summaries.append(hmc_summary)
-        colors["HMC (NUTS)"] = "tab:orange"
+        colors["HMC (NUTS)"] = method_colors["HMC (NUTS)"]
 
     combined = pd.concat(summaries, ignore_index=True)
 
@@ -630,13 +917,16 @@ def plot_convergence_comparison(
 def plot_parameter_value_comparison(
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
+    map_output_dir: str | None = None,
     param_names: list[str] = FIT_PARAMS,
     include_gradient_descent: bool = True,
     include_bayesian: bool = True,
     include_hmc: bool = True,
+    include_map: bool = True,
     gd_cache_dir: str | None = None,
+    method_colors: dict[str, str] | None = None,
 ) -> tuple[Figure, pd.DataFrame]:
-    """Compare each parameter's fitted value across gradient descent, PyMC (DEz), and HMC (NUTS).
+    """Compare each parameter's fitted value across gradient descent, PyMC (DEz), HMC (NUTS), MAP.
 
     One small subplot per parameter (values span very different scales, e.g.
     `mS` ~1e-4 vs. `MaxAge` ~400, so a single shared-axis bar chart would hide
@@ -648,24 +938,33 @@ def plot_parameter_value_comparison(
         Path to the saved PyMC `inference_data.nc`. Required if `include_bayesian`.
     hmc_inference_path : str | None
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
+    map_output_dir : str | None
+        Directory containing a saved `map_estimate.json` from a prior `run_map_analysis`
+        run. Required if `include_map`. Parameters missing from the saved estimate (e.g.
+        error/sigma terms dropped for that run) are silently skipped.
     param_names : list[str]
         Physiology parameters to compare. Error/sigma terms are excluded — gradient
         descent doesn't fit them, so they'd have no value to compare against.
-    include_gradient_descent, include_bayesian, include_hmc : bool
+    include_gradient_descent, include_bayesian, include_hmc, include_map : bool
         Whether to include each method.
     gd_cache_dir : str | None
         Directory holding a saved gradient descent fit (see `get_gradient_descent_fit`).
         Required if `include_gradient_descent`; pass the same directory used for
         `plot_comparison`'s `gd_cache_dir` to compare against the same fit.
+    method_colors : dict[str, str] | None
+        Override bar color per method name (`"Gradient descent"`/`"PyMC (DEz)"`/
+        `"HMC (NUTS)"`/`"MAP"`). Missing entries fall back to the default
+        green/blue/orange/red.
 
     Returns
     -------
     tuple[Figure, pd.DataFrame]
         The comparison figure and a long-form table (`parameter`, `method`, `value`).
     """
-    if not (include_gradient_descent or include_bayesian or include_hmc):
+    if not (include_gradient_descent or include_bayesian or include_hmc or include_map):
         raise ValueError(
-            "At least one of include_gradient_descent/include_bayesian/include_hmc must be True"
+            "At least one of include_gradient_descent/include_bayesian/include_hmc/"
+            "include_map must be True"
         )
     if include_gradient_descent and gd_cache_dir is None:
         raise ValueError("gd_cache_dir is required when include_gradient_descent is True")
@@ -673,6 +972,16 @@ def plot_parameter_value_comparison(
         raise ValueError("pymc_inference_path is required when include_bayesian is True")
     if include_hmc and hmc_inference_path is None:
         raise ValueError("hmc_inference_path is required when include_hmc is True")
+    if include_map and map_output_dir is None:
+        raise ValueError("map_output_dir is required when include_map is True")
+
+    default_colors = {
+        "Gradient descent": "tab:green",
+        "PyMC (DEz)": "tab:blue",
+        "HMC (NUTS)": "tab:orange",
+        "MAP": "tab:red",
+    }
+    method_colors = {**default_colors, **(method_colors or {})}
 
     colors = {}
     rows = []
@@ -684,7 +993,7 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
             )
-        colors["Gradient descent"] = "tab:green"
+        colors["Gradient descent"] = method_colors["Gradient descent"]
 
     if include_bayesian:
         assert pymc_inference_path is not None
@@ -693,7 +1002,7 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": row["parameter"], "method": "PyMC (DEz)", "value": row["mean"]}
             )
-        colors["PyMC (DEz)"] = "tab:blue"
+        colors["PyMC (DEz)"] = method_colors["PyMC (DEz)"]
 
     if include_hmc:
         assert hmc_inference_path is not None
@@ -702,7 +1011,15 @@ def plot_parameter_value_comparison(
             rows.append(
                 {"parameter": row["parameter"], "method": "HMC (NUTS)", "value": row["mean"]}
             )
-        colors["HMC (NUTS)"] = "tab:orange"
+        colors["HMC (NUTS)"] = method_colors["HMC (NUTS)"]
+
+    if include_map:
+        assert map_output_dir is not None
+        map_estimate, _ = load_map_estimate(os.path.join(map_output_dir, "map_estimate.json"))
+        for name in param_names:
+            if name in map_estimate:
+                rows.append({"parameter": name, "method": "MAP", "value": map_estimate[name]})
+        colors["MAP"] = method_colors["MAP"]
 
     combined = pd.DataFrame(rows)
 
@@ -750,6 +1067,11 @@ def plot_and_save(
         Directory to save the plots in.
     output_dir : str
         Directory to save the output in.
+    error_terms : str
+        Calibration scenario name, used both for the saved filenames and to look up
+        which `err_*` names were excluded from fitting via `bayesian_config.ERROR_MODES`
+        (falls back to `DIAGNOSTIC_ONLY_ERROR_NAMES` if not a recognized scenario), so
+        the convergence plot only asks for `err_*` posteriors that actually exist.
     literature_source : str
         Source of the literature for the saved filenames.
     method : str
@@ -760,8 +1082,11 @@ def plot_and_save(
 
     # Mirrors the calibration_sweep directory layout (site/[literature_source/]mode),
     # so filenames stay unique across every (literature_source, error_terms) combination
-    # saved into the same plot_id folder instead of overwriting each other.
-    combo_parts = [part for part in (literature_source, error_terms) if part]
+    # saved into the same plot_id folder instead of overwriting each other. Solling's
+    # data is hand-curated and never varies by literature_source (see
+    # resolve_source_file_path), so it's left out of solling's filenames.
+    combo_parts = [error_terms] if plot_id == "solling" else [literature_source, error_terms]
+    combo_parts = [part for part in combo_parts if part]
     combo_prefix = "_".join(combo_parts) + "_" if combo_parts else ""
 
     if plot_id == "solling":
@@ -770,6 +1095,7 @@ def plot_and_save(
         _gradient_descent_dir = os.path.join(
             output_dir, f"{plot_id}/{error_terms}/gradient_descent"
         )
+        _map_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/map")
         _file_path = os.path.join(output_dir, f"{plot_id}/{plot_id}_data.xlsx")
         fit_params = FIT_PARAMS
     else:
@@ -782,6 +1108,9 @@ def plot_and_save(
         _gradient_descent_dir = os.path.join(
             output_dir, f"{plot_id}/{literature_source}/{error_terms}/gradient_descent"
         )
+        _map_output_dir = os.path.join(
+            output_dir, f"{plot_id}/{literature_source}/{error_terms}/map"
+        )
         _file_path = os.path.join(output_dir, f"{plot_id}/{literature_source}/{plot_id}_data.xlsx")
 
         _df = pl.read_excel(_file_path, sheet_name="param_bound")
@@ -793,19 +1122,18 @@ def plot_and_save(
         fit_params,
         _bayesian_output_dir,
         _hmc_output_dir,
+        _map_output_dir,
         include_gradient_descent=_include_gradient_descent,
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
+        include_map=_include_map,
         gd_cache_dir=_gradient_descent_dir,
     )
-    # print(_metrics_df)
     _fig.savefig(
         os.path.join(plot_output_dir, f"{combo_prefix}prediction_comparison_{plot_id}.png"),
         dpi=200,
         bbox_inches="tight",
     )
-    # plt.show()
-    # plt.close(_fig)
 
     _conv_fig, _conv_df = plot_convergence_comparison(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
@@ -813,6 +1141,7 @@ def plot_and_save(
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
         fit_params=fit_params,
+        excluded_error_names=ERROR_MODES.get(error_terms, DIAGNOSTIC_ONLY_ERROR_NAMES),
     )
     # print(_conv_df)
     # plt.show()
@@ -824,34 +1153,57 @@ def plot_and_save(
     # plt.show()
     plt.close(_conv_fig)
 
-    if _include_bayesian:
+    if _include_bayesian or _include_hmc:
         _priors = load_priors_from_file(_file_path, fit_params)
-        _trace_fig, _posterior_fig = plot_trace_and_posterior(
-            os.path.join(_bayesian_output_dir, "inference_data.nc"), fit_params, _priors
-        )
-        # plt.show()
-        _trace_fig.savefig(
-            os.path.join(plot_output_dir, f"{combo_prefix}trace_{plot_id}.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
-        _posterior_fig.savefig(
-            os.path.join(plot_output_dir, f"{combo_prefix}posterior_{plot_id}.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
+        for _method_name, _method_included, _method_output_dir in (
+            ("demetropolisz", _include_bayesian, _bayesian_output_dir),
+            ("nuts", _include_hmc, _hmc_output_dir),
+        ):
+            if not _method_included:
+                continue
+            _trace_fig, _posterior_fig = plot_trace_and_posterior(
+                os.path.join(_method_output_dir, "inference_data.nc"), fit_params, _priors
+            )
+            _trace_fig.savefig(
+                os.path.join(plot_output_dir, f"{combo_prefix}trace_{_method_name}_{plot_id}.png"),
+                dpi=200,
+                bbox_inches="tight",
+            )
+            _posterior_fig.savefig(
+                os.path.join(
+                    plot_output_dir, f"{combo_prefix}posterior_{_method_name}_{plot_id}.png"
+                ),
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close(_trace_fig)
+            plt.close(_posterior_fig)
 
-        # plt.show()
-        plt.close(_trace_fig)
-        plt.close(_posterior_fig)
+    if _include_bayesian and _include_hmc:
+        _posterior_comparison_fig = plot_posterior_comparison(
+            pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
+            hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
+            param_names=fit_params,
+            priors=_priors,
+            map_output_dir=_map_output_dir if _include_map else None,
+            gd_cache_dir=_gradient_descent_dir if _include_gradient_descent else None,
+        )
+        _posterior_comparison_fig.savefig(
+            os.path.join(plot_output_dir, f"{combo_prefix}posterior_comparison_{plot_id}.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
+        plt.close(_posterior_comparison_fig)
 
     _param_fig, _param_df = plot_parameter_value_comparison(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
         hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
+        map_output_dir=_map_output_dir,
         param_names=fit_params,
         include_gradient_descent=_include_gradient_descent,
         include_bayesian=_include_bayesian,
         include_hmc=_include_hmc,
+        include_map=_include_map,
         gd_cache_dir=_gradient_descent_dir,
     )
     # print(_param_df)
@@ -870,9 +1222,22 @@ def plot_and_save(
 
 if __name__ == "__main__":
     _calibration_sweep_dir = os.path.join(data_folder, "results/calibration_sweep")
-    # plot_ids = ["solling"]
+    plot_ids = ["solling"]
 
-    plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
+    # plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
+    # plot_ids = [
+    #     "04.0101",
+    #     "04.0704",
+    #     "08.0034",
+    #     "53.0107",
+    #     "04.0302",
+    #     "04.1402",
+    #     "04.1403",
+    #     "14.0017",
+    #     "52.0010",
+    #     "53.0701",
+    #     "59.0008",
+    # ]
 
     plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
 
@@ -880,17 +1245,20 @@ if __name__ == "__main__":
 
     _include_bayesian = True
     _include_hmc = True
-    _include_gradient_descent = False
+    _include_gradient_descent = True
+    _include_map = True
 
-    for plot_id in plot_ids:
-        print(f"Processing plot_id={plot_id}...")
-        try:
-            plot_and_save(
-                plot_id=plot_id,
-                plot_output_dir=plot_output_dir,
-                output_dir=_calibration_sweep_dir,
-                error_terms="biomass_only",
-                literature_source="Forrester",
-            )
-        except Exception as e:
-            print(f"Error processing plot_id={plot_id}: {e}")
+    for error_terms in ERROR_MODES:
+        print(f"Processing error_terms={error_terms}...")
+        for plot_id in plot_ids:
+            print(f"Processing plot_id={plot_id}...")
+            try:
+                plot_and_save(
+                    plot_id=plot_id,
+                    plot_output_dir=plot_output_dir,
+                    output_dir=_calibration_sweep_dir,
+                    error_terms=error_terms,
+                    literature_source="Forrester",
+                )
+            except Exception as e:
+                print(f"Error processing plot_id={plot_id}: {e}")

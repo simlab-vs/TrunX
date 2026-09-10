@@ -47,6 +47,7 @@ dependencies = [
     "camelot-py[cv]>=2.0.0",
     "simlab-tools[storage]",
     "pydantic>=2.13.4",
+    "kaleido>=1.4.0",
 ]
 
 # Set curent project as a package, with src/ folder.

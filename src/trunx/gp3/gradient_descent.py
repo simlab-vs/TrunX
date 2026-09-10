@@ -49,7 +49,7 @@ class GradientDescentConfig:
     learning_rate: float = 1e-3
     n_steps: int = 5000
     print_every: int = 50
-    standardize_targets = (True,)
+    standardize_targets: bool = True
     global_clip_norm: float = 1.0  # For gradient clipping
     output_dir: str = "./data/gradient_descent_results"
     image_dir: str = "./images/gradient_descent_results"

@@ -1,4 +1,7 @@
+"""Interactive exploratory notebook for LWF raw Excel and CSV data."""
+
 import marimo
+import polars as pl
 
 __generated_with = "0.24.0"
 app = marimo.App(app_title="LFW EDA")
@@ -14,7 +17,8 @@ def _():
 @app.cell
 def _():
     import os
-    from typing import Any, Callable
+    from collections.abc import Callable
+    from typing import Any
 
     return Any, Callable, os
 
@@ -31,7 +35,8 @@ def _():
 def _(mo):
     mo.md(r"""
     ### LFW EDA
-    The following notebook helps with the Exploratory Data Analysis (EDA) of the LFW-issued data.
+    The following notebook helps with the Exploratory Data Analysis (EDA)
+    of the LFW-issued data.
     """)
     return
 
@@ -70,13 +75,13 @@ def _(RAW_DATA_PATH: str, callback, mo, os, set_selected_xlsx):
     _xlsx_file_browser: mo.ui.file_browser = mo.ui.file_browser(
         initial_path=RAW_DATA_PATH,
         filetypes=[".xlsx"],
-        label="Select a file to inspect its raw content. Cells below will rerun accordingly.",
+        label=("Select a file to inspect its raw content. Cells below will rerun accordingly."),
         multiple=False,
         on_change=lambda filepath: callback(
             os.path.join(RAW_DATA_PATH, filepath[0].name), set_selected_xlsx
         ),
     )
-    _xlsx_file_browser
+    _xlsx_file_browser  # noqa: B018
     return
 
 
@@ -86,7 +91,7 @@ def _(get_selected_xlsx, pl):
     _selected_xlsx_filename: str | None = get_selected_xlsx()
     if _selected_xlsx_filename is not None:
         _dfs = pl.read_excel(_selected_xlsx_filename, sheet_id=0)
-    _dfs
+    _dfs  # noqa: B018
     return
 
 
@@ -94,9 +99,14 @@ def _(get_selected_xlsx, pl):
 def _(mo):
     mo.md(r"""
     Going through those files, we deduct that:
-    - `LAI_Licor_3_rings_all_years.xlsx` states the estimated Leaf Area Index (LAI) for plots, and subplots/periods, using the Miller and Norman & Campbell methods.
-    - `legend_deposition_2026-07-28.xlsx` gives a detailed description, and unit (when available), of the short-form variable acronyms for deposition (dep) data, as well as its data semantic.
-    - `legend_foliage_dry_weight.xlsx` serves the same purpose as `legend_deposition_2026-07-28.xlsx`, but for foliage data.
+    - `LAI_Licor_3_rings_all_years.xlsx` states the estimated Leaf Area
+      Index (LAI) for plots, and subplots/periods, using the Miller and
+      Norman & Campbell methods.
+    - `legend_deposition_2026-07-28.xlsx` gives a detailed description,
+      and unit (when available), of the short-form variable acronyms for
+      deposition (dep) data, as well as its data semantic.
+    - `legend_foliage_dry_weight.xlsx` serves the same purpose as
+      `legend_deposition_2026-07-28.xlsx`, but for foliage data.
 
     With that in mind, we can now explore the data itself.
     """)
@@ -114,13 +124,13 @@ def _(RAW_DATA_PATH: str, callback, mo, os, set_selected_csv):
     _csv_file_browser: mo.ui.file_browser = mo.ui.file_browser(
         initial_path=RAW_DATA_PATH,
         filetypes=[".csv"],
-        label="Select one file to inspect its data. Cells below will rerun accordingly.",
+        label=("Select one file to inspect its data. Cells below will rerun accordingly."),
         multiple=False,
         on_change=lambda filepath: callback(
             os.path.join(RAW_DATA_PATH, filepath[0].name), set_selected_csv
         ),
     )
-    _csv_file_browser
+    _csv_file_browser  # noqa: B018
     return
 
 
@@ -143,22 +153,37 @@ def _(get_selected_csv, pl):
                 else {"null_values": "NA"}
             ),
         )
-    df
+    df  # noqa: B018
     return (df,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Please keep in mind that, for now, `infer_schema` is set to `False` as it is the engine won't infer types properly because of particular values in the dataset. On top of that, `litterfall` data require special instructions when loading to 1) skip unnecessary lines (which contain important legends to understand the data), and 2) handle invalid utf-8 sequences. Nulls inside these files are marked by the `.` character. The equivalent for all other files is the string `NA`.
+    Please keep in mind that, for now, `infer_schema` is set to `False`
+    as the engine will not infer types properly because of particular
+    values in the dataset. On top of that, `litterfall` data require
+    special instructions when loading to 1) skip unnecessary lines
+    (which contain important legends to understand the data), and
+    2) handle invalid utf-8 sequences. Nulls inside these files are
+    marked by the `.` character. The equivalent for all other files is
+    the string `NA`.
 
     The different `csv` files can be understood as:
-    - `lwf_foliage_dw100_i_2026-07-30.csv` provides foliage dry weight (in grams, at 65°C reference temperature) for individual trees, identified by `sample_id`.
-    - `lwf_foliage_dw100_plot_2026-07-30.csv` provides averaged foliage dry weight (in grams, at 65°C reference temperature, again) for different species (`species` column), as measured on pooled samples.
-    - `monthly_*` give monthly deposition (`dep`) and foliage (`weight`) data, averaged (is it ?) at monthly intervals.
+    - `lwf_foliage_dw100_i_2026-07-30.csv` provides foliage dry weight
+      (in grams, at 65°C reference temperature) for individual trees,
+      identified by `sample_id`.
+    - `lwf_foliage_dw100_plot_2026-07-30.csv` provides averaged foliage
+      dry weight (in grams, at 65°C reference temperature, again) for
+      different species (`species` column), as measured on pooled
+      samples.
+    - `monthly_*` give monthly deposition (`dep`) and foliage (`weight`)
+      data, averaged (is it ?) at monthly intervals.
     - The same states for `period_*` data, at set periods.
 
-    We can now take a closer look at the schema, and associated units of the data, when available. For that, we first need to parse the Excel legend/definitions into a map.
+    We can now take a closer look at the schema, and associated units of
+    the data, when available. For that, we first need to parse the Excel
+    legend/definitions into a map.
     """)
     return
 
@@ -179,19 +204,18 @@ def _(DEPOSITION_LEGEND_FILENAME: str, RAW_DATA_PATH: str, cs, os, pl):
         )
         .head(-2)
         .select(cs.by_index(0, 1))
-        .rows_by_key(
-            cs.by_index(0), named=False, include_key=False, unique=True
-        )
+        .rows_by_key(cs.by_index(0), named=False, include_key=False, unique=True)
         .items()
     }
-    columns_map
+    columns_map  # noqa: B018
     return (columns_map,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Considering this, we can now rename the `DataFrame` to replace the short-form parameter names by their unit-augmented one.
+    Considering this, we can now rename the `DataFrame` to replace the
+    short-form parameter names by their unit-augmented one.
 
     Let's assess the null proportion, across variables of the dataset.
     """)
@@ -199,20 +223,23 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(columns_map: dict[str, str], df: "pl.DataFrame | None", pl):
-    df_renamed: pl.DataFrame = df.rename(columns_map, strict=False)
+def _(columns_map: dict[str, str], df: pl.DataFrame | None):
+    df_renamed: pl.DataFrame | None = None
+    if df is not None:
+        df_renamed = df.rename(columns_map, strict=False)
     return (df_renamed,)
 
 
 @app.cell(hide_code=True)
-def _(df_renamed: "pl.DataFrame", mo):
+def _(df_renamed: pl.DataFrame | None, mo):
+    if df_renamed is None:
+        return
+
     mo.md(
         "\n".join(
             f"- **{k}**: {(v[0] * 100):.2f}% of nulls"
             for k, v in sorted(
-                (df_renamed.null_count() / df_renamed.height)
-                .to_dict(as_series=False)
-                .items(),
+                (df_renamed.null_count() / df_renamed.height).to_dict(as_series=False).items(),
                 key=lambda v: v[1][0],
                 reverse=True,
             )
