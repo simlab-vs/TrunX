@@ -40,7 +40,7 @@ FIT_PARAMS = [
 # to trade away real WS/WF/WR accuracy for a target the model can't correctly
 # represent, so their sigma priors are excluded from calibration; the variables
 # are still simulated and can be plotted for reference. See TODO.md.
-DIAGNOSTIC_ONLY_ERROR_NAMES = frozenset()
+DIAGNOSTIC_ONLY_ERROR_NAMES = frozenset({"err_DBH", "err_BA", "err_Height"})
 
 # Named calibration scenarios (see `run_calibration_sweep.py`), each mapping to the
 # error names excluded from that scenario's fit — i.e. the `DIAGNOSTIC_ONLY_ERROR_NAMES`
