@@ -136,6 +136,7 @@ def run_job(
     output_dir: str,
     literature_source: str = "Forrester",
     chains: int = 3,
+    include_process_error: bool = False,
     demetropolisz_num_warmup: int = 1_000_000,
     demetropolisz_num_samples: int = 5_000_000,
     nuts_num_warmup: int = 1000,
@@ -151,7 +152,8 @@ def run_job(
     site_id : str
         An entry in `SITES` — `"solling"` or an ICP plot_id (see `resolve_source_file_path`).
     mode_name : str
-        A key into `ERROR_MODES`.
+        A key into `ERROR_MODES` — selects which *observation*-noise `err_*` terms are
+        fit (e.g. `"DBH_only"` fits only `err_DBH`).
     method : str
         One of `METHODS`.
     output_dir : str
@@ -161,6 +163,12 @@ def run_job(
         isn't regenerated from literature bounds).
     chains : int
         Forwarded to the PyMC runs (`run_pymc_analysis`).
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis`/`run_map_analysis` (ignored for
+        `"gradient_descent"`, which has no sigma-prior mechanism at all). Independent
+        of `mode_name` — fits all 3 of `perr_WS`/`perr_WR`/`perr_WF` regardless of
+        which observation-noise terms `mode_name` selects, e.g. `"all_error_terms"`
+        with this on fits 6 observation-noise sigmas plus 3 process-error sigmas.
     demetropolisz_num_warmup, demetropolisz_num_samples : int
         Forwarded to the DEMetropolisZ run. It needs far more draws than NUTS for a
         comparable effective sample size (see `pymc_param_est.run_pymc_inference`).
@@ -219,6 +227,7 @@ def run_job(
                 output_dir=os.path.join(site_dir, "demetropolisz"),
                 file_path=file_path,
                 param_to_optimize=param_names,
+                include_process_error=include_process_error,
                 chains=chains,
                 num_warmup=demetropolisz_num_warmup,
                 num_samples=demetropolisz_num_samples,
@@ -232,6 +241,7 @@ def run_job(
                 output_dir=os.path.join(site_dir, "nuts"),
                 file_path=file_path,
                 param_to_optimize=param_names,
+                include_process_error=include_process_error,
                 chains=chains,
                 num_warmup=nuts_num_warmup,
                 num_samples=nuts_num_samples,
@@ -244,6 +254,7 @@ def run_job(
                 output_dir=os.path.join(site_dir, "map"),
                 file_path=file_path,
                 param_to_optimize=param_names,
+                include_process_error=include_process_error,
                 n_vmap_restarts=n_vmap_restarts,
                 n_vmap_steps=n_vmap_steps,
                 laplace_draws=laplace_draws,

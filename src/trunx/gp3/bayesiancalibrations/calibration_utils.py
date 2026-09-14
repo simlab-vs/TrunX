@@ -9,6 +9,7 @@ import numpy as np
 from jax import numpy as jnp
 from jax import tree_util, vmap
 
+from trunx.gp3.bayesiancalibrations.bayesian_config import INITIAL_STATE_PARAMS
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.run_3pg import run_3pg
 
@@ -26,20 +27,36 @@ def predict_from_parameter_draws(
 ) -> dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]:
     """Run 3PG with sampled parameters and compute posterior prediction intervals."""
     physiology_names = [name for name in param_names if name in fixed_params._fields]
-    if not physiology_names:
+    # Uncertain initial-condition biomass pools (see bayesian_config.INITIAL_STATE_PARAMS)
+    # override a State field rather than a Params field, so they're batched separately.
+    state_param_names = [name for name in param_names if name in INITIAL_STATE_PARAMS]
+    if not physiology_names and not state_param_names:
         return {}
 
     param_values = [jnp.asarray(parameter_draws[name]) for name in physiology_names]
+    state_values = [jnp.asarray(parameter_draws[name]) for name in state_param_names]
+    n_physiology = len(physiology_names)
 
-    def run_model(*params: jnp.ndarray) -> dict[str, Any]:
-        """Run 3PG model with parameters as separate arguments."""
-        param_dict = dict(zip(physiology_names, params, strict=True))
+    def run_model(*args: jnp.ndarray) -> dict[str, Any]:
+        """Run 3PG model with physiology and initial-state parameters as separate arguments."""
+        params_args, state_args = args[:n_physiology], args[n_physiology:]
+        param_dict = dict(zip(physiology_names, params_args, strict=True))
         params_obj = fixed_params._replace(**param_dict)
-        _, outputs = run_3pg(initial_state, climate, params_obj, site, species)
+        # Broadcast to the field's own shape/dtype rather than assigning the bare scalar
+        # directly — run_3pg threads State through jax.lax.scan's carry, which requires
+        # every iteration's shape to exactly match the initial one.
+        state_dict = {
+            INITIAL_STATE_PARAMS[name]: jnp.full_like(
+                getattr(initial_state, INITIAL_STATE_PARAMS[name]), value
+            )
+            for name, value in zip(state_param_names, state_args, strict=True)
+        }
+        state_obj = initial_state._replace(**state_dict) if state_dict else initial_state
+        _, outputs = run_3pg(state_obj, climate, params_obj, site, species)
         return outputs
 
-    batched_run = vmap(run_model, in_axes=(0,) * len(physiology_names))
-    all_outputs = batched_run(*param_values)
+    batched_run = vmap(run_model, in_axes=(0,) * (n_physiology + len(state_param_names)))
+    all_outputs = batched_run(*param_values, *state_values)
     first_outputs = tree_util.tree_map(lambda x: x[0], all_outputs)
 
     predictions: dict[str, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = {}
@@ -68,8 +85,17 @@ def plot_inference_results(
     output_dir: str | None = None,
 ) -> None:
     """Plot trace/posterior diagnostics and optional prediction intervals."""
+    posterior_vars = set(inf_data["posterior"].data_vars)
     if params is None:
-        params = [str(name) for name in inf_data["posterior"].data_vars]
+        params = [str(name) for name in posterior_vars]
+    else:
+        missing = [name for name in params if name not in posterior_vars]
+        if missing:
+            print(
+                f"Note: posterior has no samples for {missing} (not fit in this run) "
+                "— skipping them"
+            )
+        params = [name for name in params if name in posterior_vars]
 
     az.plot_trace(inf_data, var_names=params)
     if output_dir is not None:

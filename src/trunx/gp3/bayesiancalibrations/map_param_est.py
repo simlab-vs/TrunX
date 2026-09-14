@@ -23,6 +23,8 @@ from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
     DIAGNOSTIC_ONLY_ERROR_NAMES,
     FIT_PARAMS,
+    INITIAL_STATE_PARAMS,
+    PROCESS_ERROR_PARAM_NAMES,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     literature_bound_overrides,
@@ -292,6 +294,7 @@ def run_map_analysis(
     output_dir: str,
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
+    include_process_error: bool = False,
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
@@ -307,6 +310,10 @@ def run_map_analysis(
 
     Parameters
     ----------
+    include_process_error : bool
+        Whether to additionally treat the initial-state biomass pools WS0/WR0/WF0 as
+        uncertain, fitted quantities — see `pymc_param_est.run_pymc_analysis`'s
+        parameter of the same name for the full explanation; identical behavior here.
     n_vmap_restarts, n_vmap_steps : int
         Forwarded to `run_map_estimation`'s GPU-parallel restart search.
     laplace_draws : int
@@ -321,12 +328,25 @@ def run_map_analysis(
 
     input_data = prepare_data(file_path)
 
+    priors_param_names = param_to_optimize
+    if include_process_error and param_to_optimize is not None:
+        priors_param_names = list(param_to_optimize) + list(PROCESS_ERROR_PARAM_NAMES)
+
     priors = load_priors_from_file(
-        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+        file_path, priors_param_names, bound_overrides=literature_bound_overrides(file_path)
     )
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
-    param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    if include_process_error:
+        # WS0/WR0/WF0 get a pm.Normal prior in pymc_model, centered on state's own
+        # nominal value with spread from perr_WS/WR/WF (loaded above) — not a
+        # pm.Uniform one, so this bound is a required-but-otherwise-unused priors key.
+        for name in INITIAL_STATE_PARAMS:
+            priors[name] = (0.0, 0.0)
+
+    param_defaults = load_param_defaults_from_file(
+        file_path, [name for name in priors if name not in INITIAL_STATE_PARAMS]
+    )
     param_defaults = clip_defaults_to_priors(param_defaults, priors)
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
