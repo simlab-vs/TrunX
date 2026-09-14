@@ -23,7 +23,12 @@ from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    DIAGNOSTIC_ONLY_ERROR_NAMES,
+    FIT_PARAMS,
+    INITIAL_STATE_PARAMS,
+    PROCESS_ERROR_PARAM_NAMES,
+)
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     plot_inference_results,
     predict_from_parameter_draws,
@@ -43,6 +48,7 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     save_results,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
+from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
 jax.config.update("jax_enable_x64", True)
@@ -93,8 +99,11 @@ def build_loglikelihood_fn(
     ----------
     params_to_optimize : list[str]
         Names of the entries in the parameter vector passed to the returned function, in
-        order. Names starting with `err_` are treated as observation-noise sigmas rather
-        than 3PG physiology parameters.
+        order. Names starting with `err_` are treated as observation-noise sigmas, names
+        in `INITIAL_STATE_PARAMS` (`"WS0"`, `"WR0"`, `"WF0"`) override the corresponding
+        initial `State` field, and names in `PROCESS_ERROR_PARAM_NAMES` (`"perr_WS"`,
+        `"perr_WR"`, `"perr_WF"`) are process-error sigmas consumed only by `pymc_model`'s
+        prior construction — none of these three groups are a 3PG physiology parameter.
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]]
         Measured variables to score against, as (obs_times, obs_values).
 
@@ -105,7 +114,13 @@ def build_loglikelihood_fn(
         log-likelihood of `observations` under the 3PG simulation it implies.
     """
     param_names = tuple(params_to_optimize)
-    model_param_names = tuple(name for name in param_names if not name.startswith("err_"))
+    model_param_names = tuple(
+        name
+        for name in param_names
+        if not name.startswith("err_")
+        and name not in INITIAL_STATE_PARAMS
+        and name not in PROCESS_ERROR_PARAM_NAMES
+    )
     packed_observations = tuple(
         PackedObservation(
             var_name=var_name,
@@ -123,8 +138,21 @@ def build_loglikelihood_fn(
         model_params = {name: param_dict[name] for name in model_param_names}
         updated_params = fixed_params._replace(**model_params)
 
+        # Uncertain initial-condition biomass pools (see INITIAL_STATE_PARAMS): override
+        # the corresponding State field for any of WS0/WR0/WF0 present in this draw,
+        # leaving the rest of the initial state (age, N, ASW, ...) untouched. Broadcast
+        # to the field's own shape/dtype (jnp.full_like) rather than assigning the bare
+        # scalar directly — run_3pg threads State through jax.lax.scan's carry, which
+        # requires every iteration's shape to exactly match the initial one.
+        state_overrides = {
+            field: jnp.full_like(getattr(state, field), param_dict[name])
+            for name, field in INITIAL_STATE_PARAMS.items()
+            if name in param_dict
+        }
+        updated_state = state._replace(**state_overrides) if state_overrides else state
+
         # Run the 3PG model
-        _, sim_outputs = run_3pg(state, climate, updated_params, site, species)
+        _, sim_outputs = run_3pg(updated_state, climate, updated_params, site, species)
 
         # Compute log-likelihood based on model outputs and observations. A Python loop
         # rather than a vmapped reduction: observations are ragged across variables (NaNs
@@ -318,7 +346,19 @@ def pymc_model(
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]],
     priors: dict[str, tuple[float, float]],
 ) -> pm.Model:
-    """Define a PyMC model for Bayesian calibration of 3PG parameters."""
+    """Define a PyMC model for Bayesian calibration of 3PG parameters.
+
+    `priors` may include `"WS0"`, `"WR0"` and/or `"WF0"` to treat the corresponding
+    initial-state biomass pool (`state.WS`/`state.WR`/`state.WF`) as an uncertain,
+    fitted quantity instead of the fixed value in `state`. Each is given a
+    `pm.Normal` prior centered on the fixed value already in `state`, with its
+    spread controlled by a matching `"perr_WS"`/`"perr_WR"`/`"perr_WF"` process-error
+    sigma — itself a `pm.Uniform`-fitted parameter that must also be present in
+    `priors` — kept deliberately distinct from the `"err_WS"`/`"err_WR"`/`"err_WF"`
+    observation-noise sigmas, which score the simulated *trajectory* against
+    observations rather than the initial condition itself. See
+    `INITIAL_STATE_PARAMS`/`PROCESS_ERROR_PARAM_NAMES`/`build_loglikelihood_fn`.
+    """
     param_to_optimize = list(priors.keys())
     loglike_op = Run3PGLogLikeOp(
         fixed_params=fixed_params,
@@ -331,10 +371,29 @@ def pymc_model(
         n_species=len(species.specie),
     )
     with pm.Model() as model:
-        # Define priors for the parameters to be estimated
+        # Define priors for the parameters to be estimated. Two passes: WS0/WR0/WF0
+        # need their own perr_WS/perr_WR/perr_WF sigma to already exist as a PyTensor
+        # variable, and `priors` is a plain dict with no guaranteed ordering.
         param_vars: dict[str, pt.TensorVariable] = {}
         for param_name, (lower, upper) in priors.items():
+            if param_name in INITIAL_STATE_PARAMS:
+                continue
             param_vars[param_name] = pm.Uniform(param_name, lower=lower, upper=upper)
+
+        for param_name, state_field in INITIAL_STATE_PARAMS.items():
+            if param_name not in priors:
+                continue
+            sigma_name = f"perr_{state_field}"
+            if sigma_name not in param_vars:
+                raise KeyError(
+                    f"'{param_name}' is in priors but its process-error sigma "
+                    f"'{sigma_name}' is not — add a '{sigma_name}' entry to priors "
+                    "to fit its uncertainty."
+                )
+            nominal_value = float(np.asarray(getattr(state, state_field)).reshape(-1)[0])
+            param_vars[param_name] = pm.Normal(
+                param_name, mu=nominal_value, sigma=param_vars[sigma_name]
+            )
 
         # Collect parameter values into a vector
         param_vector = pt.stack([param_vars[param_name] for param_name in priors])
@@ -550,6 +609,7 @@ def run_pymc_analysis(
     output_dir: str,
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
+    include_process_error: bool = False,
     chains: int = 3,
     cores: int | None = None,
     num_warmup: int = 10000,
@@ -567,6 +627,18 @@ def run_pymc_analysis(
 
     Parameters
     ----------
+    include_process_error : bool
+        Whether to additionally treat the initial-state biomass pools WS0/WR0/WF0
+        as uncertain, fitted quantities (see `pymc_model`/`INITIAL_STATE_PARAMS`),
+        each with a `pm.Normal` prior whose spread is a fitted `perr_WS`/`perr_WR`/
+        `perr_WF` process-error sigma. Those three sigmas need `(min, max)` bounds in
+        `file_path`'s `error_param` sheet; `WS0`/`WR0`/`WF0` themselves need no such
+        row — they're added automatically with a placeholder bound, since their real
+        prior comes from `state`'s own nominal value plus the fitted sigma, not a
+        file bound. Independent of `param_to_optimize`'s observation-noise terms —
+        e.g. combined with a `"biomass_only"`-style `param_to_optimize`, you'd fit 3
+        observation-noise sigmas (err_WS/err_WR/err_WF) plus all 3 process-error
+        sigmas (perr_WS/perr_WR/perr_WF).
     step_method, target_accept
         Forwarded to `run_pymc_inference`; see its docstring.
     """
@@ -576,12 +648,25 @@ def run_pymc_analysis(
 
     input_data = prepare_data(file_path)
 
+    priors_param_names = param_to_optimize
+    if include_process_error and param_to_optimize is not None:
+        priors_param_names = list(param_to_optimize) + list(PROCESS_ERROR_PARAM_NAMES)
+
     priors = load_priors_from_file(
-        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+        file_path, priors_param_names, bound_overrides=literature_bound_overrides(file_path)
     )
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
-    param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    if include_process_error:
+        # WS0/WR0/WF0 get a pm.Normal prior in pymc_model, centered on state's own
+        # nominal value with spread from perr_WS/WR/WF (loaded above) — not a
+        # pm.Uniform one, so this bound is a required-but-otherwise-unused priors key.
+        for name in INITIAL_STATE_PARAMS:
+            priors[name] = (0.0, 0.0)
+
+    param_defaults = load_param_defaults_from_file(
+        file_path, [name for name in priors if name not in INITIAL_STATE_PARAMS]
+    )
     param_defaults = clip_defaults_to_priors(param_defaults, priors)
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
@@ -591,6 +676,7 @@ def run_pymc_analysis(
 
     print(f"Loaded priors for {len(priors)} parameters")
     print(f"Loaded observations for variables: {list(observations.keys())}")
+    print(f"Prior bounds: {priors}")
 
     trace, model = run_pymc_inference(
         initial_state=input_data.initial_state,
@@ -688,7 +774,7 @@ if __name__ == "__main__":
     # param_names = top_params + error_names
     param_names = FIT_PARAMS + error_names
 
-    output_dir = os.path.join(results_data_folder, "nuts_pymc_inference_results")
+    output_dir = os.path.join(results_data_folder, "pymc_inference_results")
 
     shutil.rmtree(output_dir)  # To rerun everthing from scratch uncomment this
 
@@ -703,19 +789,27 @@ if __name__ == "__main__":
         output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=param_names,
+        include_process_error=True,
         chains=3,
         cores=3,
-        step_method="nuts",
-        num_warmup=1000,  # If you need to increase the warmup, rerun from scratch.
-        num_samples=1000,  # If you just need to increase the number of samples, adjust here
+        checkpoint_every=5000,
+        step_method="demetropolisz",  # "nuts" is faster but more sensitive to prior bounds
+        num_warmup=10000,  # If you need to increase the warmup, rerun from scratch.
+        num_samples=10000,  # If you just need to increase the number of samples, adjust here
     )
 
     elapsed_time = time.perf_counter() - start_time
     print(f"Total runtime: {elapsed_time:.2f} seconds")
 
-    # plot_saved_results(
-    #     output_dir=os.path.join(results_data_folder, "results/pymc_inference_results"),
-    #     params=r_20_params,
-    #     observations=load_observations_from_file(file_path),
-    #     climate=prepare_data(file_path)[1],
-    # )
+    # Imported here, not at module scope, so importing this module doesn't require the
+    # input files that PG3_model_impl reads at import time (same reasoning as
+    # run_pymc_analysis's own local import).
+    from trunx.gp3.PG3_model_impl import prepare_data
+
+    input_data = prepare_data(file_path)
+    plot_saved_results(
+        output_dir=output_dir,
+        params=param_names,
+        observations=load_observations_from_file(file_path, site_data=input_data.site),
+        climate=input_data.climate,
+    )

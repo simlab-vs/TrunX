@@ -40,7 +40,7 @@ FIT_PARAMS = [
 # to trade away real WS/WF/WR accuracy for a target the model can't correctly
 # represent, so their sigma priors are excluded from calibration; the variables
 # are still simulated and can be plotted for reference. See TODO.md.
-DIAGNOSTIC_ONLY_ERROR_NAMES = frozenset({"err_DBH", "err_BA", "err_Height"})
+DIAGNOSTIC_ONLY_ERROR_NAMES = frozenset()
 
 # Named calibration scenarios (see `run_calibration_sweep.py`), each mapping to the
 # error names excluded from that scenario's fit — i.e. the `DIAGNOSTIC_ONLY_ERROR_NAMES`
@@ -50,4 +50,27 @@ ERROR_MODES: dict[str, frozenset[str]] = {
     "all_error_terms": frozenset(),
     "biomass_only": frozenset({"err_DBH", "err_BA", "err_Height"}),
     "biomass_DBH_only": frozenset({"err_BA", "err_Height"}),
+    "DBH_only": frozenset({"err_BA", "err_Height", "err_WF", "err_WS", "err_WR"}),
 }
+
+# Calibration parameter names that override an initial `State` field instead of a
+# `Params` field, letting the initial-condition biomass pools be treated as uncertain
+# (fitted) quantities rather than fixed inputs read from the site data. Include e.g.
+# `"WS0"` in a `priors` dict to give it a `pm.Normal` prior like any other parameter
+# — its posterior spread is then the quantified uncertainty in the initial state. See
+# `pymc_param_est.build_loglikelihood_fn` and `calibration_utils.predict_from_parameter_draws`.
+INITIAL_STATE_PARAMS: dict[str, str] = {"WS0": "WS", "WR0": "WR", "WF0": "WF"}
+
+# The process-error sigma for each of INITIAL_STATE_PARAMS's initial-condition values,
+# named `perr_{field}` (e.g. `"perr_WS"`) rather than reusing `err_{field}` — `err_WS`
+# already means the *observation*-noise sigma scoring the simulated WS *trajectory*
+# against observations (see `build_loglikelihood_fn`'s `packed_observations`), a
+# different quantity from uncertainty in the *initial condition* itself. Include both
+# `"WS0"` and `"perr_WS"` in a `priors` dict — e.g. via `run_pymc_analysis`/
+# `run_map_analysis`'s `include_process_error` flag — to fit
+# `WS0 ~ Normal(state.WS, perr_WS)` instead of leaving `state.WS` fixed. Unlike
+# `err_{field}`, `perr_{field}` has no counterpart derived from `INITIAL_STATE_PARAMS`'s
+# keys — it's keyed by the state *field* name, not the sampled *value* name.
+PROCESS_ERROR_PARAM_NAMES: frozenset[str] = frozenset(
+    f"perr_{field}" for field in INITIAL_STATE_PARAMS.values()
+)
