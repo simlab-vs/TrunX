@@ -276,9 +276,6 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             (pl.col("plot_la_m2") / (pl.col("plot_size_ha") * 10000.0)).alias("lai"),
             (pl.col("plot_ba_m2") / pl.col("plot_size_ha")).alias("basal_area"),
         )
-        .with_columns(
-            basal_area=pl.lit(math.pi) * (pl.col("dbh_cm") / 200.0).pow(2) * pl.col("n_stems"),
-        )
         .drop("n_count", "plot_sb_kg", "plot_fb_kg", "plot_rb_kg", "plot_la_m2")
         .sort(["specie", "plot_id", "date"])
     )

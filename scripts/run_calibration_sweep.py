@@ -34,8 +34,9 @@ import trunx.gp3.bayesiancalibrations.map_param_est as map_param_est
 import trunx.gp3.bayesiancalibrations.pymc_param_est as pymc_param_est
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import PLOT_VARIABLES
-from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES, FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES
 from trunx.gp3.bayesiancalibrations.load_files import (
+    fit_params_for_mode,
     literature_bound_overrides,
     load_priors_from_file,
 )
@@ -47,10 +48,60 @@ from trunx.gp3.gradient_descent import GradientDescentConfig, fit_with_gradient_
 # pymc_icp_plots.py's species_plot_ids, and scripts/run_comparison_site.py). "solling"
 # is Solling's own hand-curated file; every other entry is an ICP plot_id, resolved to
 # its input file by (re)generating it — see resolve_source_file_path.
-SITES = ["solling", "04.1605", "14.0003", "14.0012"]
+
+species_plot_ids = {
+    "Pinus sylvestris": [
+        "01.0082",
+        "04.1303",
+        "51.0015",
+        "53.0109",
+        "53.0112",
+        "53.0114",
+        "53.0302",
+        "53.0306",
+        "53.0311",
+        "53.0312",
+        "53.0313",
+        "53.0316",
+        "53.0407",
+        "53.0501",
+        "53.0513",
+        "53.0603",
+        "53.0617",
+        "53.0618",
+        "53.0623",
+        "59.0001",
+        "59.0003",
+    ],
+    "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
+    "Picea abies": [
+        "04.0302",
+        "04.1402",
+        "04.1403",
+        "14.0017",
+        "52.0010",
+        "53.0701",
+        "59.0008",
+    ],
+}
+
+Forrester_plot_ids = (
+    species_plot_ids["Pinus sylvestris"]
+    + species_plot_ids["Picea abies"]
+    + species_plot_ids["Fagus sylvatica"]
+)
+
+Trotsiuk_plot_ids = species_plot_ids["Picea abies"] + species_plot_ids["Fagus sylvatica"]
+
+SITES = ["solling"]
 
 # METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
-METHODS = ["nuts", "map"]
+METHODS = ["demetropolisz"]
+
+ERROR_KEYS = ["all_error_terms", "biomass_only", "DBH_only"]
+
+ERROR_MODES = {key: ERROR_MODES[key] for key in ERROR_KEYS}
+
 # Modules that did `from bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES` and so
 # each hold their own binding of it — patched directly by `diagnostic_only_error_names`.
 _PATCHED_MODULES = (pymc_param_est, map_param_est)
@@ -206,12 +257,10 @@ def run_job(
         os.remove(tmp_path)
         raise
 
-    param_bound = pd.read_excel(file_path, sheet_name="param_bound")
-    if site_id == "solling":
-        fit_params = FIT_PARAMS
-    else:
-        fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
+    fit_params = fit_params_for_mode(file_path, mode_name)
+
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+
     param_names = fit_params + error_names
 
     print(f"\n{'=' * 60}\n{site_id} / {mode_name} / {method}\n{'=' * 60}")
@@ -340,7 +389,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
-        default=os.path.join(results_data_folder, "calibration_sweep"),
+        default=os.path.join(results_data_folder, "latent_calibration_sweep"),
         help="Base directory to write results into (default: %(default)s)",
     )
     parser.add_argument(
@@ -356,6 +405,7 @@ if __name__ == "__main__":
         help="Run only this combination from --list-jobs, instead of the full sweep. "
         "Falls back to $SLURM_ARRAY_TASK_ID if set, so an array job needs no extra flag.",
     )
+
     parser.add_argument(
         "--literature-source",
         default="Forrester",
