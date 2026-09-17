@@ -96,8 +96,8 @@ def model_step(state, climate_month, params, site, species):
     # ftmp_gc = 1.0
     fcg = f_cg(params, co2)
     conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
-
-    alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha * fpoly_nn
+    f_nuti_classic_learnable = fN * fpoly_nn
+    alpha_c = params.alphaCx * fT * fF * f_nuti_classic_learnable * phi * fcalpha
 
     alpha_c = jnp.where(LAI == 0.0, 0.0, alpha_c)
     # Primary production
