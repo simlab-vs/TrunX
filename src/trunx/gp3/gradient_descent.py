@@ -17,7 +17,7 @@ from jax import grad, jit, value_and_grad
 from tqdm import tqdm
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.model_inputs import Params, SiteData, SpeciesData, State
+from trunx.gp3.model_inputs import InputData, Params
 from trunx.gp3.PG3_model_impl import prepare_data, run_threepg_main
 from trunx.gp3.run_3pg import run_3pg
 from trunx.gp3.training_utils import (
@@ -63,11 +63,7 @@ class GradientDescentConfig:
 
 
 def make_loss_function(
-    inital_state: State,
-    climate: Any,
-    base_params: Params,
-    site_data: SiteData,
-    species_data: SpeciesData,
+    input_data: InputData,
     fit_params: list[str],
     obs_indices: jnp.ndarray,
     obs_scales: dict[str, jnp.ndarray],
@@ -77,6 +73,7 @@ def make_loss_function(
 ):
     """Create a loss function for gradient descent optimization."""
     n_obs = len(obs_indices)
+    base_params = input_data.params
     variable_weights = {
         "BA": 1.0,
         "DBH": 5.0,  # 5x more weight to DBH
@@ -101,11 +98,11 @@ def make_loss_function(
 
         # Run the 3PG model with the updated parameters
         _, pg3_outputs = run_3pg(
-            initial_state=inital_state,
-            climate=climate,
+            initial_state=input_data.initial_state,
+            climate=input_data.climate,
             params=Params(**params_dict),
-            site=site_data,
-            species=species_data,
+            site=input_data.site,
+            species=input_data.species,
         )
         total_squared_error = weighted_squared_error(
             pg3_outputs,
@@ -182,11 +179,7 @@ def fit_with_gradient_descent(config: GradientDescentConfig):
     param_values = jnp.asarray(initial_values, dtype=jnp.float32)
 
     loss_function = make_loss_function(
-        inital_state=input_data.initial_state,
-        climate=input_data.climate,
-        base_params=input_data.params,
-        site_data=input_data.site,
-        species_data=input_data.species,
+        input_data=input_data,
         fit_params=config.fit_params,
         obs_indices=obs_indices,
         obs_values=obs_values,
