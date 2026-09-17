@@ -1228,7 +1228,7 @@ def plot_and_save(
 
 
 if __name__ == "__main__":
-    _calibration_sweep_dir = os.path.join(data_folder, "results/calibration_sweep")
+    _calibration_sweep_dir = os.path.join(data_folder, "results/latent_calibration_sweep")
     plot_ids = ["solling"]
 
     # plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
@@ -1246,7 +1246,7 @@ if __name__ == "__main__":
     #     "59.0008",
     # ]
 
-    plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
+    plot_output_dir = os.path.join(data_folder, "results/latent_comparison_plots")
 
     os.makedirs(plot_output_dir, exist_ok=True)
 
