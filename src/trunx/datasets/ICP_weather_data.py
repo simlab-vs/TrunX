@@ -7,6 +7,7 @@ import pandas as pd
 import polars as pl
 
 from trunx.config import clean_data_folder
+from trunx.datasets.icp_level2_data import _make_plot_id
 
 
 class prepare_icp_weather_data:
@@ -45,13 +46,7 @@ class prepare_icp_weather_data:
 
         # Create plot_id and parse date
         df = (
-            df.with_columns(
-                (
-                    pl.col("code_country").cast(pl.Utf8).str.zfill(2)
-                    + "."
-                    + pl.col("code_plot").cast(pl.Utf8).str.zfill(4)
-                ).alias("plot_id")
-            )
+            df.pipe(_make_plot_id)
             .with_columns(
                 pl.col("date_observation")
                 .str.strptime(pl.Date, "%Y-%m-%d")

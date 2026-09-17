@@ -282,8 +282,8 @@ def run_3pg(
     ----------
     modifier_fn : Callable
         Nutrition modifier applied to `extended_params.modifier_params`, e.g.
-        `poly_nm`, `saturating_nm`, `saturating_poly_nm`, or `mlp_nm` from
-        `extended_helper.py`. Ignored when `extended_params` is None.
+        `poly_nm`, or `mlp_nm` from `extended_helper.py`.
+        Ignored when `extended_params` is None.
     input_vars : tuple[str, ...]
         Which of `("N", "S", "T_avg")` (nitrogen deposition, sulphur deposition,
         temperature) `modifier_fn` was built over, and in what order — must
