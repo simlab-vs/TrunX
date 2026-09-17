@@ -67,38 +67,44 @@ def init_modifier_params(input_vars: tuple[str, ...] = INPUT_VARIABLES) -> jnp.n
     return jnp.zeros(tuple(2 for _ in input_vars))
 
 
-class MLPModifierParams(NamedTuple):
-    """Weights for a single-hidden-layer MLP nutrition modifier."""
+class MLPLayer(NamedTuple):
+    """One dense layer's weights: `x @ w + b`."""
 
-    w1: jnp.ndarray  # (n_input_vars, hidden_size)
-    b1: jnp.ndarray  # (hidden_size,)
-    w2: jnp.ndarray  # (hidden_size,)
-    b2: jnp.ndarray  # scalar
+    w: jnp.ndarray  # (fan_in, fan_out)
+    b: jnp.ndarray  # (fan_out,)
+
+
+class MLPModifierParams(NamedTuple):
+    """Weights for a multi-hidden-layer MLP nutrition modifier.
+
+    `layers[:-1]` are tanh-activated hidden layers; `layers[-1]` is the
+    linear output layer (`fan_out=1`) — see `mlp_nm`/`init_mlp_modifier_params`.
+    """
+
+    layers: tuple[MLPLayer, ...]
 
 
 def init_mlp_modifier_params(
     key: jax.Array,
     input_vars: tuple[str, ...] = INPUT_VARIABLES,
-    hidden_size: int = 8,
+    hidden_sizes: tuple[int, ...] = (6,),
     init_scale: float = 0.1,
 ) -> MLPModifierParams:
-    """Build a neutral starting point for `mlp_nm`.
-
-    `w1`/`b1` are randomly initialized (small scale) so hidden units aren't
-    symmetric; `w2`/`b2` are zeroed so the network's output — and so its
-    effect via `_squash` — starts at exactly 1 (no effect), matching
-    `poly_nm`'s own neutral start (`init_modifier_params`'s all-zero grid).
-    Zeroing `w1` too, the way `poly_nm`'s parameters are zeroed, would be a
-    bug here: with `w2` also zero, gradients could never reach `w1` (the
-    chain rule multiplies through `w2`), so the hidden layer could never
-    learn. `poly_nm` has no such hidden bottleneck layer, so it doesn't share
-    this failure mode.
-    """
-    w1 = init_scale * jax.random.normal(key, (len(input_vars), hidden_size))
-    b1 = jnp.zeros(hidden_size)
-    w2 = jnp.zeros(hidden_size)
-    b2 = jnp.zeros(())
-    return MLPModifierParams(w1=w1, b1=b1, w2=w2, b2=b2)
+    """Build a neutral starting point for `mlp_nm`."""
+    sizes = (len(input_vars), *hidden_sizes, 1)
+    n_layers = len(sizes) - 1
+    keys = jax.random.split(key, n_layers)
+    layers = []
+    for i in range(n_layers):
+        fan_in, fan_out = sizes[i], sizes[i + 1]
+        is_output_layer = i == n_layers - 1
+        w = (
+            jnp.zeros((fan_in, fan_out))
+            if is_output_layer
+            else init_scale * jax.random.normal(keys[i], (fan_in, fan_out))
+        )
+        layers.append(MLPLayer(w=w, b=jnp.zeros(fan_out)))
+    return MLPModifierParams(layers=tuple(layers))
 
 
 def mlp_nm(
@@ -106,15 +112,10 @@ def mlp_nm(
     inputs: jnp.ndarray,
     input_vars: tuple[str, ...] = INPUT_VARIABLES,
 ) -> jnp.ndarray:
-    """
-    Single-hidden-layer MLP nutrition modifier function.
-
-    `inputs`'s last axis already holds one channel per `input_vars`, in
-    order (see `_channels`), so it's fed straight into the first linear
-    layer. Squashed into (0, 2), centered at 1, same convention as `poly_nm`
-    (see `_squash`) — a drop-in alternative `modifier_fn` for `run_3pg`.
-    """
-    del input_vars  # part of the shared modifier_fn signature; unused here
-    h = jnp.tanh(inputs @ mlp_params.w1 + mlp_params.b1)
-    out = h @ mlp_params.w2 + mlp_params.b2
+    """Multi-hidden-layer MLP nutrition modifier function."""
+    x = inputs
+    *hidden_layers, output_layer = mlp_params.layers
+    for layer in hidden_layers:
+        x = jnp.tanh(x @ layer.w + layer.b)
+    out = (x @ output_layer.w + output_layer.b).squeeze(-1)
     return _squash(out)

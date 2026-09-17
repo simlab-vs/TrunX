@@ -15,7 +15,7 @@ import polars as pl
 
 from trunx.config import images_folder
 from trunx.gp3.bayesiancalibrations.pymc_icp_plots import prepare_plot_input
-from trunx.gp3.extended_helper import INPUT_VARIABLES, poly_nm
+from trunx.gp3.extended_helper import INPUT_VARIABLES, init_mlp_modifier_params, mlp_nm, poly_nm
 from trunx.gp3.model_inputs import ExtendedParams, InputData, SiteData
 from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -54,6 +54,12 @@ class NutritionModifierConfig:
     num_epochs: int = 1000  # Number of training epochs
     standardize_targets: bool = True  # Whether to standardize target variables
     image_dir: str = field(default_factory=lambda: str(images_folder / "nn_nutrition_modifier"))
+    # Which learnable nutrition-modifier function to fit — e.g. poly_nm (default) or
+    # mlp_nm from extended_helper.py. Its matching initial_modifier_params (passed
+    # separately to train_nutrition_modifier) must come from that function's own
+    # initializer — init_modifier_params for poly_nm, init_mlp_modifier_params
+    # (needs a PRNG key) for mlp_nm — since their parameter pytrees aren't interchangeable.
+    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm
 
 
 @dataclass
@@ -151,9 +157,13 @@ def build_observation_data(
 def train_nutrition_modifier(
     config: NutritionModifierConfig,
     initial_modifier_params: Any,
-    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
 ) -> NutritionModifierFitResult:
-    """Train the nutrition modifier using gradient descent."""
+    """Train the nutrition modifier (`config.modifier_fn`) using gradient descent.
+
+    `initial_modifier_params` must match `config.modifier_fn`'s own parameter
+    pytree — e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params`
+    for `mlp_nm` — since they aren't interchangeable.
+    """
     input_data = prepare_data(config.file_path)
     obs_indices, obs_values, obs_scales = build_observation_data(
         config.file_path,
@@ -172,7 +182,7 @@ def train_nutrition_modifier(
         obs_indices=obs_indices,
         obs_values=obs_values,
         obs_scales=obs_scales,
-        modifier_fn=modifier_fn,
+        modifier_fn=config.modifier_fn,
         input_vars=config.input_vars,
         species_index=config.species_index,
     )
@@ -210,9 +220,11 @@ def train_nutrition_modifier(
 def build_predicted_series(
     config: NutritionModifierConfig,
     fitted_modifier_params: Any,
-    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
 ) -> dict[str, np.ndarray]:
     """Simulate 3PG with and without the fitted nutrition modifier, for plotting.
+
+    Uses `config.modifier_fn` — must match whatever `fitted_modifier_params`
+    was fitted with (see `train_nutrition_modifier`).
 
     Returns
     -------
@@ -231,7 +243,7 @@ def build_predicted_series(
         input_data.species,
         input_data.deposition,
         extended_params,
-        modifier_fn,
+        config.modifier_fn,
         config.input_vars,
     )
     _, outputs_default = run_3pg(
@@ -391,16 +403,28 @@ if __name__ == "__main__":
 
     # Which of ("N", "S", "T_avg") to build the modifier over
     input_vars = ("N", "S")
+
+    # Select which learnable nutrition-modifier function to fit.
+    modifier_fn = mlp_nm
+    if modifier_fn is poly_nm:
+        initial_modifier_params = init_modifier_params(input_vars)
+    elif modifier_fn is mlp_nm:
+        initial_modifier_params = init_mlp_modifier_params(
+            jax.random.PRNGKey(0), input_vars, hidden_sizes=(3, 2)
+        )
+    else:
+        raise ValueError(f"No initializer wired up for modifier_fn={modifier_fn!r}")
+
     config = NutritionModifierConfig(
         file_path=file_path,
         target_vars=["BA", "DBH", "Height", "WS", "WF", "WR"],
         input_vars=input_vars,
         optimizer_name="adam",
         learning_rate=1e-3,
-        num_epochs=5000,
+        num_epochs=2000,
+        modifier_fn=modifier_fn,
     )
 
-    initial_modifier_params = init_modifier_params(input_vars)
     fit_result = train_nutrition_modifier(config, initial_modifier_params=initial_modifier_params)
 
     image_dir = Path(config.image_dir)
