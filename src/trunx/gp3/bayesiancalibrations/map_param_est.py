@@ -47,6 +47,7 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     save_laplace_covariance,
     save_map_estimate,
     save_results,
+    save_runtime,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
@@ -326,6 +327,8 @@ def run_map_analysis(
     # `PG3_model_impl` reads at import time.
     from trunx.gp3.PG3_model_impl import prepare_data
 
+    start_time = time.perf_counter()
+
     input_data = prepare_data(file_path)
 
     priors_param_names = param_to_optimize
@@ -408,6 +411,9 @@ def run_map_analysis(
     if laplace is not None:
         save_laplace_covariance(laplace.covariance, laplace.names, output_dir)
     save_results(mcmc=idata, output_dir=output_dir, predictions=predictions)
+    elapsed_time = time.perf_counter() - start_time
+    save_runtime(elapsed_time, output_dir)
+    print(f"Total runtime: {elapsed_time:.2f} seconds")
 
     return map_estimate
 

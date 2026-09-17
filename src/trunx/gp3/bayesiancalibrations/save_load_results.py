@@ -108,6 +108,35 @@ def save_map_estimate(
     return file_path
 
 
+def save_runtime(
+    seconds: float,
+    output_dir: str,
+    filename: str = "runtime.json",
+) -> str:
+    """
+    Save a calibration run's wall-clock duration to a JSON file.
+
+    Parameters
+    ----------
+    seconds : float
+        Elapsed wall-clock time, in seconds (e.g. from `time.perf_counter()`).
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the JSON file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    with open(file_path, "w") as f:
+        json.dump({"seconds": seconds}, f, indent=2)
+    return file_path
+
+
 def save_laplace_covariance(
     covariance: np.ndarray,
     names: list[str],

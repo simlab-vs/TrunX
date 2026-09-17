@@ -29,6 +29,7 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
     FIT_PARAMS,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    fit_params_for_mode,
     load_param_defaults_from_file,
     load_priors_from_file,
 )
@@ -76,7 +77,10 @@ def run_default_model(file_path: str) -> dict[str, Any]:
     """Run 3PG with the file's default parameter values."""
     input_data = prepare_data(file_path)
     param_defaults = load_param_defaults_from_file(file_path)
-    phy_defaults = {k: v for k, v in param_defaults.items() if not k.startswith("err_")}
+    # Excludes err_*/perr_* sigma defaults (and any other non-physiology entry
+    # in the file's error_param sheet) rather than blacklisting prefixes, so a
+    # third such prefix added later can't reopen this same AttributeError.
+    phy_defaults = {k: v for k, v in param_defaults.items() if k in Params._fields}
     fixed_params = input_data.params._replace(
         **{
             name: jnp.full_like(getattr(input_data.params, name), value)
@@ -1097,7 +1101,6 @@ def plot_and_save(
         )
         _map_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/map")
         _file_path = os.path.join(output_dir, f"{plot_id}/{plot_id}_data.xlsx")
-        fit_params = FIT_PARAMS
     else:
         _bayesian_output_dir = os.path.join(
             output_dir, f"{plot_id}/{literature_source}/{error_terms}/demetropolisz"
@@ -1113,9 +1116,13 @@ def plot_and_save(
         )
         _file_path = os.path.join(output_dir, f"{plot_id}/{literature_source}/{plot_id}_data.xlsx")
 
-        _df = pl.read_excel(_file_path, sheet_name="param_bound")
-        _df = _df.filter(pl.col("min").is_not_null() & pl.col("max").is_not_null())
-        fit_params = _df["param_name"].to_list()
+    # `error_terms` names a saved run's scenario, same as `mode_name` in
+    # run_calibration_sweep.py — mirror its fit_params_for_mode call so this
+    # only asks for posteriors/priors the run actually has. Falls back to
+    # "biomass_only" for an unrecognized name, matching the
+    # DIAGNOSTIC_ONLY_ERROR_NAMES fallback used below for excluded_error_names.
+    mode_name = error_terms if error_terms in ERROR_MODES else "biomass_only"
+    fit_params = fit_params_for_mode(_file_path, mode_name)
 
     _fig, _metrics_df = plot_comparison(
         _file_path,

@@ -9,8 +9,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 
 from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES
 from trunx.gp3.bayesiancalibrations.load_files import (
+    fit_params_for_mode,
     load_observations_from_file,
     load_priors_from_file,
 )
@@ -135,6 +136,7 @@ def run_bayesian_for_plot(
     plot_id: str,
     chains: int = 3,
     cores: int | None = None,
+    error_mode: str = "DBH_only",
     num_warmup: int = 10000,
     num_samples: int = 10000,
     literature_source: str = "Forrester",
@@ -147,6 +149,8 @@ def run_bayesian_for_plot(
         ICP plot identifier.
     chains, cores, num_warmup, num_samples
         Passed through to `run_pymc_analysis`.
+    error_mode : str
+        The error mode to use for the calibration.
     literature_source : str
         Forwarded to `prepare_plot_input`.
 
@@ -156,12 +160,12 @@ def run_bayesian_for_plot(
         The plot_id, on successful completion.
     """
     file_path = prepare_plot_input(plot_id, literature_source=literature_source)
-    param_bound = pd.read_excel(file_path, sheet_name="param_bound")
-    fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
+    fit_params = fit_params_for_mode(file_path, error_mode)
+
     error_names = [
         name
         for name in load_priors_from_file(file_path)
-        if name.startswith("err_") and name not in DIAGNOSTIC_ONLY_ERROR_NAMES
+        if name.startswith("err_") and name not in ERROR_MODES[error_mode]
     ]
 
     output_dir = os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}")
@@ -186,6 +190,7 @@ def run_bayesian_for_plot(
 
 def run_bayesian_calibration(
     plot_ids: list[str],
+    error_mode: str = "DBH_only",
     chains: int = 3,
     num_warmup: int = 100,
     num_samples: int = 100,
@@ -218,6 +223,7 @@ def run_bayesian_calibration(
                 num_warmup=num_warmup,
                 num_samples=num_samples,
                 literature_source=literature_source,
+                error_mode=error_mode,
             ): plot_id
             for plot_id in plot_ids
         }
@@ -268,7 +274,8 @@ if __name__ == "__main__":
     }
 
     plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species]
-    plot_ids = ["04.1402"]
+
+    plot_ids = ["solling"]
     # Add argument parser
     parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
     parser.add_argument(
@@ -277,6 +284,13 @@ if __name__ == "__main__":
     parser.add_argument("--chains", type=int, default=3, help="Number of MCMC chains")
     parser.add_argument("--warmup", type=int, default=5000, help="Number of warmup samples")
     parser.add_argument("--samples", type=int, default=5000, help="Number of posterior samples")
+    parser.add_argument(
+        "--error-mode",
+        type=str,
+        default="DBH_only",
+        choices=list(ERROR_MODES.keys()),
+        help="Error mode to use for calibration",
+    )
 
     args = parser.parse_args()
 
@@ -289,6 +303,7 @@ if __name__ == "__main__":
         chains=args.chains,
         num_warmup=args.warmup,
         num_samples=args.samples,
+        error_mode=args.error_mode,
     )
 
     # Example plot

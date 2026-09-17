@@ -21,6 +21,7 @@ import pandas as pd
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODE_PARAM_DEPENDENCIES
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -181,6 +182,32 @@ def load_priors_from_file(
                 priors[param_name] = bounds
 
     return priors
+
+
+def fit_params_for_mode(file_path: str, mode: str) -> list[str]:
+    """Parameters both priored in `file_path` and calibratable under `mode`.
+
+    Intersects `file_path`'s parameters that have a real prior with
+    `bayesian_config.ERROR_MODE_PARAM_DEPENDENCIES[mode]`'s direct/indirect
+    parameters for that scenario's active outputs — a parameter with a prior
+    but no bearing on any output being fit under `mode` (e.g. `aH` under
+    `"biomass_only"`, which excludes `Height`) is left out.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    mode : str
+        Key into `bayesian_config.ERROR_MODES`.
+
+    Returns
+    -------
+    list[str]
+        Parameter names with both a prior and a bearing on `mode`, sorted.
+    """
+    params_with_priors = set(load_priors_from_file(file_path))
+    params_calibratable = set(ERROR_MODE_PARAM_DEPENDENCIES[mode]["parameters"])
+    return sorted(params_with_priors & params_calibratable)
 
 
 # Literature tables that carry a real per-species bound for the parameters most
