@@ -140,6 +140,7 @@ def run_bayesian_for_plot(
     num_warmup: int = 10000,
     num_samples: int = 10000,
     literature_source: str = "Forrester",
+    include_process_error: bool = False,
 ) -> str:
     """Prepare inputs and run Bayesian calibration for one ICP plot.
 
@@ -153,6 +154,8 @@ def run_bayesian_for_plot(
         The error mode to use for the calibration.
     literature_source : str
         Forwarded to `prepare_plot_input`.
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis` — see its docstring.
 
     Returns
     -------
@@ -179,6 +182,7 @@ def run_bayesian_for_plot(
         output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=fit_params + error_names,
+        include_process_error=include_process_error,
         chains=chains,
         cores=cores,
         num_warmup=num_warmup,
@@ -195,6 +199,7 @@ def run_bayesian_calibration(
     num_warmup: int = 100,
     num_samples: int = 100,
     literature_source: str = "Forrester",
+    include_process_error: bool = False,
 ) -> None:
     """Run Bayesian calibration for multiple ICP plots in parallel.
 
@@ -206,6 +211,8 @@ def run_bayesian_calibration(
         Passed through to `run_pymc_analysis`.
     literature_source : str
         Forwarded to `prepare_plot_input`.
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis` — see its docstring.
     """
     available_cpus = get_available_cpus()
     max_workers = max(1, min(len(plot_ids), available_cpus // chains))
@@ -224,6 +231,7 @@ def run_bayesian_calibration(
                 num_samples=num_samples,
                 literature_source=literature_source,
                 error_mode=error_mode,
+                include_process_error=include_process_error,
             ): plot_id
             for plot_id in plot_ids
         }
@@ -291,6 +299,12 @@ if __name__ == "__main__":
         choices=list(ERROR_MODES.keys()),
         help="Error mode to use for calibration",
     )
+    parser.add_argument(
+        "--include-process-error",
+        action="store_true",
+        help="Additionally treat the initial-state biomass pools WS0/WR0/WF0 as "
+        "uncertain, fitted quantities (see bayesian_config.INITIAL_STATE_PARAMS).",
+    )
 
     args = parser.parse_args()
 
@@ -304,6 +318,7 @@ if __name__ == "__main__":
         num_warmup=args.warmup,
         num_samples=args.samples,
         error_mode=args.error_mode,
+        include_process_error=args.include_process_error,
     )
 
     # Example plot

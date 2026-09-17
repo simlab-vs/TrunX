@@ -413,6 +413,13 @@ if __name__ == "__main__":
             options are 'Forrester', 'Forrester_default', 'Trotsiuk'.",
     )
     parser.add_argument("--chains", type=int, default=4)
+    parser.add_argument(
+        "--include-process-error",
+        action="store_true",
+        help="Additionally treat the initial-state biomass pools WS0/WR0/WF0 as "
+        "uncertain, fitted quantities (see bayesian_config.INITIAL_STATE_PARAMS). "
+        "Ignored for gradient_descent, which has no sigma-prior mechanism.",
+    )
     parser.add_argument("--demetropolisz-num-warmup", type=int, default=1_000_000)
     parser.add_argument("--demetropolisz-num-samples", type=int, default=5_000_000)
     parser.add_argument("--nuts-num-warmup", type=int, default=1000)
@@ -436,6 +443,7 @@ if __name__ == "__main__":
     run_job_kwargs = {
         "literature_source": args.literature_source,
         "chains": args.chains,
+        "include_process_error": args.include_process_error,
         "demetropolisz_num_warmup": args.demetropolisz_num_warmup,
         "demetropolisz_num_samples": args.demetropolisz_num_samples,
         "nuts_num_warmup": args.nuts_num_warmup,

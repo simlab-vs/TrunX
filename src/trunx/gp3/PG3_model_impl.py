@@ -20,7 +20,6 @@ from trunx.gp3.plot_function import (
     create_comparison_dataframe,
     plot_combined_3pg_outputs,
     plot_combined_3pg_outputs_obv,
-    plot_combined_3pg_outputs_per_species,
     plot_dbh_distribution,
     plot_outputs,
 )
@@ -118,6 +117,7 @@ def run_threepg_main(
             plot_id=plot_id,
             show=show_plots,
             plot_metrics=["BA", "DBH", "Height", "WF", "WS", "WR"],
+            per_species=False,
         )
     elif r_comparison:
         from trunx.gp3.run_r3pg import run_comparison_r
@@ -214,7 +214,7 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    plot_ids = ["04.1402"]
+    plot_ids = ["50.0013"]
     for plot_id in plot_ids:
         # plot_dbh_distribution(
         #     plot_id=plot_id,
