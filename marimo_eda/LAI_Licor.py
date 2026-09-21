@@ -87,7 +87,9 @@ def _(pl, raw_lai):
     # into literal text, which would otherwise survive .drop_nulls() and
     # show up as a bogus option in every filter dropdown below.
     for column in ["plot", "subplot", "plot_type", "season"]:
-        lai = lai.with_columns(pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars())
+        lai = lai.with_columns(
+            pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars()
+        )
 
     # Convert "." to missing values
     lai = lai.with_columns(
@@ -119,7 +121,10 @@ def _(pl, raw_lai):
     ]
 
     lai = lai.with_columns(
-        [pl.col(column).cast(pl.Float64, strict=False) for column in numeric_columns]
+        [
+            pl.col(column).cast(pl.Float64, strict=False)
+            for column in numeric_columns
+        ]
     )
 
     lai.head()
@@ -193,13 +198,19 @@ def _(
         filtered_lai = filtered_lai.filter(pl.col("plot") == plot_selector.value)
 
     if subplot_selector.value != "All":
-        filtered_lai = filtered_lai.filter(pl.col("subplot") == subplot_selector.value)
+        filtered_lai = filtered_lai.filter(
+            pl.col("subplot") == subplot_selector.value
+        )
 
     if plot_type_selector.value != "All":
-        filtered_lai = filtered_lai.filter(pl.col("plot_type") == plot_type_selector.value)
+        filtered_lai = filtered_lai.filter(
+            pl.col("plot_type") == plot_type_selector.value
+        )
 
     if season_selector.value != "All":
-        filtered_lai = filtered_lai.filter(pl.col("season") == season_selector.value)
+        filtered_lai = filtered_lai.filter(
+            pl.col("season") == season_selector.value
+        )
 
     filtered_lai  # noqa: B018
     return (filtered_lai,)
@@ -216,10 +227,14 @@ def _(lai, pl, plot_selector, plot_type_selector, subplot_selector):
         lai_for_season = lai_for_season.filter(pl.col("plot") == plot_selector.value)
 
     if subplot_selector.value != "All":
-        lai_for_season = lai_for_season.filter(pl.col("subplot") == subplot_selector.value)
+        lai_for_season = lai_for_season.filter(
+            pl.col("subplot") == subplot_selector.value
+        )
 
     if plot_type_selector.value != "All":
-        lai_for_season = lai_for_season.filter(pl.col("plot_type") == plot_type_selector.value)
+        lai_for_season = lai_for_season.filter(
+            pl.col("plot_type") == plot_type_selector.value
+        )
 
     lai_for_season  # noqa: B018
     return (lai_for_season,)
@@ -262,7 +277,11 @@ def _():
 
 @app.cell
 def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
-    plot_data = filtered_lai.select(["date", selected_measurement]).sort("date")
+    plot_data = (
+        filtered_lai
+        .select(["date", selected_measurement])
+        .sort("date")
+    )
 
     # ============================================================
     # SETTINGS
@@ -288,7 +307,12 @@ def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
     # 1. MEASURED OBSERVATIONS
     # ============================================================
 
-    measured = plot_data.drop_nulls(subset=[selected_measurement]).sort("date").to_dicts()
+    measured = (
+        plot_data
+        .drop_nulls(subset=[selected_measurement])
+        .sort("date")
+        .to_dicts()
+    )
 
     # ============================================================
     # 2. CONNECTING LINES (solid vs. dashed segments)
@@ -353,6 +377,7 @@ def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
             mode="markers",
             name="Measured",
             marker={"size": 8, "color": line_color},
+
             # Full date shown when hovering
             hovertemplate=(
                 "<b>Date:</b> %{x|%d %B %Y}"
@@ -361,6 +386,7 @@ def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
                 "%{y:.2f}"
                 "<extra></extra>"
             ),
+
             showlegend=True,
         )
     )
@@ -370,7 +396,8 @@ def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
     # ============================================================
 
     missing_dates = (
-        plot_data.filter(pl.col(selected_measurement).is_null())
+        plot_data
+        .filter(pl.col(selected_measurement).is_null())
         .select("date")
         .drop_nulls()
         .unique()
@@ -419,6 +446,7 @@ def _(filtered_lai, go, measurement_selector, pl, selected_measurement):
         title=f"{measurement_selector.value} over time",
         xaxis_title="Date",
         yaxis_title=measurement_selector.value,
+
         # Important: inspect individual observations
         hovermode="closest",
         template="plotly_white",
@@ -433,7 +461,9 @@ def _(lai, measurement_options, mo, pl):
     # Compare any number of LWF plots (multiplot)
     # --------------------------------------------------------
 
-    multiplot_options = sorted(lai["plot"].drop_nulls().cast(pl.Utf8).unique().to_list())
+    multiplot_options = sorted(
+        lai["plot"].drop_nulls().cast(pl.Utf8).unique().to_list()
+    )
 
     multiplot_selector = mo.ui.multiselect(
         options=multiplot_options,
@@ -466,7 +496,9 @@ def _(
     pl,
     px,
 ):
-    multiplot_selected_measurement = measurement_options[multiplot_measurement_selector.value]
+    multiplot_selected_measurement = measurement_options[
+        multiplot_measurement_selector.value
+    ]
 
     multiplot_palette = px.colors.qualitative.Set2
 
@@ -546,7 +578,8 @@ def _(
 
     for s_idx, szn in enumerate(seasons):
         values = (
-            season_data.filter(pl.col("season") == szn)
+            season_data
+            .filter(pl.col("season") == szn)
             .select(selected_measurement)
             .to_series()
             .to_list()
@@ -607,6 +640,136 @@ def _(mo):
     - Spring observations are more variable.
     - Long periods without measurements occur, particularly between survey years.
     """)
+
+
+@app.cell
+def _(lai, mo):
+    lai_site_comparison_selector = mo.ui.multiselect(
+
+        options=sorted(lai["plot"].drop_nulls().unique().to_list()),
+
+        value=[],
+
+        label="Sites",
+
+    )
+
+
+    lai_site_comparison_selector  # noqa: B018
+    return (lai_site_comparison_selector,)
+
+
+@app.cell
+def _(go, lai, lai_site_comparison_selector, mo, pl):
+    selected_sites = lai_site_comparison_selector.value
+
+
+    if not selected_sites:
+
+        output = mo.md(
+
+            "Select one or more sites to display the LAI comparison."
+
+        )
+
+    else:
+
+        comparison_data = (
+
+            lai
+
+            .filter(pl.col("plot").is_in(selected_sites))
+
+            .select(
+
+                [
+
+                    "plot",
+
+                    "date",
+
+                    "lai_miller",
+
+                    "lai_norman_campbell",
+
+                ]
+
+            )
+
+            .sort(["plot", "date"])
+
+        )
+
+
+        fig2 = go.Figure()
+
+
+        for site in selected_sites:
+
+            site_data = comparison_data.filter(
+
+                pl.col("plot") == site
+
+            )
+
+
+            fig2.add_trace(
+
+                go.Scatter(
+
+                    x=site_data["date"].to_list(),
+
+                    y=site_data["lai_miller"].to_list(),
+
+                    mode="lines+markers",
+
+                    name=f"{site} — Miller",
+
+                    connectgaps=False,
+
+                )
+
+            )
+
+
+            fig2.add_trace(
+
+                go.Scatter(
+
+                    x=site_data["date"].to_list(),
+
+                    y=site_data["lai_norman_campbell"].to_list(),
+
+                    mode="lines+markers",
+
+                    name=f"{site} — Norman & Campbell",
+
+                    connectgaps=False,
+
+                )
+
+            )
+
+
+        fig2.update_layout(
+
+            title="LAI — Miller vs Norman & Campbell",
+
+            xaxis_title="Date",
+
+            yaxis_title="LAI",
+
+            template="plotly_white",
+
+            hovermode="x unified",
+
+        )
+
+
+        output = fig2
+
+
+    output  # noqa: B018
 
 
 if __name__ == "__main__":
