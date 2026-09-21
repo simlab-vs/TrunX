@@ -52,9 +52,9 @@ def model(
     n_species: int,
     fixed_params,
     priors: dict[str, tuple[float, float]],
+    initial_state: State,
     param_defaults: dict[str, float] | None = None,
     observations: dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None = None,
-    initial_state: State | None = None,
 ):
     """
     Bayesian model for 3PG parameter estimation using multiple observations.
@@ -75,11 +75,11 @@ def model(
         Dictionary mapping parameter names to (min, max) tuples for priors.
         Includes both physiology parameters and sigma/error parameters
         (e.g. `err_DBH`), typically loaded together via `load_priors_from_file`.
+    initial_state : State
+        Initial state for simulation
     observations : dict[str, tuple[jnp.ndarray, jnp.ndarray]] | None
         Dictionary mapping variable names to (obs_times, obs_values) tuples.
         Variables: DBH, Height, BA, N, WS, WF, WR
-    initial_state : State | None
-        Initial state for simulation
 
     """
     assert fixed_params is not None
@@ -212,9 +212,9 @@ def run_hmc_inference(
         n_species,
         fixed_params,
         priors,
+        initial_state,
         param_defaults,
         observations,
-        initial_state,
     )
 
     # Create the MCMC object with NUTS

@@ -813,9 +813,15 @@ if __name__ == "__main__":
     from trunx.gp3.PG3_model_impl import prepare_data
 
     input_data = prepare_data(file_path)
+    # include_process_error=True above also fits WS0/WR0/WF0 (INITIAL_STATE_PARAMS) and
+    # their perr_WS/perr_WR/perr_WF sigmas (PROCESS_ERROR_PARAM_NAMES) — param_names
+    # alone doesn't cover them (run_pymc_analysis adds them internally regardless of
+    # what's passed as param_to_optimize), so they're added here too, or the trace/
+    # posterior plots below would silently omit them despite being genuinely fit.
+    plot_params = param_names + list(INITIAL_STATE_PARAMS) + list(PROCESS_ERROR_PARAM_NAMES)
     plot_saved_results(
         output_dir=output_dir,
-        params=param_names,
+        params=plot_params,
         observations=load_observations_from_file(file_path, site_data=input_data.site),
         climate=input_data.climate,
     )
