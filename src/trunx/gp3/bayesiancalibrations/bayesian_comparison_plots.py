@@ -7,6 +7,7 @@ site, with per-variable RMSE/MAE printed for comparison.
 
 import gc
 import os
+from collections.abc import Iterable
 from typing import Any, cast
 
 import arviz as az
@@ -27,6 +28,8 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
     DIAGNOSTIC_ONLY_ERROR_NAMES,
     ERROR_MODES,
     FIT_PARAMS,
+    INITIAL_STATE_PARAMS,
+    PROCESS_ERROR_PARAM_NAMES,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     fit_params_for_mode,
@@ -37,13 +40,8 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     load_gradient_descent_result,
     load_map_estimate,
     load_predictions,
-    save_gradient_descent_result,
 )
-from trunx.gp3.gradient_descent import (
-    GradientDescentConfig,
-    apply_fitted_params,
-    fit_with_gradient_descent,
-)
+from trunx.gp3.gradient_descent import apply_fitted_params
 from trunx.gp3.model_inputs import Params
 from trunx.gp3.PG3_model_impl import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -131,41 +129,39 @@ def get_gradient_descent_fit(cache_dir: str) -> dict[str, float]:
 
 def run_gradient_descent_model(
     file_path: str,
-    target_vars: list[str],
     fit_params: list[str],
-    cache_dir: str | None = None,
+    cache_dir: str,
 ) -> dict[str, Any]:
-    """Fit parameters with gradient descent and run 3PG with the fitted values.
+    """Load a saved gradient descent fit and run 3PG with the fitted values.
+
+    Plotting never runs gradient descent itself — the point estimate takes
+    several minutes, which a plotting call shouldn't pay for — so this only
+    loads a `gradient_descent_result.json` from `cache_dir` (see
+    `scripts/run_calibration_sweep.py`, which computes and saves it).
 
     Parameters
     ----------
     file_path : str
         3PG input Excel file (site, species, climate, observed sheets).
-    target_vars : list[str]
-        Target variable names to fit.
     fit_params : list[str]
-        Parameter names to optimize during gradient descent.
-    cache_dir : str | None
-        Directory holding (or to write) a `gradient_descent_result.json`
-        (see `save_gradient_descent_result`). If it already contains a saved
-        fit, that is loaded instead of re-running gradient descent; otherwise
-        the fit is computed and saved there for the next call.
+        Parameter names to apply from the saved fit. A name missing from it
+        (e.g. a mode's calibrable-parameter set grew since the fit was last
+        run) is silently left at the file's default value.
+    cache_dir : str
+        Directory containing a saved `gradient_descent_result.json`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If `cache_dir` has no saved fit yet.
     """
-    cache_path = os.path.join(cache_dir, "gradient_descent_result.json") if cache_dir else None
-    if cache_path is not None and os.path.exists(cache_path):
-        fitted_values = load_gradient_descent_result(cache_path)
-    else:
-        config = GradientDescentConfig(
-            target_vars=target_vars, fit_params=fit_params, file_path=file_path
-        )
-        fitted_values = fit_with_gradient_descent(config).fitted_params
-        if cache_dir is not None:
-            save_gradient_descent_result(fitted_values, cache_dir)
+    fitted_values = get_gradient_descent_fit(cache_dir)
+    applied_fit_params = [name for name in fit_params if name in fitted_values]
 
     input_data = prepare_data(file_path)
     fitted_params: Params = apply_fitted_params(
         base_params=input_data.params,
-        fit_params=fit_params,
+        fit_params=applied_fit_params,
         fitted_values=fitted_values,
         species_index=0,
     )
@@ -283,9 +279,9 @@ def plot_comparison(
         Whether to run, plot, and score each source. The default model
         always runs.
     gd_cache_dir : str | None
-        Directory holding (or to write) a saved gradient descent fit, see
-        `run_gradient_descent_model`. If omitted, gradient descent is always
-        re-run from scratch when `include_gradient_descent` is True.
+        Directory holding a saved gradient descent fit (see
+        `run_gradient_descent_model`/`scripts/run_calibration_sweep.py`).
+        Required if `include_gradient_descent` is True.
     bayesian_label : str
         Legend/title label for the `bayesian_output_dir` source.
     hmc_label : str
@@ -354,11 +350,10 @@ def plot_comparison(
 
     default_outputs = run_default_model(file_path)
 
-    gd_outputs = (
-        run_gradient_descent_model(file_path, plot_variables, fit_params, cache_dir=gd_cache_dir)
-        if include_gradient_descent
-        else None
-    )
+    gd_outputs = None
+    if include_gradient_descent:
+        assert gd_cache_dir is not None
+        gd_outputs = run_gradient_descent_model(file_path, fit_params, cache_dir=gd_cache_dir)
 
     bay_predictions = None
     if include_bayesian:
@@ -521,6 +516,62 @@ def plot_comparison(
     return fig, pd.DataFrame(metrics)
 
 
+def _params_in_trace(inference_data_path: str, candidates: Iterable[str]) -> list[str]:
+    """`candidates` names present as posterior variables in a saved trace.
+
+    Returns `[]` if `inference_data_path` doesn't exist yet (that method
+    hasn't been run for this scenario).
+    """
+    if not os.path.exists(inference_data_path):
+        return []
+    idata = az.from_netcdf(inference_data_path)
+    posterior_vars = set(idata.posterior.data_vars)
+    return [name for name in candidates if name in posterior_vars]
+
+
+def _calibrated_params_from_results(
+    candidates: frozenset[str],
+    bayesian_output_dir: str,
+    hmc_output_dir: str,
+    map_output_dir: str,
+    gradient_descent_dir: str,
+    include_bayesian: bool,
+    include_hmc: bool,
+    include_map: bool,
+    include_gradient_descent: bool,
+) -> set[str]:
+    """Union of `candidates` names actually present in whichever saved results are included.
+
+    Reads straight from what each included method actually saved (MCMC
+    posterior variables, `map_estimate.json`, `gradient_descent_result.json`)
+    instead of trusting a computed/static parameter list, so plotting always
+    matches what a given run was actually calibrated on — even across a
+    `fit_params_for_mode`/`FIT_PARAMS` change made after that run was saved
+    (see `run_gradient_descent_model`'s own stale-cache handling for the same
+    concern on the gradient descent side).
+    """
+    found: set[str] = set()
+    for included, method_dir in (
+        (include_bayesian, bayesian_output_dir),
+        (include_hmc, hmc_output_dir),
+    ):
+        if included:
+            found.update(
+                _params_in_trace(os.path.join(method_dir, "inference_data.nc"), candidates)
+            )
+    if include_map:
+        map_estimate_path = os.path.join(map_output_dir, "map_estimate.json")
+        if os.path.exists(map_estimate_path):
+            map_estimate, _ = load_map_estimate(map_estimate_path)
+            found.update(name for name in map_estimate if name in candidates)
+    if include_gradient_descent:
+        gd_path = os.path.join(gradient_descent_dir, "gradient_descent_result.json")
+        if os.path.exists(gd_path):
+            gd_fit = load_gradient_descent_result(gd_path)
+            found.update(name for name in gd_fit if name in candidates)
+    return found
+
+
 def load_convergence_summary(inference_data_path: str, param_names: list[str]) -> pd.DataFrame:
     """Load a saved inference run and compute `az.summary` for the given parameters.
 
@@ -572,7 +623,10 @@ def plot_trace_and_posterior(
     inference_data_path : str
         Path to a saved `inference_data.nc` (PyMC) or `numpyro_inference_data.nc` (HMC).
     param_names : list[str]
-        Parameter names to plot.
+        Parameter names to plot. A name with no posterior in this saved run
+        (e.g. gathered from a different included method's results — see
+        `_calibrated_params_from_results`) is silently skipped, matching
+        `load_convergence_summary`'s own handling of the same case.
     priors : dict[str, tuple[float, float]]
         Prior (lower, upper) bounds per parameter, drawn as red lines. Parameters
         without a matching entry are plotted without prior lines.
@@ -583,6 +637,14 @@ def plot_trace_and_posterior(
         The trace figure and the posterior figure.
     """
     idata = az.from_netcdf(inference_data_path)
+    posterior_vars = set(cast(Any, idata).posterior.data_vars)
+    missing_names = [name for name in param_names if name not in posterior_vars]
+    if missing_names:
+        print(
+            f"Note: {inference_data_path} has no posterior for {missing_names} "
+            "(not fit in this run) — skipping them"
+        )
+    param_names = [name for name in param_names if name in posterior_vars]
 
     # `plot.max_subplots` (default 40) otherwise silently truncates the plot
     # instead of raising once `param_names` exceeds it, leaving fewer axes than
@@ -646,7 +708,10 @@ def plot_posterior_comparison(
     hmc_inference_path : str
         Path to the saved HMC (NUTS) `inference_data.nc`.
     param_names : list[str]
-        Parameters to plot.
+        Parameters to plot. A name missing a posterior in either saved trace
+        (e.g. gathered from a different included method's results — see
+        `_calibrated_params_from_results`) is silently skipped, since this
+        plot's whole point is overlaying both methods for the same parameter.
     priors : dict[str, tuple[float, float]] | None
         Prior (lower, upper) bounds per parameter, drawn as gray vertical lines.
         Parameters without a matching entry are plotted without prior lines.
@@ -672,6 +737,16 @@ def plot_posterior_comparison(
     """
     pymc_idata = az.from_netcdf(pymc_inference_path)
     hmc_idata = az.from_netcdf(hmc_inference_path)
+
+    pymc_vars = set(cast(Any, pymc_idata).posterior.data_vars)
+    hmc_vars = set(cast(Any, hmc_idata).posterior.data_vars)
+    missing_names = [name for name in param_names if name not in pymc_vars or name not in hmc_vars]
+    if missing_names:
+        print(
+            f"Note: {missing_names} have no posterior in both {pymc_inference_path} and "
+            f"{hmc_inference_path} — skipping them"
+        )
+    param_names = [name for name in param_names if name in pymc_vars and name in hmc_vars]
 
     priors = priors or {}
     map_estimate = (
@@ -947,8 +1022,10 @@ def plot_parameter_value_comparison(
         run. Required if `include_map`. Parameters missing from the saved estimate (e.g.
         error/sigma terms dropped for that run) are silently skipped.
     param_names : list[str]
-        Physiology parameters to compare. Error/sigma terms are excluded — gradient
-        descent doesn't fit them, so they'd have no value to compare against.
+        Parameters to compare. A name a given method didn't fit (e.g.
+        `INITIAL_STATE_PARAMS`/`PROCESS_ERROR_PARAM_NAMES` for gradient descent,
+        which has no process-error mechanism, or an err_* term excluded from
+        that run's error mode) is silently skipped for that method's bars.
     include_gradient_descent, include_bayesian, include_hmc, include_map : bool
         Whether to include each method.
     gd_cache_dir : str | None
@@ -994,9 +1071,14 @@ def plot_parameter_value_comparison(
         assert gd_cache_dir is not None
         fitted_params = get_gradient_descent_fit(gd_cache_dir)
         for name in param_names:
-            rows.append(
-                {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
-            )
+            # Gradient descent has no process-error mechanism (see
+            # GradientDescentConfig), so INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES
+            # names in param_names (see plot_and_save) have no value here — skipped,
+            # matching the include_map branch's own missing-value handling below.
+            if name in fitted_params:
+                rows.append(
+                    {"parameter": name, "method": "Gradient descent", "value": fitted_params[name]}
+                )
         colors["Gradient descent"] = method_colors["Gradient descent"]
 
     if include_bayesian:
@@ -1056,10 +1138,14 @@ def plot_parameter_value_comparison(
 def plot_and_save(
     plot_id: str,
     plot_output_dir: str,
-    output_dir: str,
     error_terms: str,
     literature_source: str,
     method: str = "",
+    include_process_error: bool = True,
+    include_bayesian: bool = True,
+    include_hmc: bool = True,
+    include_gradient_descent: bool = True,
+    include_map: bool = True,
 ):
     """Plot and save comparison/convergence/trace/posterior figures for a plot.
 
@@ -1069,8 +1155,6 @@ def plot_and_save(
         ICP plot identifier.
     plot_output_dir : str
         Directory to save the plots in.
-    output_dir : str
-        Directory to save the output in.
     error_terms : str
         Calibration scenario name, used both for the saved filenames and to look up
         which `err_*` names were excluded from fitting via `bayesian_config.ERROR_MODES`
@@ -1078,11 +1162,32 @@ def plot_and_save(
         the convergence plot only asks for `err_*` posteriors that actually exist.
     literature_source : str
         Source of the literature for the saved filenames.
+    include_bayesian, include_hmc, include_gradient_descent, include_map : bool
+        Whether to include each method's results — forwarded to `plot_comparison`,
+        `plot_convergence_comparison`, `plot_posterior_comparison`, and
+        `plot_parameter_value_comparison`.
     method : str
         Calibration method to use.
+    include_process_error : bool
+        Selects both which saved sweep to read and how its calibrated parameters
+        are determined. `False` (old method) reads `results/calibration_sweep`
+        and selects calibrated parameters the original way, via
+        `fit_params_for_mode`. `True` (new method) reads
+        `results/latent_calibration_sweep` (whose runs fit WS0/WR0/WF0 —
+        `INITIAL_STATE_PARAMS` — and their perr_WS/perr_WR/perr_WF sigmas —
+        `PROCESS_ERROR_PARAM_NAMES` — as latent process-error parameters) and
+        determines calibrated parameters straight from the saved results
+        themselves instead (see `_calibrated_params_from_results`), since that
+        sweep's per-mode saved runs may not fully agree with the current
+        `fit_params_for_mode`.
     """
     plot_output_dir = os.path.join(plot_output_dir, plot_id)
     os.makedirs(plot_output_dir, exist_ok=True)
+
+    output_dir = os.path.join(
+        results_data_folder,
+        "latent_calibration_sweep" if include_process_error else "calibration_sweep",
+    )
 
     # Mirrors the calibration_sweep directory layout (site/[literature_source/]mode),
     # so filenames stay unique across every (literature_source, error_terms) combination
@@ -1116,13 +1221,48 @@ def plot_and_save(
         )
         _file_path = os.path.join(output_dir, f"{plot_id}/{literature_source}/{plot_id}_data.xlsx")
 
-    # `error_terms` names a saved run's scenario, same as `mode_name` in
-    # run_calibration_sweep.py — mirror its fit_params_for_mode call so this
-    # only asks for posteriors/priors the run actually has. Falls back to
-    # "biomass_only" for an unrecognized name, matching the
-    # DIAGNOSTIC_ONLY_ERROR_NAMES fallback used below for excluded_error_names.
     mode_name = error_terms if error_terms in ERROR_MODES else "biomass_only"
-    fit_params = fit_params_for_mode(_file_path, mode_name)
+
+    if not include_process_error:
+        # Old method: results/calibration_sweep's runs were all saved against
+        # this same fixed selection — the hardcoded FIT_PARAMS list for solling
+        # (hand-curated data, not mode-dependent), or otherwise every parameter
+        # with both a min and max in the file's own param_bound sheet.
+        fit_params = (
+            FIT_PARAMS if plot_id == "solling" else list(load_priors_from_file(_file_path))
+        )
+        trace_param_names = fit_params
+    else:
+        # New method: results/latent_calibration_sweep's saved runs may
+        # predate the current fit_params_for_mode (see
+        # _calibrated_params_from_results), so calibrated parameters are
+        # discovered straight from whichever saved results are included
+        # instead. INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES (WS0/WR0/WF0
+        # and their perr_* sigmas) are in the candidates so they're picked up
+        # automatically wherever a run actually fit them.
+        _process_error_names = frozenset(INITIAL_STATE_PARAMS) | PROCESS_ERROR_PARAM_NAMES
+        _candidate_names = frozenset(Params._fields) | _process_error_names
+        _calibrated_params = _calibrated_params_from_results(
+            _candidate_names,
+            _bayesian_output_dir,
+            _hmc_output_dir,
+            _map_output_dir,
+            _gradient_descent_dir,
+            include_bayesian,
+            include_hmc,
+            include_map,
+            include_gradient_descent,
+        )
+        if not _calibrated_params:
+            # Nothing saved yet for any included method — fall back to the
+            # config-computed set so a first-ever plotting call still works.
+            _calibrated_params = set(fit_params_for_mode(_file_path, mode_name))
+
+        # Physiology-only names (a real Params field) — gradient descent has no
+        # process-error mechanism, so INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES
+        # are kept out of fit_params itself (it's also passed to run_gradient_descent_model).
+        fit_params = sorted(_calibrated_params & set(Params._fields))
+        trace_param_names = sorted(_calibrated_params)
 
     _fig, _metrics_df = plot_comparison(
         _file_path,
@@ -1130,10 +1270,10 @@ def plot_and_save(
         _bayesian_output_dir,
         _hmc_output_dir,
         _map_output_dir,
-        include_gradient_descent=_include_gradient_descent,
-        include_bayesian=_include_bayesian,
-        include_hmc=_include_hmc,
-        include_map=_include_map,
+        include_gradient_descent=include_gradient_descent,
+        include_bayesian=include_bayesian,
+        include_hmc=include_hmc,
+        include_map=include_map,
         gd_cache_dir=_gradient_descent_dir,
     )
     _fig.savefig(
@@ -1145,9 +1285,9 @@ def plot_and_save(
     _conv_fig, _conv_df = plot_convergence_comparison(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
         hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
-        include_bayesian=_include_bayesian,
-        include_hmc=_include_hmc,
-        fit_params=fit_params,
+        include_bayesian=include_bayesian,
+        include_hmc=include_hmc,
+        fit_params=trace_param_names,
         excluded_error_names=ERROR_MODES.get(error_terms, DIAGNOSTIC_ONLY_ERROR_NAMES),
     )
     # print(_conv_df)
@@ -1160,16 +1300,22 @@ def plot_and_save(
     # plt.show()
     plt.close(_conv_fig)
 
-    if _include_bayesian or _include_hmc:
-        _priors = load_priors_from_file(_file_path, fit_params)
+    if include_bayesian or include_hmc:
+        # WS0/WR0/WF0 aren't real param_bound/error_param rows in the file (they're
+        # runtime-injected Normal priors, not Uniform — see run_map_analysis) and
+        # load_priors_from_file raises on a name it can't find, so they're excluded
+        # here; perr_WS/WR/WF are real error_param rows and stay included.
+        _priors = load_priors_from_file(
+            _file_path, [name for name in trace_param_names if name not in INITIAL_STATE_PARAMS]
+        )
         for _method_name, _method_included, _method_output_dir in (
-            ("demetropolisz", _include_bayesian, _bayesian_output_dir),
-            ("nuts", _include_hmc, _hmc_output_dir),
+            ("demetropolisz", include_bayesian, _bayesian_output_dir),
+            ("nuts", include_hmc, _hmc_output_dir),
         ):
             if not _method_included:
                 continue
             _trace_fig, _posterior_fig = plot_trace_and_posterior(
-                os.path.join(_method_output_dir, "inference_data.nc"), fit_params, _priors
+                os.path.join(_method_output_dir, "inference_data.nc"), trace_param_names, _priors
             )
             _trace_fig.savefig(
                 os.path.join(plot_output_dir, f"{combo_prefix}trace_{_method_name}_{plot_id}.png"),
@@ -1186,14 +1332,14 @@ def plot_and_save(
             plt.close(_trace_fig)
             plt.close(_posterior_fig)
 
-    if _include_bayesian and _include_hmc:
+    if include_bayesian and include_hmc:
         _posterior_comparison_fig = plot_posterior_comparison(
             pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
             hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
-            param_names=fit_params,
+            param_names=trace_param_names,
             priors=_priors,
-            map_output_dir=_map_output_dir if _include_map else None,
-            gd_cache_dir=_gradient_descent_dir if _include_gradient_descent else None,
+            map_output_dir=_map_output_dir if include_map else None,
+            gd_cache_dir=_gradient_descent_dir if include_gradient_descent else None,
         )
         _posterior_comparison_fig.savefig(
             os.path.join(plot_output_dir, f"{combo_prefix}posterior_comparison_{plot_id}.png"),
@@ -1206,11 +1352,11 @@ def plot_and_save(
         pymc_inference_path=os.path.join(_bayesian_output_dir, "inference_data.nc"),
         hmc_inference_path=os.path.join(_hmc_output_dir, "inference_data.nc"),
         map_output_dir=_map_output_dir,
-        param_names=fit_params,
-        include_gradient_descent=_include_gradient_descent,
-        include_bayesian=_include_bayesian,
-        include_hmc=_include_hmc,
-        include_map=_include_map,
+        param_names=trace_param_names,
+        include_gradient_descent=include_gradient_descent,
+        include_bayesian=include_bayesian,
+        include_hmc=include_hmc,
+        include_map=include_map,
         gd_cache_dir=_gradient_descent_dir,
     )
     # print(_param_df)
@@ -1228,7 +1374,6 @@ def plot_and_save(
 
 
 if __name__ == "__main__":
-    _calibration_sweep_dir = os.path.join(data_folder, "results/latent_calibration_sweep")
     plot_ids = ["solling"]
 
     # plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
@@ -1246,14 +1391,15 @@ if __name__ == "__main__":
     #     "59.0008",
     # ]
 
-    plot_output_dir = os.path.join(data_folder, "results/latent_comparison_plots")
+    plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
 
     os.makedirs(plot_output_dir, exist_ok=True)
 
     _include_bayesian = True
     _include_hmc = True
     _include_gradient_descent = True
-    _include_map = True
+    _include_map = False
+    _include_process_error = False
 
     for error_terms in ERROR_MODES:
         print(f"Processing error_terms={error_terms}...")
@@ -1263,9 +1409,13 @@ if __name__ == "__main__":
                 plot_and_save(
                     plot_id=plot_id,
                     plot_output_dir=plot_output_dir,
-                    output_dir=_calibration_sweep_dir,
                     error_terms=error_terms,
                     literature_source="Forrester",
+                    include_process_error=_include_process_error,
+                    include_bayesian=_include_bayesian,
+                    include_hmc=_include_hmc,
+                    include_gradient_descent=_include_gradient_descent,
+                    include_map=_include_map,
                 )
             except Exception as e:
                 print(f"Error processing plot_id={plot_id}: {e}")
