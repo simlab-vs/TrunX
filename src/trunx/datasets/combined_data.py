@@ -1,11 +1,17 @@
 """Build standardized tree-level and plot-level tables across all datasets."""
 
+import logging
+import os
+
 import polars as pl
 
+from trunx.config import clean_data_folder
 from trunx.datasets.efm_data import prepare_efm_data, prepare_efm_tree_data
 from trunx.datasets.icp_level2_data import prepare_icp_plot_data, prepare_icp_tree_data
 from trunx.datasets.lwf_data import prepare_lwf_data, prepare_lwf_tree_data
 from trunx.datasets.nfi_data import prepare_nfi_data, prepare_nfi_tree_data
+
+logger = logging.getLogger(__name__)
 
 TREE_COLUMNS = [
     "area_m2",
@@ -61,19 +67,28 @@ def get_tree_level_tables() -> dict[str, pl.DataFrame]:
     }
 
 
-def get_combined_tree_data() -> pl.DataFrame:
+def get_combined_tree_data(output_path: str | None = None) -> pl.DataFrame:
     """Stack every dataset's tree-level table into one, with a `source` column.
 
     Casts `plot_id`/`tree_id` to string and `dbh_cm`/`altitude`/`height`/
     `date` to matching types across sources, since e.g. NFI/EFM use
     numeric plot and tree ids while LWF/ICP use strings.
 
+    Parameters
+    ----------
+    output_path : str | None
+        Parquet path to write the result. Defaults to
+        `clean_data_folder/trunx_tree_level_data.parquet`.
+
     Returns
     -------
     pl.DataFrame
         `TREE_COLUMNS` plus `source` (one of "NFI", "EFM", "LWF", "ICP").
     """
-    return pl.concat(
+    if output_path is None:
+        output_path = str(os.path.join(clean_data_folder, "trunx_tree_level_data.parquet"))
+
+    combined = pl.concat(
         [
             df.with_columns(
                 pl.col("plot_id").cast(pl.Utf8),
@@ -88,6 +103,10 @@ def get_combined_tree_data() -> pl.DataFrame:
         ],
         how="vertical",
     )
+
+    combined.write_parquet(output_path)
+    logger.info("Saved %d rows to %s", combined.height, output_path)
+    return combined
 
 
 def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
@@ -107,7 +126,7 @@ def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
     ).select([*PLOT_COLUMNS, "source"])
 
 
-def get_combined_plot_data() -> pl.DataFrame:
+def get_combined_plot_data(output_path: str | None = None) -> pl.DataFrame:
     """Combine each dataset's already-prepared plot-level table into one.
 
     Uses each dataset's real `prepare_*_data`/`prepare_icp_plot_data`
@@ -115,21 +134,34 @@ def get_combined_plot_data() -> pl.DataFrame:
     per-hectare quantities — not a re-aggregation from tree-level data.
     `height` only exists for EFM/LWF/ICP; it's null for NFI.
 
+    Parameters
+    ----------
+    output_path : str | None
+        Parquet path to write the result. Defaults to
+        `clean_data_folder/trunx_plot_level_data.parquet`.
+
     Returns
     -------
     pl.DataFrame
         `PLOT_COLUMNS` plus `source` (one of "NFI", "EFM", "LWF", "ICP").
     """
+    if output_path is None:
+        output_path = str(os.path.join(clean_data_folder, "trunx_plot_level_data.parquet"))
+
     tables = {
         "NFI": prepare_nfi_data(),
         "EFM": prepare_efm_data(),
         "LWF": prepare_lwf_data(),
         "ICP": prepare_icp_plot_data(),
     }
-    return pl.concat(
+    combined = pl.concat(
         [_standardize_plot_table(name, df) for name, df in tables.items()],
         how="vertical",
     )
+
+    combined.write_parquet(output_path)
+    logger.info("Saved %d rows to %s", combined.height, output_path)
+    return combined
 
 
 if __name__ == "__main__":
