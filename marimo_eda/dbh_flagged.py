@@ -5,6 +5,37 @@ import marimo
 __generated_with = "0.24.0"
 app = marimo.App(width="full")
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        # DBH Flagged Tree Inventory
+
+        This dataset contains **individual-tree inventory observations from the
+        LWF monitoring network**.
+
+        Each row corresponds to a tree observation and includes tree identifiers,
+        location information, DBH and height measurements, crown characteristics,
+        tree status, and quality-control/imputation flags.
+
+        The main focus of this notebook is the **quality of DBH measurements**,
+        particularly the `qa_flag_dbh` and `imputation_flag` fields, and how these
+        vary between LWF sites and across inventory years.
+
+        ### Main DBH-related variables
+
+        - `dbh` — original/measured diameter at breast height
+        - `dbh_corrected` — corrected DBH value
+        - `qa_flag_dbh` — DBH quality-assurance flag
+        - `imputation_flag` — DBH imputation indicator
+        - `year` — inventory year
+        - `sitename` — LWF monitoring site
+        - `parcelname` — spatial parcel within the site
+        """
+    )
+    return
+
+
 
 @app.cell
 def _():
@@ -779,6 +810,14 @@ def _(
 
     fig_imputation  # noqa: B018
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ##Key Observations
+    - DBH & height vary significantly by plot site.
+    - Height & DBh flag for likely errors has a varying trend over the years.
+    """)
+    return
 
 if __name__ == "__main__":
     app.run()
