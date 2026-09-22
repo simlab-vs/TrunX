@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, clean_data_folder
-from trunx.gp3.create_data_inputs import dms_to_decimal
+from trunx.gp3.allometrics import dms_to_decimal
 
 DOMINANT_SPECIES_THRESHOLD = 1
 MAX_QMD_MEAN_RELATIVE_DIFF = 0.10

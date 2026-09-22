@@ -2,7 +2,7 @@ import pandas as pd
 import polars as pl
 import streamlit as st
 
-from trunx.gp3.create_data_inputs import dms_to_decimal
+from trunx.gp3.allometrics import dms_to_decimal
 
 SPECIES_NAME_MAP = {
     "Picea abies": "Spruce",
