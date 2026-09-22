@@ -12,7 +12,7 @@ import polars as pl
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.datasets.ICP_weather_data import prepare_icp_weather_data
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
-from trunx.gp3.allometrics import add_allometric_columns, load_forrester_eq3
+from trunx.gp3.allometrics import add_allometric_columns, dms_to_decimal, load_forrester_eq3
 from trunx.gp3.prepare_deposition import get_deposition_df
 from trunx.gp3.weather_processing import (
     create_weather_input,
@@ -26,19 +26,6 @@ logger = logging.getLogger(__name__)
 # Forrester et al. (2017) eq. 3 coefficients for all species with complete data.
 # Loaded once at import time to avoid repeated Excel reads.
 _FORRESTER_COEFFS = load_forrester_eq3()
-
-
-def dms_to_decimal(dms):
-    """Convert DMS packed as ±DDMMSS or ±DDDMMSS to decimal degrees."""
-    sign = -1 if str(dms).startswith("-") else 1
-    dms = abs(int(dms))
-
-    degrees = dms // 10000
-    minutes = (dms % 10000) // 100
-    seconds = dms % 100
-
-    val = sign * (degrees + minutes / 60 + seconds / 3600)
-    return val
 
 
 def create_input_params(icp_df):

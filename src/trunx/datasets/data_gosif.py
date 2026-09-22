@@ -11,7 +11,7 @@ import rasterio
 import requests
 
 from trunx.config import clean_data_folder, raw_data_folder
-from trunx.gp3.create_data_inputs import dms_to_decimal
+from trunx.gp3.allometrics import dms_to_decimal
 
 base_url = "https://data.globalecology.unh.edu/data/GOSIF-GPP_v2/Monthly/Mean/"
 
