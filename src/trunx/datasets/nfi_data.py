@@ -290,8 +290,8 @@ def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
     -------
     pl.DataFrame
         Columns: `plot_id`, `species`, `date`, `year`, `lat`,
-        `lon`, `altitude`, `n_stems` (ha⁻¹), `dbh_cm` (quadratic mean
-        diameter), `mean_dbh` (arithmetic mean),
+        `lon`, `altitude`, `n_stems` (ha⁻¹), `dbh_qmd` (quadratic mean
+        diameter), `dbh_mean` (arithmetic mean), `dbh_std`,
         `biom_stem`, `biom_foliage`, `biom_root` (all t ha⁻¹),
         `lai` (m² m⁻²), `basal_area` (m² ha⁻¹).
     """

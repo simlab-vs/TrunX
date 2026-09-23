@@ -188,8 +188,7 @@ def aggregate_per_plot(
     group_by : list[str]
         Columns identifying a stand observation (e.g. plot and date).
     dbh_col : str
-        Name of the DBH column (values in cm), returned as the group's
-        quadratic mean diameter (QMD), weighted by `weight_col` if given.
+        Name of the tree-level DBH column (values in cm) to aggregate.
     weight_col : str | None
         Per-tree expansion factor column. `None` sums raw tree counts.
     extra_aggs : list[pl.Expr] | None
@@ -199,16 +198,23 @@ def aggregate_per_plot(
     Returns
     -------
     pl.DataFrame
-        One row per group with `n_trees`, `dbh_col` (QMD), `mean_dbh`
-        (arithmetic mean), `sb_kg`, `fb_kg`, `rb_kg`, `la_m2`, `ba_m2`,
+        One row per group with `n_trees`, `dbh_qmd` (quadratic mean
+        diameter), `dbh_mean` (arithmetic mean), `dbh_std` (population
+        standard deviation), `sb_kg`, `fb_kg`, `rb_kg`, `la_m2`, `ba_m2`,
         plus any `extra_aggs` columns.
     """
     weight = pl.col(weight_col) if weight_col is not None else None
     aggs = (
         [
             weight.sum().alias("n_trees"),
-            ((pl.col(dbh_col).pow(2) * weight).sum() / weight.sum()).sqrt().alias(dbh_col),
-            ((pl.col(dbh_col) * weight).sum() / weight.sum()).alias("mean_dbh"),
+            ((pl.col(dbh_col).pow(2) * weight).sum() / weight.sum()).sqrt().alias("dbh_qmd"),
+            ((pl.col(dbh_col) * weight).sum() / weight.sum()).alias("dbh_mean"),
+            (
+                (pl.col(dbh_col).pow(2) * weight).sum() / weight.sum()
+                - ((pl.col(dbh_col) * weight).sum() / weight.sum()).pow(2)
+            )
+            .sqrt()
+            .alias("dbh_std"),
             (pl.col("biom_stem") * weight).sum().alias("sb_kg"),
             (pl.col("biom_foliage") * weight).sum().alias("fb_kg"),
             (pl.col("biom_root") * weight).sum().alias("rb_kg"),
@@ -218,8 +224,9 @@ def aggregate_per_plot(
         if weight is not None
         else [
             pl.len().alias("n_trees"),
-            pl.col(dbh_col).pow(2).mean().sqrt().alias(dbh_col),
-            pl.col(dbh_col).mean().alias("mean_dbh"),
+            pl.col(dbh_col).pow(2).mean().sqrt().alias("dbh_qmd"),
+            pl.col(dbh_col).mean().alias("dbh_mean"),
+            pl.col(dbh_col).std(ddof=0).alias("dbh_std"),
             pl.col("biom_stem").sum().alias("sb_kg"),
             pl.col("biom_foliage").sum().alias("fb_kg"),
             pl.col("biom_root").sum().alias("rb_kg"),
