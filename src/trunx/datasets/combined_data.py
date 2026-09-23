@@ -14,18 +14,18 @@ from trunx.datasets.nfi_data import prepare_nfi_data, prepare_nfi_tree_data
 logger = logging.getLogger(__name__)
 
 TREE_COLUMNS = [
-    "area_m2",
-    "basal_area",
-    "biom_foliage",
-    "biom_root",
-    "biom_stem",
+    # "area_m2",
+    # "basal_area",
+    # "biom_foliage",
+    # "biom_root",
+    # "biom_stem",
     "date",
     "dbh_cm",
     "altitude",
     "height",
-    "la_m2",
-    "lat",
-    "lon",
+    # "la_m2",
+    # "lat",
+    # "lon",
     "plot_id",
     "specie",
     "tree_id",
@@ -33,21 +33,22 @@ TREE_COLUMNS = [
 
 PLOT_COLUMNS = [
     "altitude",
-    "basal_area",
-    "biom_foliage",
-    "biom_root",
-    "biom_stem",
+    # "basal_area",
+    # "biom_foliage",
+    # "biom_root",
+    # "biom_stem",
     "date",
-    "dbh_cm",
+    "dbh_qmd",
     "height",
     "lai",
-    "lat",
-    "lon",
-    "mean_dbh",
+    # "lat",
+    # "lon",
+    "dbh_mean",
+    "dbh_std",
     "n_stems",
     "plot_id",
     "specie",
-    "year",
+    # "year",
 ]
 
 
@@ -116,7 +117,8 @@ def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
         pl.col("plot_id").cast(pl.Utf8),
         pl.col("altitude").cast(pl.Float64),
-        pl.col("year").cast(pl.Int64),
+        # "year" is not in all datasets, so we need to handle it carefully
+        # pl.col("year").cast(pl.Int64),
         pl.col("n_stems").cast(pl.Float64),
         pl.col("date").cast(pl.Date),
         pl.col("lat").cast(pl.Float64),

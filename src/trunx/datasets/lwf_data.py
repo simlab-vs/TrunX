@@ -280,8 +280,9 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
                 "lai",
                 "basal_area",
                 "n_stems",
-                "dbh_cm",
-                "mean_dbh",
+                "dbh_qmd",
+                "dbh_mean",
+                "dbh_std",
                 "height",
             ]
         )
@@ -302,8 +303,9 @@ def prepare_lwf_data(output_path: str | None = None) -> pl.DataFrame:
     pl.DataFrame
         Columns: `specie`, `plot_id`, `year`, `date`, `status`, `lon`, `lat`,
         `altitude`, `biom_stem`, `biom_root`, `biom_foliage` (t ha⁻¹),
-        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹), `n_stems` (ha⁻¹), `dbh_cm`
-        (quadratic mean diameter), `mean_dbh` (arithmetic mean), `height`.
+        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹), `n_stems` (ha⁻¹), `dbh_qmd`
+        (quadratic mean diameter), `dbh_mean` (arithmetic mean), `dbh_std`,
+        `height`.
     """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "lwf_cleaned.parquet"))

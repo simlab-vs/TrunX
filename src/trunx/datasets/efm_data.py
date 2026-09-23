@@ -258,8 +258,9 @@ def _aggregate_alive(trees: pl.DataFrame) -> pl.DataFrame:
                 "lai",
                 "basal_area",
                 "n_stems",
-                "dbh_cm",
-                "mean_dbh",
+                "dbh_qmd",
+                "dbh_mean",
+                "dbh_std",
                 "height",
             ]
         )
