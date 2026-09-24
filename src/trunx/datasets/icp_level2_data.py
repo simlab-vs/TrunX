@@ -12,7 +12,14 @@ import polars.selectors as cs
 import requests
 
 from trunx.config import clean_data_folder, data_folder
-from trunx.gp3.allometrics import CoefficientsDict, add_allometric_columns, load_forrester_eq3
+from trunx.gp3.allometrics import (
+    CoefficientsDict,
+    add_allometric_columns,
+    aggregate_per_plot,
+    dms_to_decimal,
+    load_forrester_eq3,
+    scale_to_hectare,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,41 +252,26 @@ def _filter_single_species(trees: pl.DataFrame) -> pl.DataFrame:
 
 
 def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFrame:
-    """Compute allometrics and aggregate tree-level data to plot-level per-ha values."""
-    trees = add_allometric_columns(trees, _FORRESTER_EQ3, dbh_col="dbh_cm", species_col="specie")
-
-    logger.info("Computed allometric quantities for %d trees", trees.height)
-
-    per_plot = (
-        trees.sort("date")
-        .group_by("plot_id", "specie", "date")
-        .agg(
-            # pl.first("date"),
-            pl.len().alias("n_count"),
-            pl.col("dbh_cm").mean(),
-            pl.col("height").mean(),
-            pl.col("allo_sb_kg").sum().alias("plot_sb_kg"),
-            pl.col("allo_fb_kg").sum().alias("plot_fb_kg"),
-            pl.col("allo_rb_kg").sum().alias("plot_rb_kg"),
-            pl.col("allo_la_m2").sum().alias("plot_la_m2"),
-            (math.pi * pl.col("dbh_cm").pow(2) / 40000.0).sum().alias("plot_ba_m2"),
-        )
+    """Aggregate tree-level data to plot-level per-ha values."""
+    per_plot = aggregate_per_plot(
+        trees.sort("date"),
+        group_by=["plot_id", "specie", "date"],
+        extra_aggs=[pl.col("height").mean()],
     )
 
     return (
-        per_plot.join(plots, on="plot_id", how="inner")
+        scale_to_hectare(per_plot.join(plots, on="plot_id", how="inner"), pl.col("plot_size_ha"))
+        .rename({"n_trees": "n_stems"})
         .with_columns(
-            (pl.col("n_count") / pl.col("plot_size_ha")).alias("n_stems"),
-            (pl.col("plot_sb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_stem"),
-            (pl.col("plot_fb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_foliage"),
-            (pl.col("plot_rb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_root"),
-            (pl.col("plot_la_m2") / (pl.col("plot_size_ha") * 10000.0)).alias("lai"),
-            (pl.col("plot_ba_m2") / pl.col("plot_size_ha")).alias("basal_area"),
+            pl.col("plot_latitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lat"),
+            pl.col("plot_longitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lon"),
+            pl.col("altitude_m").alias("altitude"),
+            pl.col("date").dt.year().alias("year"),
         )
-        .with_columns(
-            basal_area=pl.lit(math.pi) * (pl.col("dbh_cm") / 200.0).pow(2) * pl.col("n_stems"),
-        )
-        .drop("n_count", "plot_sb_kg", "plot_fb_kg", "plot_rb_kg", "plot_la_m2")
         .sort(["specie", "plot_id", "date"])
     )
 
@@ -544,7 +536,18 @@ def _load_plot_meta() -> pl.DataFrame:
 
 
 def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
-    """Load and clean ICP Level II data at tree × census level."""
+    """Load and clean ICP Level II data at tree × census level.
+
+    Adds `lat`/`lon` (decimal degrees, converted from the packed DMS
+    `plot_latitude`/`plot_longitude`), `year`/`month` (from `date`, which
+    falls back to 1 July of `survey_year` for assessments missing a
+    recorded date), `n_stems` (always 1, one physical tree per row),
+    `area_m2` (`plot_size_ha * 10000`), `altitude` (same value as
+    `altitude_m`, in metres — not `plot_altitude`, which is a coded
+    altitude class) and per-tree `biom_stem`, `biom_foliage`, `biom_root`
+    (kg tree⁻¹), `la_m2` (leaf area, m² tree⁻¹) and `basal_area` (m²
+    tree⁻¹, same value as `ba_tree`, kept for existing consumers).
+    """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
 
@@ -579,6 +582,32 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
         )
     )
 
+    trees = (
+        trees.pipe(add_allometric_columns, _FORRESTER_EQ3, dbh_col="dbh_cm", species_col="specie")
+        .rename(
+            {
+                "allo_sb_kg": "biom_stem",
+                "allo_fb_kg": "biom_foliage",
+                "allo_rb_kg": "biom_root",
+                "allo_la_m2": "la_m2",
+            }
+        )
+        .with_columns(
+            pl.col("plot_latitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lat"),
+            pl.col("plot_longitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lon"),
+            pl.col("ba_tree").alias("basal_area"),
+            pl.lit(1.0).alias("n_stems"),
+            (pl.col("plot_size_ha") * 10000.0).alias("area_m2"),
+            pl.col("altitude_m").alias("altitude"),
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month"),
+        )
+    )
+
     trees = trees.sort(["specie", "tree_id", "date"])
 
     trees.write_parquet(output_path)
@@ -589,6 +618,9 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
 
 def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
     """Aggregate ICP Level II tree data to plot level for 3PG calibration."""
+    if output_path is None:
+        output_path = str(os.path.join(clean_data_folder, "icp_plot_data.parquet"))
+
     trees = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     plots = _load_plots()
     trees = _filter_single_species(trees)
@@ -600,6 +632,8 @@ def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
         result.height,
         result["plot_id"].n_unique(),
     )
+
+    result.write_parquet(output_path)
     logger.info("Saved %d rows to %s", result.height, output_path)
 
     return result

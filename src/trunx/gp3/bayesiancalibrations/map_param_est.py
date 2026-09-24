@@ -18,11 +18,14 @@ import numpy as np
 import optax
 import pymc as pm
 from jax import numpy as jnp
+from jax.scipy.stats import norm
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
     DIAGNOSTIC_ONLY_ERROR_NAMES,
     FIT_PARAMS,
+    INITIAL_STATE_PARAMS,
+    PROCESS_ERROR_PARAM_NAMES,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     literature_bound_overrides,
@@ -45,6 +48,7 @@ from trunx.gp3.bayesiancalibrations.save_load_results import (
     save_laplace_covariance,
     save_map_estimate,
     save_results,
+    save_runtime,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
@@ -56,14 +60,56 @@ def _prior_draw(
     return {name: float(rng.uniform(lower, upper)) for name, (lower, upper) in priors.items()}
 
 
-def _to_unconstrained(x: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray) -> jnp.ndarray:
-    """Map bounded parameter values to PyMC's unconstrained Interval-transform space."""
-    return jax.scipy.special.logit((x - lower) / (upper - lower))
+def _to_unconstrained(
+    x: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray, identity_mask: jnp.ndarray
+) -> jnp.ndarray:
+    """Map bounded parameter values to PyMC's unconstrained Interval-transform space.
+
+    `identity_mask` marks coordinates that pass through unchanged instead —
+    `INITIAL_STATE_PARAMS` (`WS0`/`WR0`/`WF0`) are `Normal`-, not `Uniform`-,
+    distributed and carry a placeholder `(0.0, 0.0)` "bound" (see
+    `run_map_analysis`), so `lower == upper` would make the `Uniform` Interval
+    transform below divide by zero.
+    """
+    bounded = jax.scipy.special.logit((x - lower) / (upper - lower))
+    return jnp.where(identity_mask, x, bounded)
 
 
-def _to_constrained(y: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray) -> jnp.ndarray:
-    """Map PyMC's unconstrained Interval-transform space back to bounded parameter values."""
-    return lower + (upper - lower) * jax.nn.sigmoid(y)
+def _to_constrained(
+    y: jnp.ndarray, lower: jnp.ndarray, upper: jnp.ndarray, identity_mask: jnp.ndarray
+) -> jnp.ndarray:
+    """Map PyMC's unconstrained Interval-transform space back to bounded parameter values.
+
+    See `_to_unconstrained` for `identity_mask`.
+    """
+    bounded = lower + (upper - lower) * jax.nn.sigmoid(y)
+    return jnp.where(identity_mask, y, bounded)
+
+
+def _initial_state_prior_terms(
+    param_names: list[str], state: State
+) -> list[tuple[int, int, float]]:
+    """`(value_index, sigma_index, nominal_value)` for each present `INITIAL_STATE_PARAMS` name.
+
+    Indices are positions into `param_names`, for pulling the current draw's
+    `WS0`/`WR0`/`WF0` value and its `perr_WS`/`perr_WR`/`perr_WF` sigma (itself
+    being optimized in the same restart) out of a parameter vector — see
+    `batched_map_search`'s `neg_log_posterior`. `nominal_value` uses the same
+    lookup `pymc_model` does, so the two agree on what `WS0` etc. is centered at.
+    """
+    terms = []
+    for name, field in INITIAL_STATE_PARAMS.items():
+        if name not in param_names:
+            continue
+        sigma_name = f"perr_{field}"
+        if sigma_name not in param_names:
+            raise KeyError(
+                f"'{name}' is in param_names but its process-error sigma "
+                f"'{sigma_name}' is not — add it to fit its uncertainty."
+            )
+        nominal_value = float(np.asarray(getattr(state, field)).reshape(-1)[0])
+        terms.append((param_names.index(name), param_names.index(sigma_name), nominal_value))
+    return terms
 
 
 def batched_map_search(
@@ -84,9 +130,16 @@ def batched_map_search(
     `n_restarts`: every restart's own `optax.lbfgs` trajectory (with a zoom linesearch)
     runs as one lane of a single vmapped/jitted computation, so thousands of restarts
     cost about the same wall-clock time as one. Optimises in the same unconstrained
-    (Interval-transformed) space `pm.find_MAP` uses, scored on the log-likelihood alone
-    — since every prior here is `Uniform`, that is the log posterior up to an additive
-    constant, matching `pm.find_MAP`'s `jacobian=False` scoring.
+    (Interval-transformed) space `pm.find_MAP` uses.
+
+    Scored on the log-likelihood alone for `Uniform`-distributed parameters — their
+    log-density is a flat constant within bounds, so it doesn't shift the optimum,
+    matching `pm.find_MAP`'s `jacobian=False` scoring. `INITIAL_STATE_PARAMS`
+    (`WS0`/`WR0`/`WF0`) are the exception: they're `Normal(nominal, perr_*)`-
+    distributed (see `pymc_model`), whose log-density is *not* flat, so their
+    explicit log-prior is added in — see `_initial_state_prior_terms`. Without it,
+    `WS0` etc. would optimize completely unregularized against the data, ignoring
+    `perr_*` and converging somewhere `pm.find_MAP`/NUTS/DEMetropolisZ wouldn't.
 
     This is an exploration step, not a replacement for `pm.find_MAP`: its winner is
     meant to seed one final scipy polish (see `run_map_estimation`'s `n_vmap_restarts`),
@@ -95,8 +148,11 @@ def batched_map_search(
     Parameters
     ----------
     n_restarts : int
-        Number of independent random starting points, drawn uniformly from the priors
-        and optimised in parallel.
+        Number of independent random starting points, optimised in parallel — drawn
+        uniformly from the priors for `Uniform`-distributed parameters, and as a
+        small Gaussian jitter around the nominal value for `INITIAL_STATE_PARAMS`
+        (whose priors's placeholder `(0.0, 0.0)` bound isn't a real range to draw
+        from — see `_to_unconstrained`).
     n_steps : int
         Number of L-BFGS iterations per restart.
     seed : int
@@ -105,12 +161,20 @@ def batched_map_search(
     Returns
     -------
     tuple[dict[str, float], float]
-        The best restart's parameter estimates and its log-likelihood.
+        The best restart's parameter estimates and its log posterior (equal to the
+        log-likelihood when no `INITIAL_STATE_PARAMS` are present, since their
+        log-prior term is then zero).
     """
     param_names = list(priors.keys())
     lower_np = np.array([priors[name][0] for name in param_names])
     upper_np = np.array([priors[name][1] for name in param_names])
     lower, upper = jnp.asarray(lower_np), jnp.asarray(upper_np)
+
+    initial_state_terms = _initial_state_prior_terms(param_names, state)
+    identity_mask_np = np.zeros(len(param_names), dtype=bool)
+    for value_idx, _, _ in initial_state_terms:
+        identity_mask_np[value_idx] = True
+    identity_mask = jnp.asarray(identity_mask_np)
 
     loglikelihood_fn = build_loglikelihood_fn(
         params_to_optimize=param_names,
@@ -123,13 +187,19 @@ def batched_map_search(
     )
 
     def neg_log_posterior(y: jnp.ndarray) -> jnp.ndarray:
-        return -loglikelihood_fn(_to_constrained(y, lower, upper))
+        x = _to_constrained(y, lower, upper, identity_mask)
+        log_prior = jnp.array(0.0)
+        for value_idx, sigma_idx, nominal_value in initial_state_terms:
+            log_prior = log_prior + norm.logpdf(
+                x[value_idx], loc=nominal_value, scale=x[sigma_idx]
+            )
+        return -(loglikelihood_fn(x) + log_prior)
 
     solver = optax.lbfgs()
     value_and_grad = optax.value_and_grad_from_state(neg_log_posterior)
 
     def run_one(y0: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """Run one L-BFGS trajectory from `y0`, returning its endpoint and log-likelihood."""
+        """Run one L-BFGS trajectory from `y0`, returning its endpoint and log posterior."""
 
         def step(carry: tuple[Any, Any], _: None) -> tuple[tuple[Any, Any], None]:
             y, opt_state = carry
@@ -143,11 +213,13 @@ def batched_map_search(
         return y_final, -neg_log_posterior(y_final)
 
     rng = np.random.default_rng(seed)
-    y0_batch = _to_unconstrained(
-        jnp.asarray(rng.uniform(lower_np, upper_np, size=(n_restarts, len(param_names)))),
-        lower,
-        upper,
-    )
+    x0_np = rng.uniform(lower_np, upper_np, size=(n_restarts, len(param_names)))
+    for value_idx, _, nominal_value in initial_state_terms:
+        # The placeholder (0.0, 0.0) "bound" isn't a real range to draw from — jitter
+        # around the nominal value instead, at a scale unrelated to that bound.
+        jitter_scale = max(abs(nominal_value) * 0.1, 1e-3)
+        x0_np[:, value_idx] = nominal_value + rng.normal(scale=jitter_scale, size=n_restarts)
+    y0_batch = _to_unconstrained(jnp.asarray(x0_np), lower, upper, identity_mask)
 
     y_final_batch, logp_batch = jax.jit(jax.vmap(run_one))(y0_batch)
     logp_np = np.asarray(logp_batch)
@@ -156,17 +228,20 @@ def batched_map_search(
         raise ValueError("No vmapped restart produced a finite log posterior")
 
     best_index = int(np.argmax(np.where(finite, logp_np, -np.inf)))
-    best_params = _to_constrained(y_final_batch[best_index], lower, upper)
+    best_params = _to_constrained(y_final_batch[best_index], lower, upper, identity_mask)
     # A restart can converge with a coordinate pinned against a prior bound (e.g. an
     # error sigma driven to its floor by noise-free observations), where the sigmoid
     # saturates to exactly 0 or 1 in float64. Pulled back into the open interval so the
     # winner is a valid `pm.find_MAP` start — PyMC's own Interval transform maps an
-    # exact bound to +/-inf and rejects it as a starting point.
+    # exact bound to +/-inf and rejects it as a starting point. Skipped for
+    # INITIAL_STATE_PARAMS, whose placeholder (0.0, 0.0) bound would otherwise clip
+    # any real optimized value straight to 0.
     bound_margin = 1e-9 * (upper - lower)
-    best_params = jnp.clip(best_params, lower + bound_margin, upper - bound_margin)
+    clipped = jnp.clip(best_params, lower + bound_margin, upper - bound_margin)
+    best_params = jnp.where(identity_mask, best_params, clipped)
     print(
         f"Vmapped MAP search: {n_restarts} restarts x {n_steps} steps, best log "
-        f"likelihood = {logp_np[best_index]:.4f} (range over restarts: "
+        f"posterior = {logp_np[best_index]:.4f} (range over restarts: "
         f"[{logp_np[finite].min():.4f}, {logp_np[finite].max():.4f}])"
     )
     return (
@@ -259,7 +334,7 @@ def run_map_estimation(
             n_steps=n_vmap_steps,
             seed=seed,
         )
-        print(f"Vmapped search winner: log likelihood = {vmap_logp:.4f}")
+        print(f"Vmapped search winner: log posterior = {vmap_logp:.4f}")
         starts.append(vmap_point)
     rng = np.random.default_rng(seed)
     starts += [_prior_draw(priors, rng) for _ in range(n_restarts)]
@@ -292,6 +367,7 @@ def run_map_analysis(
     output_dir: str,
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
+    include_process_error: bool = False,
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
@@ -307,6 +383,10 @@ def run_map_analysis(
 
     Parameters
     ----------
+    include_process_error : bool
+        Whether to additionally treat the initial-state biomass pools WS0/WR0/WF0 as
+        uncertain, fitted quantities — see `pymc_param_est.run_pymc_analysis`'s
+        parameter of the same name for the full explanation; identical behavior here.
     n_vmap_restarts, n_vmap_steps : int
         Forwarded to `run_map_estimation`'s GPU-parallel restart search.
     laplace_draws : int
@@ -319,14 +399,29 @@ def run_map_analysis(
     # `PG3_model_impl` reads at import time.
     from trunx.gp3.PG3_model_impl import prepare_data
 
+    start_time = time.perf_counter()
+
     input_data = prepare_data(file_path)
 
+    priors_param_names = param_to_optimize
+    if include_process_error and param_to_optimize is not None:
+        priors_param_names = list(param_to_optimize) + list(PROCESS_ERROR_PARAM_NAMES)
+
     priors = load_priors_from_file(
-        file_path, param_to_optimize, bound_overrides=literature_bound_overrides(file_path)
+        file_path, priors_param_names, bound_overrides=literature_bound_overrides(file_path)
     )
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
-    param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    if include_process_error:
+        # WS0/WR0/WF0 get a pm.Normal prior in pymc_model, centered on state's own
+        # nominal value with spread from perr_WS/WR/WF (loaded above) — not a
+        # pm.Uniform one, so this bound is a required-but-otherwise-unused priors key.
+        for name in INITIAL_STATE_PARAMS:
+            priors[name] = (0.0, 0.0)
+
+    param_defaults = load_param_defaults_from_file(
+        file_path, [name for name in priors if name not in INITIAL_STATE_PARAMS]
+    )
     param_defaults = clip_defaults_to_priors(param_defaults, priors)
     observations = load_observations_from_file(file_path, site_data=input_data.site)
 
@@ -388,6 +483,9 @@ def run_map_analysis(
     if laplace is not None:
         save_laplace_covariance(laplace.covariance, laplace.names, output_dir)
     save_results(mcmc=idata, output_dir=output_dir, predictions=predictions)
+    elapsed_time = time.perf_counter() - start_time
+    save_runtime(elapsed_time, output_dir)
+    print(f"Total runtime: {elapsed_time:.2f} seconds")
 
     return map_estimate
 
@@ -426,6 +524,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=param_names,
+        include_process_error=True,
         n_restarts=4,
         laplace_draws=1000,
     )

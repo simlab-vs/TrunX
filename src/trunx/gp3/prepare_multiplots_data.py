@@ -24,11 +24,11 @@ import polars as pl
 
 from trunx.config import clean_data_folder, threepg_data_folder
 from trunx.gp3.age_regression import fit_models
+from trunx.gp3.allometrics import dms_to_decimal
 from trunx.gp3.create_data_inputs import (
     create_observation_data,
     create_site_data,
     create_species_data,
-    dms_to_decimal,
 )
 from trunx.gp3.weather_processing import create_weather_input, fill_weather_with_era5
 

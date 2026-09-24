@@ -33,10 +33,12 @@ from trunx.gp3.helper_function import (
     f_vpd,
     is_dormant,
 )
-from trunx.gp3.model_inputs import State
+from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
 
-def model_step(state, climate_month, params, site, species):
+def model_step(
+    state: State, climate_month: ClimateData, params: Params, site: SiteData, species: SpeciesData
+):
     """Compute one model step."""
     (
         T_avg,
@@ -266,11 +268,11 @@ def model_step(state, climate_month, params, site, species):
 
 
 def run_3pg(
-    initial_state,
-    climate,
-    params,
-    site,
-    species,
+    initial_state: State,
+    climate: ClimateData,
+    params: Params,
+    site: SiteData,
+    species: SpeciesData,
     deposition=None,
     extended_params=None,
     modifier_fn=poly_nm,
@@ -282,8 +284,8 @@ def run_3pg(
     ----------
     modifier_fn : Callable
         Nutrition modifier applied to `extended_params.modifier_params`, e.g.
-        `poly_nm`, `saturating_nm`, `saturating_poly_nm`, or `mlp_nm` from
-        `extended_helper.py`. Ignored when `extended_params` is None.
+        `poly_nm`, or `mlp_nm` from `extended_helper.py`.
+        Ignored when `extended_params` is None.
     input_vars : tuple[str, ...]
         Which of `("N", "S", "T_avg")` (nitrogen deposition, sulphur deposition,
         temperature) `modifier_fn` was built over, and in what order — must

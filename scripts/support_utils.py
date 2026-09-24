@@ -2,6 +2,8 @@ import pandas as pd
 import polars as pl
 import streamlit as st
 
+from trunx.gp3.allometrics import dms_to_decimal
+
 SPECIES_NAME_MAP = {
     "Picea abies": "Spruce",
     "Pinus sylvestris": "Pine",
@@ -50,16 +52,3 @@ def species_summary(title, df):
     col1.metric("Growth periods", sdf.shape[0])
     col2.metric("Unique trees", sdf.select(pl.col("tree_id")).unique().shape[0])
     col3.metric("Unique plots", sdf.select(pl.col("plot_id")).unique().shape[0])
-
-
-def dms_to_decimal(dms):
-    """Convert DMS packed as ±DDMMSS or ±DDDMMSS to decimal degrees."""
-    sign = -1 if str(dms).startswith("-") else 1
-    dms = abs(int(dms))
-
-    degrees = dms // 10000
-    minutes = (dms % 10000) // 100
-    seconds = dms % 100
-
-    val = sign * (degrees + minutes / 60 + seconds / 3600)
-    return val
