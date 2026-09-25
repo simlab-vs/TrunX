@@ -124,7 +124,7 @@ def _(fluxnet_raw, pl):
 
 @app.cell
 def _(fluxnet_sites):
-    fluxnet_sites
+    fluxnet_sites  # noqa: B018
     return
 
 
@@ -229,7 +229,7 @@ def _(icos_raw, pl):
 
 @app.cell
 def _(icos_sites):
-    icos_sites
+    icos_sites  # noqa: B018
     return
 
 
@@ -307,7 +307,7 @@ def _(icp_raw, pl):
 
 @app.cell
 def _(icp_sites):
-    icp_sites
+    icp_sites  # noqa: B018
     return
 
 
@@ -372,7 +372,7 @@ def _(lwf_raw, pl):
 
 @app.cell
 def _(lwf_sites):
-    lwf_sites
+    lwf_sites  # noqa: B018
     return
 
 
@@ -421,7 +421,7 @@ def _(network_sites, pl):
     )
 
 
-    sites_by_network
+    sites_by_network  # noqa: B018
     return
 
 
@@ -444,7 +444,7 @@ def _(network_sites, pl):
     )
 
 
-    coordinate_check
+    coordinate_check  # noqa: B018
     return
 
 
@@ -489,7 +489,7 @@ def _(network_sites, pl):
     )
 
 
-    duplicate_network_sites
+    duplicate_network_sites  # noqa: B018
     return
 
 
@@ -639,7 +639,7 @@ def _(MAP_CENTER, MAP_ZOOM, px, selected_sites):
     )
 
 
-    fig
+    fig  # noqa: B018
     return
 
 
