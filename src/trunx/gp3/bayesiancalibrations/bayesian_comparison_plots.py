@@ -30,6 +30,7 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
     FIT_PARAMS,
     INITIAL_STATE_PARAMS,
     PROCESS_ERROR_PARAM_NAMES,
+    species_plot_ids,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     fit_params_for_mode,
@@ -880,6 +881,157 @@ def plot_posterior_comparison(
     return fig
 
 
+def plot_posterior_across_plots(
+    plot_ids: list[str],
+    literature_source: str,
+    error_terms: str,
+    method: str = "demetropolisz",
+    include_process_error: bool = True,
+    param_names: list[str] | None = None,
+    priors: dict[str, tuple[float, float]] | None = None,
+    plot_colors: dict[str, str] | None = None,
+) -> Figure:
+    """Overlay parameters' posterior distributions across multiple plots.
+
+    Each plot's saved run path is built the same way `plot_and_save` does; a
+    plot with no saved run for the given combination is skipped with a
+    printed note.
+
+    Parameters
+    ----------
+    plot_ids : list[str]
+        ICP plot identifiers (or "solling") to compare.
+    literature_source : str
+        Literature source the plots were calibrated with (e.g. "Forrester",
+        "Trotsiuk"). Ignored for the "solling" plot id, which isn't
+        literature-source-specific (see `plot_and_save`).
+    error_terms : str
+        Calibration scenario name (a key of `bayesian_config.ERROR_MODES`), used
+        as the saved-run directory segment.
+    method : str
+        Sampler subdirectory to load from: "demetropolisz" (PyMC) or "nuts" (HMC).
+    include_process_error : bool
+        Whether to read from `results/latent_calibration_sweep` (True) or
+        `results/calibration_sweep` (False) — see `plot_and_save`.
+    param_names : list[str] | None
+        Parameters to compare. Defaults to the union of physiological (i.e.
+        excluding `err_*` observation-noise sigma terms) posterior variables
+        across all given traces — every physiological parameter calibrated by
+        at least one plot. A plot missing a posterior for a given parameter is
+        left out of that parameter's subplot.
+    priors : dict[str, tuple[float, float]] | None
+        Prior (lower, upper) bounds per parameter, drawn as gray vertical
+        lines. Parameters without a matching entry are plotted without prior
+        lines.
+    plot_colors : dict[str, str] | None
+        Override color per plot label. Missing entries fall back to
+        matplotlib's default color cycle.
+
+    Returns
+    -------
+    Figure
+        The comparison figure.
+    """
+    output_dir = os.path.join(
+        results_data_folder,
+        "latent_calibration_sweep" if include_process_error else "calibration_sweep",
+    )
+    resolved_paths: dict[str, str] = {}
+    for plot_id in plot_ids:
+        if plot_id == "solling":
+            path = os.path.join(output_dir, f"{plot_id}/{error_terms}/{method}/inference_data.nc")
+        else:
+            path = os.path.join(
+                output_dir,
+                f"{plot_id}/{literature_source}/{error_terms}/{method}/inference_data.nc",
+            )
+        if not os.path.exists(path):
+            print(f"Note: no saved run at {path} — skipping plot_id {plot_id!r}")
+            continue
+        resolved_paths[plot_id] = path
+
+    if not resolved_paths:
+        raise ValueError(
+            f"No saved {method!r} runs found for any of {plot_ids} "
+            f"(literature_source={literature_source!r}, error_terms={error_terms!r})"
+        )
+
+    priors = priors or {}
+    plot_colors = plot_colors or {}
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    idatas = {label: az.from_netcdf(path) for label, path in resolved_paths.items()}
+    colors = {
+        label: plot_colors.get(label, color_cycle[i % len(color_cycle)])
+        for i, label in enumerate(idatas)
+    }
+
+    if param_names is None:
+        param_names = sorted(
+            {
+                name
+                for idata in idatas.values()
+                for name in cast(Any, idata).posterior.data_vars
+                if not name.startswith("err_")
+            }
+        )
+
+    ncols = min(4, len(param_names))
+    nrows = int(np.ceil(len(param_names) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    line_handles: dict[str, Line2D] = {}
+    with az.rc_context(rc={"plot.max_subplots": None}):
+        for ax, param_name in zip(axes, param_names, strict=False):
+            plotted = False
+            for label, idata in idatas.items():
+                if param_name not in cast(Any, idata).posterior.data_vars:
+                    continue
+
+                color = colors[label]
+                az.plot_posterior(
+                    idata,
+                    var_names=[param_name],
+                    color=color,
+                    point_estimate=None,
+                    hdi_prob="hide",
+                    ax=np.array([ax]),
+                )
+                ax.axvline(float(idata.posterior[param_name].mean()), color=color, linestyle=":")
+                line_handles.setdefault(
+                    label, Line2D([], [], color=color, linestyle=":", label=label)
+                )
+                plotted = True
+
+            bounds = priors.get(param_name)
+            if bounds is not None:
+                for bound in bounds:
+                    ax.axvline(bound, color="gray", linestyle="-")
+
+            ax.set_title(param_name)
+            if not plotted:
+                ax.axis("off")
+
+    if not line_handles:
+        raise ValueError("No posterior for any of the given parameters found in any plot")
+
+    if priors:
+        line_handles.setdefault(
+            "Prior bounds", Line2D([], [], color="gray", linestyle="-", label="Prior bounds")
+        )
+
+    for ax in axes[len(param_names) :]:
+        ax.axis("off")
+
+    fig.legend(handles=list(line_handles.values()), loc="upper right", fontsize=8)
+    fig.suptitle("Posterior comparison across plots")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+
+    plt.show()
+    return fig
+
+
 def plot_convergence_comparison(
     fit_params: list[str],
     pymc_inference_path: str | None = None,
@@ -1375,21 +1527,7 @@ def plot_and_save(
 
 if __name__ == "__main__":
     plot_ids = ["solling"]
-
-    # plot_ids = ["04.0302", "04.1402", "04.1403", "04.0101", "04.0704", "08.0034"]
-    # plot_ids = [
-    #     "04.0101",
-    #     "04.0704",
-    #     "08.0034",
-    #     "53.0107",
-    #     "04.0302",
-    #     "04.1402",
-    #     "04.1403",
-    #     "14.0017",
-    #     "52.0010",
-    #     "53.0701",
-    #     "59.0008",
-    # ]
+    plot_ids = species_plot_ids["Picea abies"]
 
     plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
 
@@ -1419,3 +1557,11 @@ if __name__ == "__main__":
                 )
             except Exception as e:
                 print(f"Error processing plot_id={plot_id}: {e}")
+
+        plot_posterior_across_plots(
+            plot_ids=plot_ids,
+            literature_source="Forrester",
+            error_terms=error_terms,
+            method="demetropolisz",
+            include_process_error=_include_process_error,
+        )
