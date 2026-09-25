@@ -1,5 +1,6 @@
 """HMC parameter estimation for 3PG model using DBH observations."""
 
+import argparse
 import gc
 import os
 import time
@@ -18,6 +19,7 @@ from numpyro.infer import HMC, MCMC, NUTS, init_to_uniform, init_to_value
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
+    clip_defaults_to_priors,
     plot_inference_results,
     predict_from_parameter_draws,
 )
@@ -37,12 +39,19 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+# Each host device (one per parallel chain) must do its own compute
+# single-threaded, otherwise every device spawns its own intra-op thread
+# pool and chains oversubscribe the SLURM-allocated CPUs, burning time on
+# context switches instead of running the chains truly in parallel.
+os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
 jax.config.update("jax_enable_x64", True)
 # jax.config.update('jax_log_compiles', True)
 
 az.rcParams["plot.backend"] = "matplotlib"
 
-numpyro.set_host_device_count(max(1, min(8, os.cpu_count() or 1)))
+_sched_getaffinity = getattr(os, "sched_getaffinity", None)
+available_cpus = len(_sched_getaffinity(0)) if _sched_getaffinity else (os.cpu_count() or 1)
+numpyro.set_host_device_count(available_cpus)
 
 
 def model(
@@ -163,7 +172,7 @@ def run_hmc_inference(
     adaptive_warmup: bool = True,
     adapt_step_size: bool = True,
     adapt_mass_matrix: bool = True,
-    target_accept_prob: float = 0.9,
+    target_accept_prob: float = 0.95,
     max_tree_depth: int = 10,
     param_defaults: dict[str, float] | None = None,
     chain_method: str = "parallel",
@@ -227,7 +236,7 @@ def run_hmc_inference(
         else init_to_uniform
     )
 
-    kernel = HMC(
+    kernel = NUTS(
         model,
         adapt_step_size=use_step_size_adaptation,
         adapt_mass_matrix=use_mass_matrix_adaptation,
@@ -445,6 +454,7 @@ def run_full_analysis(
         )
 
     print("Saving results...")
+    os.makedirs(output_dir, exist_ok=True)
     inf_data = az.from_numpyro(mcmc)
     file_path = os.path.join(output_dir, "numpyro_inference_data.nc")
     inf_data.to_netcdf(file_path)
@@ -474,6 +484,7 @@ def run_hmc_analysis(
     progress_bar: bool = False,
     jit_model_args: bool = True,
     max_tree_depth: int = 10,
+    num_chains: int = 4,
     num_warmup: int = 100,
     num_samples: int = 100,
 ):
@@ -498,6 +509,7 @@ def run_hmc_analysis(
     for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
         priors.pop(error_name, None)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
+    param_defaults = clip_defaults_to_priors(param_defaults, priors)
     print(f"Loaded priors for parameters: {list(priors.keys())}")
 
     # Load all observations from file
@@ -520,8 +532,8 @@ def run_hmc_analysis(
         priors=priors,
         num_warmup=num_warmup,
         num_samples=num_samples,
-        num_chains=8,
-        output_dir=os.path.join(data_folder, "hmc_results"),
+        num_chains=num_chains,
+        output_dir=os.path.join(results_data_folder, "numpyro_bayesian_results"),
         show_plots=show_plots,
         predict_with_uncert=predict_with_uncert,
         param_defaults=param_defaults,
@@ -541,33 +553,82 @@ def run_hmc_analysis(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--file-path",
+        default=os.path.join(threepg_data_folder, "solling_data.xlsx"),
+        help="Excel file with input data and parameter bounds (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--param-names",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help="Parameter names to estimate. Defaults to FIT_PARAMS plus every "
+        "err_* sigma found in --file-path.",
+    )
+    parser.add_argument("--num-chains", type=int, default=4)
+    parser.add_argument("--num-warmup", type=int, default=100)
+    parser.add_argument("--num-samples", type=int, default=100)
+    parser.add_argument("--max-tree-depth", type=int, default=10)
+    parser.add_argument(
+        "--chain-method",
+        default="parallel",
+        choices=["parallel", "sequential", "vectorized"],
+        help="NumPyro MCMC chain_method (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--predict-with-uncert",
+        action="store_true",
+        default=True,
+        help="Generate predictions with uncertainty quantification (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-predict-with-uncert",
+        dest="predict_with_uncert",
+        action="store_false",
+        help="Disable prediction-with-uncertainty generation",
+    )
+    parser.add_argument(
+        "--show-plots",
+        action="store_true",
+        default=True,
+        help="Generate diagnostic/prediction plots (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-show-plots", dest="show_plots", action="store_false", help="Disable plotting"
+    )
+    parser.add_argument(
+        "--progress-bar",
+        action="store_true",
+        default=True,
+        help="Show NumPyro's per-sample progress bar (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-progress-bar", dest="progress_bar", action="store_false", help="Hide progress bar"
+    )
+    args = parser.parse_args()
+
     start_time = time.perf_counter()
 
-    # Use solling_data.xlsx by default
-
-    file_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-
-    # Restrict calibration to the most sensitive physiology parameters.
-    morris_results_path = os.path.join(
-        results_data_folder, "morris_analysis_results_jax", "morris_all_components.csv"
-    )
-    error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
-    top_params = load_top_sensitive_params(morris_results_path, n_top=5)
-    r_20_params = FIT_PARAMS
-
-    # param_names = top_params + error_names
-    param_names = r_20_params + error_names
+    param_names = args.param_names
+    if param_names is None:
+        error_names = [
+            name for name in load_priors_from_file(args.file_path) if name.startswith("err_")
+        ]
+        param_names = FIT_PARAMS + error_names
 
     run_hmc_analysis(
-        file_path=file_path,
+        file_path=args.file_path,
         param_names=param_names,
-        predict_with_uncert=True,
-        show_plots=True,
-        chain_method="parallel",
-        progress_bar=True,
-        max_tree_depth=10,
-        num_warmup=100,
-        num_samples=100,
+        predict_with_uncert=args.predict_with_uncert,
+        show_plots=args.show_plots,
+        chain_method=args.chain_method,
+        progress_bar=args.progress_bar,
+        num_chains=args.num_chains,
+        max_tree_depth=args.max_tree_depth,
+        num_warmup=args.num_warmup,
+        num_samples=args.num_samples,
     )
 
     elapsed_time = time.perf_counter() - start_time

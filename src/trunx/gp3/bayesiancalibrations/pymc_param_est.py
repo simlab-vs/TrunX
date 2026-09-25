@@ -30,6 +30,7 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
     PROCESS_ERROR_PARAM_NAMES,
 )
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
+    clip_defaults_to_priors,
     plot_inference_results,
     predict_from_parameter_draws,
 )
@@ -586,26 +587,6 @@ def run_pymc_inference(
     return cast(az.InferenceData, idata), model
 
 
-def clip_defaults_to_priors(
-    param_defaults: dict[str, float], priors: dict[str, tuple[float, float]]
-) -> dict[str, float]:
-    """Nudge each default strictly inside its prior's (lower, upper) bound.
-
-    A default sitting exactly on (or outside) its `pm.Uniform` bound maps to
-    +-inf under PyMC's interval transform, which is used as `initvals` and
-    causes NUTS to fail immediately with a "Bad initial energy" error (e.g.
-    the Forrester literature table's `MaxAge` default for Fagus sylvatica
-    equals its own upper bound).
-    """
-    clipped = dict(param_defaults)
-    for name, (lower, upper) in priors.items():
-        if name not in clipped:
-            continue
-        margin = 1e-6 * (upper - lower)
-        clipped[name] = min(max(clipped[name], lower + margin), upper - margin)
-    return clipped
-
-
 def run_pymc_analysis(
     output_dir: str,
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
@@ -795,7 +776,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=param_names,
-        include_process_error=True,
+        include_process_error=False,
         chains=3,
         cores=3,
         checkpoint_every=5000,

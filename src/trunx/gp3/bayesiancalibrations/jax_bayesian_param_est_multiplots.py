@@ -28,6 +28,9 @@ import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS
 
 from trunx.config import threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    species_plot_ids,
+)
 from trunx.gp3.bayesiancalibrations.load_files import (
     PlotData,
     load_plot_data,
@@ -482,10 +485,12 @@ def run_multi_plot_analysis_for_file(
     num_samples: int = 200,
     num_chains: int = 2,
     seed: int = 42,
+    plot_ids: list[str] | None = None,
     max_plots: int | None = None,
 ) -> tuple[MCMC, dict]:
     """Run shared-parameter inference across all plots in one parquet file."""
-    plot_ids = load_plot_ids_from_file(plot_file)
+    if plot_ids is None:
+        plot_ids = load_plot_ids_from_file(plot_file)
     if max_plots is not None:
         plot_ids = plot_ids[:max_plots]
 
@@ -505,6 +510,8 @@ def run_multi_plot_analysis_for_file(
 
 if __name__ == "__main__":
     species = "Picea_abies"
+    plot_ids = species_plot_ids.get(species, [])
+
     run_multi_plot_analysis_for_file(
         plot_file=os.path.join(threepg_data_folder, f"icp_plot_data_{species}.parquet"),
         params_file=os.path.join(threepg_data_folder, "params_bounds.parquet"),
@@ -513,4 +520,5 @@ if __name__ == "__main__":
         num_warmup=20,
         num_samples=20,
         num_chains=4,
+        plot_ids=plot_ids,
     )

@@ -262,9 +262,39 @@ ERROR_MODE_PARAM_DEPENDENCIES: dict[str, dict[str, list[str]]] = {
     mode: error_mode_param_dependencies(mode) for mode in ERROR_MODES
 }
 
-if __name__ == "__main__":
-    print("ERROR_MODE_PARAM_DEPENDENCIES:")
-    for mode, deps in ERROR_MODE_PARAM_DEPENDENCIES.items():
-        print(f"  {mode}:")
-        print(f"    parameters: {deps['parameters']}")
-        print(f"    length of parameters: {len(deps['parameters'])}")
+
+species_plot_ids = {
+    "Pinus sylvestris": [
+        "01.0082",
+        "04.1303",
+        "51.0015",
+        "53.0109",
+        "53.0112",
+        "53.0114",
+        "53.0302",
+        "53.0306",
+        "53.0311",
+        "53.0312",
+        "53.0313",
+        "53.0316",
+        "53.0407",
+        "53.0501",
+        "53.0513",
+        "53.0603",
+        "53.0617",
+        "53.0618",
+        "53.0623",
+        "59.0001",
+        "59.0003",
+    ],
+    "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
+    "Picea abies": [
+        "04.0302",
+        "04.1402",
+        "04.1403",
+        "14.0017",
+        "52.0010",
+        "53.0701",
+        "59.0008",
+    ],
+}
