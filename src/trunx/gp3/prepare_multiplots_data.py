@@ -357,19 +357,15 @@ def load_section(df: pl.DataFrame, plot_id: str, section: str) -> pl.DataFrame:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    # prepare_data_bayesian_opt(threepg_data_folder)
+    prepare_data_bayesian_opt(threepg_data_folder)
 
-    # # Example: read climate data for one plot from the Picea abies file
-    # df = pl.read_parquet(os.path.join(threepg_data_folder, "icp_plot_data_Picea_abies.parquet"))
-    # pid = "50.0018"
-    # print(load_section(df, pid, "climate").head())
-    # print(load_section(df, pid, "site"))
-    # obv = load_section(df, pid, "observed")
-    # print(obv.drop_nulls(subset=["DBH"]))
-    # print(load_section(df, pid, "species"))
+    prepare_multiplot_param_bounds(threepg_data_folder)
 
-    param_bounds = pl.read_parquet(
-        os.path.join(threepg_data_folder, "literature_params_forrester_forrester.parquet")
-    )
-    print(param_bounds)
-    print(param_bounds["parameter"].unique())
+    # Example: read climate data for one plot from the Picea abies file
+    df = pl.read_parquet(os.path.join(threepg_data_folder, "icp_plot_data_Picea_abies.parquet"))
+    pid = "50.0018"
+    print(load_section(df, pid, "climate").head())
+    print(load_section(df, pid, "site"))
+    obv = load_section(df, pid, "observed")
+    print(obv.drop_nulls(subset=["DBH"]))
+    print(load_section(df, pid, "species"))
