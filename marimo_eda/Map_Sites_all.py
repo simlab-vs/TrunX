@@ -2,7 +2,7 @@
 
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
@@ -11,6 +11,7 @@ def _(mo):
     mo.md(r"""
     This notebook compares LWF, ICOS, ICP, and FLUXNET sites on a world map.
     """)
+    return
 
 
 @app.cell(hide_code=True)
@@ -22,6 +23,7 @@ def _(mo):
     - ICOS https://www.icos-cp.eu/measurements/station-network
     - FluxNet https://data.fluxnet.org/data/
     """)
+    return
 
 
 @app.cell
@@ -30,6 +32,7 @@ def _():
 
     import plotly.express as px
     import polars as pl
+
     return Path, pl, px
 
 
@@ -121,7 +124,8 @@ def _(fluxnet_raw, pl):
 
 @app.cell
 def _(fluxnet_sites):
-    fluxnet_sites  # noqa: B018
+    fluxnet_sites
+    return
 
 
 @app.cell
@@ -220,11 +224,13 @@ def _(icos_raw, pl):
         }
 
     )
+    return
 
 
 @app.cell
 def _(icos_sites):
-    icos_sites  # noqa: B018
+    icos_sites
+    return
 
 
 @app.cell
@@ -254,6 +260,7 @@ def _(icp_raw, pl):
         }
 
     )
+    return
 
 
 @app.cell
@@ -300,7 +307,8 @@ def _(icp_raw, pl):
 
 @app.cell
 def _(icp_sites):
-    icp_sites  # noqa: B018
+    icp_sites
+    return
 
 
 @app.cell
@@ -328,6 +336,7 @@ def _(lwf_raw, pl):
         }
 
     )
+    return
 
 
 @app.cell
@@ -363,7 +372,8 @@ def _(lwf_raw, pl):
 
 @app.cell
 def _(lwf_sites):
-    lwf_sites  # noqa: B018
+    lwf_sites
+    return
 
 
 @app.cell
@@ -411,7 +421,8 @@ def _(network_sites, pl):
     )
 
 
-    sites_by_network  # noqa: B018
+    sites_by_network
+    return
 
 
 @app.cell
@@ -433,7 +444,8 @@ def _(network_sites, pl):
     )
 
 
-    coordinate_check  # noqa: B018
+    coordinate_check
+    return
 
 
 @app.cell
@@ -477,41 +489,16 @@ def _(network_sites, pl):
     )
 
 
-    duplicate_network_sites  # noqa: B018
+    duplicate_network_sites
+    return
 
 
 @app.cell
-def _():
+def _(mapped_sites, pl):
     import math
 
-    def haversine_km(
-        lat1: float,
-        lon1: float,
-        lat2: float,
-        lon2: float,
-    ) -> float:
-        radius_km = 6371.0
+    from sklearn.metrics.pairwise import haversine_distances
 
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-
-        a = (
-            math.sin(dlat / 2) ** 2
-            + math.cos(lat1_rad)
-            * math.cos(lat2_rad)
-            * math.sin(dlon / 2) ** 2
-        )
-
-        return 2 * radius_km * math.asin(math.sqrt(a))
-
-    return (haversine_km,)
-
-
-@app.cell
-def _(haversine_km, mapped_sites, pl):
     MATCH_THRESHOLD_KM = 25.0
 
     network_a_sites = mapped_sites.filter(
@@ -529,28 +516,37 @@ def _(haversine_km, mapped_sites, pl):
     site_records_a = network_a_sites.to_dicts()
     site_records_b = network_b_sites.to_dicts()
 
+    # Convert coordinates from degrees to radians
+    coords_a = [
+        [
+            math.radians(site["latitude"]),
+            math.radians(site["longitude"]),
+        ]
+        for site in site_records_a
+    ]
+
+    coords_b = [
+        [
+            math.radians(site["latitude"]),
+            math.radians(site["longitude"]),
+        ]
+        for site in site_records_b
+    ]
+
+    # Calculate all A-to-B Haversine distances at once.
+    # haversine_distances returns angular distance in radians.
+    distance_matrix_km = (
+        haversine_distances(coords_a, coords_b) * 6371.0
+    )
+
     candidate_matches = []
 
-    for site_a in site_records_a:
-        closest_site = None
-        closest_distance = float("inf")
+    for i, site_a in enumerate(site_records_a):
+        closest_index = distance_matrix_km[i].argmin()
+        closest_distance = distance_matrix_km[i, closest_index]
+        closest_site = site_records_b[closest_index]
 
-        for site_b in site_records_b:
-            distance_km = haversine_km(
-                site_a["latitude"],
-                site_a["longitude"],
-                site_b["latitude"],
-                site_b["longitude"],
-            )
-
-            if distance_km < closest_distance:
-                closest_distance = distance_km
-                closest_site = site_b
-
-        if (
-            closest_site is not None
-            and closest_distance <= MATCH_THRESHOLD_KM
-        ):
+        if closest_distance <= MATCH_THRESHOLD_KM:
             candidate_matches.append(
                 {
                     "network_a": site_a["network"],
@@ -575,6 +571,7 @@ def _(candidate_matches):
     candidate_matches.sort("distance_km").unique(subset="site_name_b").sort(
         "distance_km"
     )
+    return
 
 
 @app.cell
@@ -642,7 +639,8 @@ def _(MAP_CENTER, MAP_ZOOM, px, selected_sites):
     )
 
 
-    fig  # noqa: B018
+    fig
+    return
 
 
 if __name__ == "__main__":
