@@ -204,6 +204,19 @@ def aggregate_per_plot(
         plus any `extra_aggs` columns.
     """
     weight = pl.col(weight_col) if weight_col is not None else None
+
+    def _sum(col: str) -> pl.Expr:
+        # Null (not 0) when no tree has a value, e.g. species without coefficients.
+        total = (pl.col(col) * weight).sum() if weight is not None else pl.col(col).sum()
+        return pl.when(pl.col(col).is_not_null().any()).then(total)
+
+    sums = [
+        _sum("biom_stem").alias("sb_kg"),
+        _sum("biom_foliage").alias("fb_kg"),
+        _sum("biom_root").alias("rb_kg"),
+        _sum("la_m2").alias("la_m2"),
+        _sum("basal_area").alias("ba_m2"),
+    ]
     aggs = (
         [
             weight.sum().alias("n_trees"),
@@ -215,11 +228,6 @@ def aggregate_per_plot(
             )
             .sqrt()
             .alias("dbh_std"),
-            (pl.col("biom_stem") * weight).sum().alias("sb_kg"),
-            (pl.col("biom_foliage") * weight).sum().alias("fb_kg"),
-            (pl.col("biom_root") * weight).sum().alias("rb_kg"),
-            (pl.col("la_m2") * weight).sum().alias("la_m2"),
-            (pl.col("basal_area") * weight).sum().alias("ba_m2"),
         ]
         if weight is not None
         else [
@@ -227,14 +235,56 @@ def aggregate_per_plot(
             pl.col(dbh_col).pow(2).mean().sqrt().alias("dbh_qmd"),
             pl.col(dbh_col).mean().alias("dbh_mean"),
             pl.col(dbh_col).std(ddof=0).alias("dbh_std"),
-            pl.col("biom_stem").sum().alias("sb_kg"),
-            pl.col("biom_foliage").sum().alias("fb_kg"),
-            pl.col("biom_root").sum().alias("rb_kg"),
-            pl.col("la_m2").sum().alias("la_m2"),
-            pl.col("basal_area").sum().alias("ba_m2"),
         ]
     )
-    return trees.group_by(group_by).agg(*aggs, *(extra_aggs or []))
+    return trees.group_by(group_by).agg(*aggs, *sums, *(extra_aggs or []))
+
+
+BIOMASS_COLS: list[str] = ["biom_stem", "biom_foliage", "biom_root"]
+PLOT_FLAG_METRICS: list[str] = ["height", "dbh_qmd", "basal_area", "lai", *BIOMASS_COLS]
+
+
+def computed_flags(cols: list[str]) -> list[pl.Expr]:
+    """Build ``flag_<col>`` columns set to "computed" where ``col`` has a value.
+
+    Parameters
+    ----------
+    cols : list[str]
+        Columns whose values are derived rather than measured.
+
+    Returns
+    -------
+    list[pl.Expr]
+        One expression per column, null where the column is null.
+    """
+    return [
+        pl.when(pl.col(c).is_not_null()).then(pl.lit("computed")).alias(f"flag_{c}") for c in cols
+    ]
+
+
+def measured_flag(col: str, is_measured: pl.Expr) -> pl.Expr:
+    """Build ``flag_<col>``: "measured" if `is_measured`, else "computed", null if no value.
+
+    Parameters
+    ----------
+    col : str
+        Column to flag.
+    is_measured : pl.Expr
+        Boolean expression, true where the value is a field measurement.
+
+    Returns
+    -------
+    pl.Expr
+        The ``flag_<col>`` expression.
+    """
+    return (
+        pl.when(pl.col(col).is_null())
+        .then(None)
+        .when(is_measured)
+        .then(pl.lit("measured"))
+        .otherwise(pl.lit("computed"))
+        .alias(f"flag_{col}")
+    )
 
 
 def scale_to_hectare(df: pl.DataFrame, area_ha: pl.Expr) -> pl.DataFrame:

@@ -16,10 +16,12 @@ TODO:
 
 """
 
+import datetime
 import logging
 import os
 from pathlib import Path
 
+import pandas as pd
 import polars as pl
 
 from trunx.config import clean_data_folder, threepg_data_folder
@@ -30,6 +32,8 @@ from trunx.gp3.create_data_inputs import (
     create_site_data,
     create_species_data,
 )
+from trunx.gp3.prepare_climate import prepare_climate, trim_to_window
+from trunx.gp3.prepare_site import prepare_site
 from trunx.gp3.weather_processing import create_weather_input, fill_weather_with_era5
 
 logger = logging.getLogger(__name__)
@@ -128,12 +132,48 @@ def _build_plot_row(
         logger.warning("plot_id %s: no species data — skipping", plot_id)
         return None
 
+    if species_df.height != 1:
+        # This dataset is single-species-per-plot by design (see module docstring); a
+        # second row here means create_species_data picked up more than one census date
+        # within the same start_year (e.g. two surveys in one calendar year) rather than
+        # a genuinely different species. Caught here rather than left for
+        # load_observations_from_section to reject at load time.
+        logger.warning(
+            "plot_id %s: species table has %d rows (expected exactly 1) — skipping",
+            plot_id,
+            species_df.height,
+        )
+        return None
+
     _, weather_df = fill_weather_with_era5(weather_df, plot_id, start_year)
 
     icp_filtered = icp_df.filter(pl.col("specie").is_in(species_df["species"].to_list()))
 
     observed_df = create_observation_data(plot_id, icp_filtered, start_year)
     site_df = create_site_data(icp_df, weather_df, observed_df)
+
+    try:
+        prepare_site(site_df)
+    except ValueError as exc:
+        logger.warning("plot_id %s: invalid site data (%s) — skipping", plot_id, exc)
+        return None
+
+    # Save exactly the window the model will simulate — the same one `prepare_climate`
+    # trims to at load time — so an observation's month index (assigned by row position
+    # against this same section) can't drift out of alignment with it. See
+    # `load_files.load_observations_from_section`.
+    site_row = site_df.row(0, named=True)
+    weather_df = trim_to_window(
+        weather_df,
+        datetime.date.fromisoformat(site_row["from"] + "-01"),
+        datetime.date.fromisoformat(site_row["to"] + "-01"),
+    )
+
+    try:
+        prepare_climate(weather_df, site_row["from"], site_row["to"])
+    except ValueError as exc:
+        logger.warning("plot_id %s: invalid climate data (%s) — skipping", plot_id, exc)
+        return None
 
     def _to_nested(df: pl.DataFrame, section: str) -> pl.Series:
         cols = [c for c in SECTION_COLS[section] if c in df.columns]
@@ -239,6 +279,62 @@ def prepare_data_bayesian_opt(output_dir: Path | str) -> None:
         logger.info("Wrote %d plots for '%s' to %s", len(rows), species_name, filename)
 
 
+def prepare_multiplot_param_bounds(
+    output_dir: Path | str,
+    literature_sources: tuple[str, ...] = ("Forrester", "Trotsiuk"),
+    species_names: tuple[str, ...] = ("Picea abies", "Pinus sylvestris", "Fagus sylvatica"),
+) -> None:
+    """Build one params_bounds parquet per (species, literature_source) pair.
+
+    Parameters
+    ----------
+    output_dir : Path | str
+        Directory to write the parquet files to. Files are named
+        ``params_bounds_{literature_source}_{Species_name}.parquet``.
+    literature_sources : tuple[str, ...]
+        Keys into `pymc_icp_plots._LITERATURE_SOURCES`.
+    species_names : tuple[str, ...]
+        Species to build files for. Defaults to the three species this project's
+        multiplot pipeline actually calibrates (see `bayesian_config.species_plot_ids`);
+        Trotsiuk's literature table only covers Picea abies and Fagus sylvatica.
+    """
+    from trunx.gp3.bayesiancalibrations.pymc_icp_plots import _load_species_param_bound
+
+    output_dir = Path(output_dir)
+
+    error_bound = pd.read_excel(
+        os.path.join(threepg_data_folder, "solling_data.xlsx"), sheet_name="error_param"
+    )
+    error_bound[["default", "min", "max"]] = error_bound[["default", "min", "max"]].astype(
+        "float64"
+    )
+
+    for literature_source in literature_sources:
+        for species_name in species_names:
+            try:
+                param_bound = _load_species_param_bound(
+                    species_name, literature_source=literature_source
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "No %s bounds for '%s' — skipping (%s)", literature_source, species_name, exc
+                )
+                continue
+
+            param_bound = pd.concat([param_bound, error_bound], ignore_index=True)
+
+            species_slug = species_name.replace(" ", "_")
+            filename = f"params_bounds_{literature_source}_{species_slug}.parquet"
+            pl.from_pandas(param_bound).write_parquet(output_dir / filename)
+            logger.info(
+                "Wrote %d parameters for '%s' (%s) to %s",
+                len(param_bound),
+                species_name,
+                literature_source,
+                filename,
+            )
+
+
 def load_section(df: pl.DataFrame, plot_id: str, section: str) -> pl.DataFrame:
     """Load one section for one plot as a flat DataFrame.
 
@@ -262,6 +358,8 @@ def load_section(df: pl.DataFrame, plot_id: str, section: str) -> pl.DataFrame:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     prepare_data_bayesian_opt(threepg_data_folder)
+
+    prepare_multiplot_param_bounds(threepg_data_folder)
 
     # Example: read climate data for one plot from the Picea abies file
     df = pl.read_parquet(os.path.join(threepg_data_folder, "icp_plot_data_Picea_abies.parquet"))

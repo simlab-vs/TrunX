@@ -158,4 +158,25 @@ def plot_inference_results(
             if output_dir is not None:
                 fig.savefig(os.path.join(output_dir, f"prediction_{var_name}.png"))
 
+
+def clip_defaults_to_priors(
+    param_defaults: dict[str, float], priors: dict[str, tuple[float, float]]
+) -> dict[str, float]:
+    """Nudge each default strictly inside its prior's (lower, upper) bound.
+
+    A default sitting exactly on (or outside) its prior bound maps to +-inf
+    under an interval transform (e.g. PyMC's `pm.Uniform`, or NumPyro's
+    `init_to_value` combined with a `dist.Uniform` prior), used as the
+    sampler's initial value — causing NUTS to fail immediately with a "Bad
+    initial energy" error (e.g. the Forrester literature table's `MaxAge`
+    default for Fagus sylvatica equals its own upper bound).
+    """
+    clipped = dict(param_defaults)
+    for name, (lower, upper) in priors.items():
+        if name not in clipped:
+            continue
+        margin = 1e-6 * (upper - lower)
+        clipped[name] = min(max(clipped[name], lower + margin), upper - margin)
+    return clipped
+
     plt.show()
