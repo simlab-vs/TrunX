@@ -69,6 +69,47 @@ def clim_range(climate):
         print("Warning: VPD outside plausible range (0–40).")
 
 
+def trim_to_window(
+    climate: pl.DataFrame,
+    from_date: datetime.date,
+    to_date: datetime.date,
+) -> pl.DataFrame:
+    """Filter a long climate table to an inclusive `[from_date, to_date]` month window.
+
+    The single source of truth for how `prepare_climate` windows a long
+    climate series to a site's `[from, to]` — reused by callers (e.g.
+    `load_files.load_observations_from_section`) that need to index into
+    the same window `prepare_climate` produces, so the two can't drift out
+    of alignment.
+
+    Parameters
+    ----------
+    climate : pl.DataFrame
+        Climate table with `year` and `month` columns.
+    from_date, to_date : datetime.date
+        Inclusive start/end months (day is ignored).
+
+    Returns
+    -------
+    pl.DataFrame
+        `climate` filtered to the window, with a `date` column added
+        (first-of-month).
+    """
+    if not {"year", "month"}.issubset(climate.columns):
+        raise ValueError("Climate table must include year and month for subsetting.")
+
+    climate = climate.with_columns(
+        pl.date(pl.col("year"), pl.col("month"), pl.lit(1)).alias("date")
+    )
+
+    date_min = climate.select(pl.col("date").min()).item()
+    date_max = climate.select(pl.col("date").max()).item()
+    if from_date < date_min or to_date > date_max:
+        raise ValueError("Requested time period is outside of provided dates in climate table.")
+
+    return climate.filter((pl.col("date") >= from_date) & (pl.col("date") <= to_date))
+
+
 def prepare_climate(climate, from_="2001-01", to="2010-12"):
     """Prepare climate table for 3-PG simulation."""
     required = ["tmp_min", "tmp_max", "prcp", "srad", "frost_days"]
@@ -111,19 +152,7 @@ def prepare_climate(climate, from_="2001-01", to="2010-12"):
 
     else:
         # Subset long climate series
-        if not {"year", "month"}.issubset(climate.columns):
-            raise ValueError("Climate table must include year and month for subsetting.")
-
-        climate = climate.with_columns(
-            pl.date(pl.col("year"), pl.col("month"), pl.lit(1)).alias("date")
-        )
-
-        if from_date < climate["date"].min() or to_date > climate["date"].max():
-            raise ValueError(
-                "Requested time period is outside of provided dates in climate table."
-            )
-
-        climate = climate.filter((pl.col("date") >= from_date) & (pl.col("date") <= to_date))
+        climate = trim_to_window(climate, from_date, to_date)
 
     if "tmp_ave" not in climate.columns:
         climate = climate.with_columns(

@@ -12,7 +12,17 @@ import polars.selectors as cs
 import requests
 
 from trunx.config import clean_data_folder, data_folder
-from trunx.gp3.allometrics import CoefficientsDict, add_allometric_columns, load_forrester_eq3
+from trunx.gp3.allometrics import (
+    BIOMASS_COLS,
+    CoefficientsDict,
+    add_allometric_columns,
+    aggregate_per_plot,
+    computed_flags,
+    dms_to_decimal,
+    load_forrester_eq3,
+    measured_flag,
+    scale_to_hectare,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,41 +255,27 @@ def _filter_single_species(trees: pl.DataFrame) -> pl.DataFrame:
 
 
 def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFrame:
-    """Compute allometrics and aggregate tree-level data to plot-level per-ha values."""
-    trees = add_allometric_columns(trees, _FORRESTER_EQ3, dbh_col="dbh_cm", species_col="specie")
-
-    logger.info("Computed allometric quantities for %d trees", trees.height)
-
-    per_plot = (
-        trees.sort("date")
-        .group_by("plot_id", "specie", "date")
-        .agg(
-            # pl.first("date"),
-            pl.len().alias("n_count"),
-            pl.col("dbh_cm").mean(),
-            pl.col("height").mean(),
-            pl.col("allo_sb_kg").sum().alias("plot_sb_kg"),
-            pl.col("allo_fb_kg").sum().alias("plot_fb_kg"),
-            pl.col("allo_rb_kg").sum().alias("plot_rb_kg"),
-            pl.col("allo_la_m2").sum().alias("plot_la_m2"),
-            (math.pi * pl.col("dbh_cm").pow(2) / 40000.0).sum().alias("plot_ba_m2"),
-        )
+    """Aggregate tree-level data to plot-level per-ha values."""
+    per_plot = aggregate_per_plot(
+        trees.sort("date"),
+        group_by=["plot_id", "specie", "date"],
+        extra_aggs=[pl.col("height").mean()],
     )
 
     return (
-        per_plot.join(plots, on="plot_id", how="inner")
+        scale_to_hectare(per_plot.join(plots, on="plot_id", how="inner"), pl.col("plot_size_ha"))
+        .rename({"n_trees": "n_stems"})
         .with_columns(
-            (pl.col("n_count") / pl.col("plot_size_ha")).alias("n_stems"),
-            (pl.col("plot_sb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_stem"),
-            (pl.col("plot_fb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_foliage"),
-            (pl.col("plot_rb_kg") / pl.col("plot_size_ha") / 1000.0).alias("biom_root"),
-            (pl.col("plot_la_m2") / (pl.col("plot_size_ha") * 10000.0)).alias("lai"),
-            (pl.col("plot_ba_m2") / pl.col("plot_size_ha")).alias("basal_area"),
+            pl.col("plot_latitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lat"),
+            pl.col("plot_longitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lon"),
+            pl.col("altitude_m").alias("altitude"),
+            (pl.col("plot_size_ha") * 10000.0).alias("area_m2"),
+            pl.col("date").dt.year().alias("year"),
         )
-        .with_columns(
-            basal_area=pl.lit(math.pi) * (pl.col("dbh_cm") / 200.0).pow(2) * pl.col("n_stems"),
-        )
-        .drop("n_count", "plot_sb_kg", "plot_fb_kg", "plot_rb_kg", "plot_la_m2")
         .sort(["specie", "plot_id", "date"])
     )
 
@@ -544,7 +540,18 @@ def _load_plot_meta() -> pl.DataFrame:
 
 
 def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
-    """Load and clean ICP Level II data at tree × census level."""
+    """Load and clean ICP Level II data at tree × census level.
+
+    Adds `lat`/`lon` (decimal degrees, converted from the packed DMS
+    `plot_latitude`/`plot_longitude`), `year`/`month` (from `date`, which
+    falls back to 1 July of `survey_year` for assessments missing a
+    recorded date), `n_stems` (always 1, one physical tree per row),
+    `area_m2` (`plot_size_ha * 10000`), `altitude` (same value as
+    `altitude_m`, in metres — not `plot_altitude`, which is a coded
+    altitude class) and per-tree `biom_stem`, `biom_foliage`, `biom_root`
+    (kg tree⁻¹), `la_m2` (leaf area, m² tree⁻¹) and `basal_area` (m²
+    tree⁻¹, same value as `ba_tree`, kept for existing consumers).
+    """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
 
@@ -558,6 +565,9 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
     logger.info("Loaded %d tree records", trees.height)
     trees = trees.join(plots, on="plot_id", how="left")
     logger.info("Joined tree records with plot metadata: %d rows", trees.height)
+    # Missing plot sizes are null or coded as -1 in si_plt.
+    trees = trees.filter(pl.col("plot_size_ha").gt(0))
+    logger.info("After dropping trees without plot size: %d rows", trees.height)
 
     crown = _load_crown(trees)
     logger.info("Loaded crown conditions: %d tree×census rows", crown.height)
@@ -579,6 +589,35 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
         )
     )
 
+    trees = (
+        trees.pipe(add_allometric_columns, _FORRESTER_EQ3, dbh_col="dbh_cm", species_col="specie")
+        .rename(
+            {
+                "allo_sb_kg": "biom_stem",
+                "allo_fb_kg": "biom_foliage",
+                "allo_rb_kg": "biom_root",
+                "allo_la_m2": "la_m2",
+            }
+        )
+        .with_columns(
+            pl.col("plot_latitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lat"),
+            pl.col("plot_longitude")
+            .map_elements(dms_to_decimal, return_dtype=pl.Float64)
+            .alias("lon"),
+            pl.col("ba_tree").alias("basal_area"),
+            pl.lit(1.0).alias("n_stems"),
+            (pl.col("plot_size_ha") * 10000.0).alias("area_m2"),
+            pl.col("altitude_m").alias("altitude"),
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month"),
+            # ICP heights are field measurements; biomass is always Forrester allometry.
+            measured_flag("height", pl.lit(True)),
+            *computed_flags(BIOMASS_COLS),
+        )
+    )
+
     trees = trees.sort(["specie", "tree_id", "date"])
 
     trees.write_parquet(output_path)
@@ -587,22 +626,152 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
     return trees
 
 
+def _fill_with_measured(plot_df: pl.DataFrame, inventory: pl.DataFrame) -> pl.DataFrame:
+    """Prefer ``gr_inv`` values over tree aggregates and add ``flag_*`` columns.
+
+    Each ``flag_<metric>`` is "measured" when the value comes from
+    ``gr_inv``, "computed" when it is aggregated from ``gr_ipm`` trees, and
+    null when neither is available. ICP has no measured LAI or biomass.
+    """
+    measured_cols: dict[str, str | None] = {
+        "height": "height_basal_area_tree",
+        "dbh_qmd": "diameter_basal_area_tree",
+        "basal_area": "basal_area",
+        "lai": None,
+        **dict.fromkeys(BIOMASS_COLS),
+    }
+    measured = inventory.select(
+        "plot_id",
+        "specie",
+        "date",
+        *(pl.col(src).alias(f"{dst}_measured") for dst, src in measured_cols.items() if src),
+    )
+    df = plot_df.with_columns(pl.col("date").cast(pl.Date).alias("_date")).join(
+        measured.rename({"date": "_date"}), on=["plot_id", "specie", "_date"], how="left"
+    )
+    fills: list[pl.Expr] = []
+    for metric, src in measured_cols.items():
+        value = pl.col(f"{metric}_measured") if src else pl.lit(None, dtype=pl.Float64)
+        fills += [
+            pl.coalesce(value, pl.col(metric)).alias(metric),
+            pl.when(value.is_not_null())
+            .then(pl.lit("measured"))
+            .when(pl.col(metric).is_not_null())
+            .then(pl.lit("computed"))
+            .alias(f"flag_{metric}"),
+        ]
+    return df.with_columns(fills).drop("_date", cs.ends_with("_measured"))
+
+
 def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
-    """Aggregate ICP Level II tree data to plot level for 3PG calibration."""
+    """Aggregate ICP Level II tree data to plot level for 3PG calibration.
+
+    Height, QMD and basal area reported in ``gr_inv`` (see
+    `prepare_icp_inventory_data`) replace the tree aggregates where
+    available; ``flag_height``, ``flag_dbh_qmd``, ``flag_basal_area``,
+    ``flag_lai`` and ``flag_biom_*`` record whether each value is
+    "measured" or "computed".
+    """
+    if output_path is None:
+        output_path = str(os.path.join(clean_data_folder, "icp_plot_data.parquet"))
+
     trees = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
+    inventory = pl.read_parquet(os.path.join(clean_data_folder, "icp_inventory_data.parquet"))
     plots = _load_plots()
     trees = _filter_single_species(trees)
     logger.info("After single-species filter: %d records", trees.height)
 
-    result = _aggregate_per_plot(trees, plots)
+    result = _aggregate_per_plot(trees, plots).pipe(_fill_with_measured, inventory)
     logger.info(
         "Aggregated to %d plot×year observations across %d plots",
         result.height,
         result["plot_id"].n_unique(),
     )
+
+    result.write_parquet(output_path)
     logger.info("Saved %d rows to %s", result.height, output_path)
 
     return result
+
+
+def prepare_icp_inventory_data(output_path: str | None = None) -> pl.DataFrame:
+    """Prepare the basal-area mean tree reported in ``gr_inv.csv`` and derive basal area.
+
+    ``trees_remain`` is reported per plot by some countries and per hectare
+    by others, so stem density is instead counted from the ``gr_ipm`` trees
+    in ``icp_tree_data.parquet`` (divided by the ``si_plt`` plot size).
+    ``trees_remain`` is only used as a relative weight to combine several
+    growth subplots of one plot. Because ``diameter_basal_area_tree`` is the
+    quadratic mean diameter, basal area is ``n_stems * pi * (d / 200)**2``.
+
+    Parameters
+    ----------
+    output_path : str | None
+        Parquet path to write the result. Defaults to
+        `clean_data_folder/icp_inventory_data.parquet`.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (plot_id, specie, date) with `diameter_basal_area_tree`
+        (cm), `height_basal_area_tree` (m), `n_stems` (ha⁻¹, from gr_ipm)
+        and `basal_area` (m² ha⁻¹).
+    """
+    if output_path is None:
+        output_path = str(os.path.join(clean_data_folder, "icp_inventory_data.parquet"))
+
+    species_df, _ = _load_dictionaries()
+    keys = ["plot_id", "specie", "date"]
+
+    stem_density = (
+        pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
+        .filter(pl.col("plot_size_ha").gt(0))
+        .with_columns(pl.col("date").cast(pl.Date))
+        .group_by(keys)
+        .agg((pl.len() / pl.col("plot_size_ha").first()).alias("n_stems"))
+    )
+
+    weight = pl.col("trees_remain")
+    inventory = (
+        pl.read_csv(
+            _find_csv(os.path.join(_ICP_FOLDER, "595_gr_*/gr_inv.csv")),
+            separator=";",
+            infer_schema_length=0,
+        )
+        .with_columns(
+            pl.col("code_tree_species").cast(pl.Int64),
+            pl.col("date_sampling").str.to_date().alias("date"),
+            pl.col("trees_remain", "diameter_basal_area_tree", "height_basal_area_tree").cast(
+                pl.Float64, strict=False
+            ),
+        )
+        .filter(pl.col("trees_remain").gt(0) & pl.col("diameter_basal_area_tree").gt(0))
+        .pipe(_make_plot_id)
+        .join(species_df.select("code_tree_species", "specie"), on="code_tree_species")
+        .group_by(keys)
+        .agg(
+            ((weight * pl.col("diameter_basal_area_tree").pow(2)).sum() / weight.sum())
+            .sqrt()
+            .alias("diameter_basal_area_tree"),
+            (
+                (weight * pl.col("height_basal_area_tree")).sum()
+                / weight.filter(pl.col("height_basal_area_tree").is_not_null()).sum()
+            )
+            .fill_nan(None)
+            .alias("height_basal_area_tree"),
+        )
+        .join(stem_density, on=keys, how="inner")
+        .with_columns(
+            basal_area=pl.col("n_stems")
+            * math.pi
+            * (pl.col("diameter_basal_area_tree") / 200.0) ** 2
+        )
+        .sort(keys)
+    )
+
+    inventory.write_parquet(output_path)
+    logger.info("Saved %d rows to %s", inventory.height, output_path)
+    return inventory
 
 
 if __name__ == "__main__":
@@ -610,6 +779,10 @@ if __name__ == "__main__":
     tree_df = prepare_icp_tree_data()
     print("Tree-level data:")
     print(tree_df.head())
+
+    inventory_df = prepare_icp_inventory_data()
+    print("Inventory data:")
+    print(inventory_df.head())
 
     plot_id = "50.0013"
     print(tree_df.filter(pl.col("plot_id") == plot_id))

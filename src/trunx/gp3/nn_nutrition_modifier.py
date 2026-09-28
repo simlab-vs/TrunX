@@ -15,10 +15,17 @@ import polars as pl
 
 from trunx.config import images_folder
 from trunx.gp3.bayesiancalibrations.pymc_icp_plots import prepare_plot_input
-from trunx.gp3.extended_helper import INPUT_VARIABLES, poly_nm
+from trunx.gp3.extended_helper import INPUT_VARIABLES, init_mlp_modifier_params, mlp_nm, poly_nm
 from trunx.gp3.model_inputs import ExtendedParams, InputData, SiteData
 from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg
+from trunx.gp3.training_utils import (
+    build_observation_indices,
+    build_optimizer,
+    plot_loss_over_iterations,
+    plot_traces_grid,
+    weighted_squared_error,
+)
 
 _METRIC_LABELS = {
     "DBH": "DBH (cm)",
@@ -47,6 +54,12 @@ class NutritionModifierConfig:
     num_epochs: int = 1000  # Number of training epochs
     standardize_targets: bool = True  # Whether to standardize target variables
     image_dir: str = field(default_factory=lambda: str(images_folder / "nn_nutrition_modifier"))
+    # Which learnable nutrition-modifier function to fit — e.g. poly_nm (default) or
+    # mlp_nm from extended_helper.py. Its matching initial_modifier_params (passed
+    # separately to train_nutrition_modifier) must come from that function's own
+    # initializer — init_modifier_params for poly_nm, init_mlp_modifier_params
+    # (needs a PRNG key) for mlp_nm — since their parameter pytrees aren't interchangeable.
+    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm
 
 
 @dataclass
@@ -82,6 +95,14 @@ def make_loss_function(
 ):
     """Create a loss function for the 3PG model with a nutrition modifier."""
     n_obs = len(obs_indices)
+    variable_weights = {
+        "BA": 1.0,
+        "DBH": 1.0,
+        "Height": 1.0,
+        "WF": 1.0,
+        "WS": 1.0,
+        "WR": 1.0,
+    }
 
     def loss_function(modifier_params):
         extended_params = ExtendedParams(modifier_params=modifier_params)
@@ -96,61 +117,18 @@ def make_loss_function(
             modifier_fn,
             input_vars,
         )
-
-        variable_weights = {
-            "BA": 1.0,
-            "DBH": 1.0,
-            "Height": 1.0,
-            "WF": 1.0,
-            "WS": 1.0,
-            "WR": 1.0,
-        }
-        total_squared_error = jnp.asarray(0.0, dtype=jnp.float32)
-        for var_name in target_vars:
-            pg3_predictions = pg3_outputs[var_name][jnp.asarray(obs_indices)]
-            if pg3_predictions.ndim == 2:
-                pg3_predictions = pg3_predictions[:, species_index].reshape(-1)
-
-            observed_values = obs_values[var_name].reshape(-1)
-            scale = obs_scales[var_name]
-            mask = ~(jnp.isnan(observed_values) | jnp.isnan(pg3_predictions))
-            residuals = (pg3_predictions - observed_values) / scale
-            squared = jnp.where(mask, residuals**2, 0.0)
-            weight = variable_weights.get(var_name, 1.0)
-            total_squared_error += weight * jnp.sum(squared)
-
+        total_squared_error = weighted_squared_error(
+            pg3_outputs,
+            target_vars,
+            obs_indices,
+            obs_values,
+            obs_scales,
+            species_index,
+            variable_weights,
+        )
         return total_squared_error / jnp.asarray(n_obs, dtype=jnp.float32)
 
     return loss_function
-
-
-def build_optimizer(config: NutritionModifierConfig) -> optax.GradientTransformation:
-    """Build an Optax optimizer based on the configuration."""
-    if config.optimizer_name == "adam":
-        base_optimizer = optax.adam(learning_rate=config.learning_rate)
-    elif config.optimizer_name == "sgd":
-        base_optimizer = optax.sgd(learning_rate=config.learning_rate)
-    else:
-        raise ValueError("optimizer_name must be either 'adam' or 'sgd'")
-
-    return optax.chain(
-        optax.clip_by_global_norm(config.global_clip_norm),  # Gradient clipping
-        base_optimizer,
-    )
-
-
-def build_observation_indices(observed_data: pl.DataFrame, site_data: SiteData) -> jnp.ndarray:
-    """Build observation month indices relative to the simulation start month."""
-    if not {"year", "month"}.issubset(observed_data.columns):
-        raise ValueError("Observed sheet must contain year and month columns")
-
-    start_year = int(np.asarray(site_data.year_i).reshape(-1)[0])
-    start_month = int(np.asarray(site_data.month_i).reshape(-1)[0])
-
-    year = observed_data["year"].cast(pl.Int32).to_numpy()
-    month = observed_data["month"].cast(pl.Int32).to_numpy()
-    idx_values = (year - start_year) * 12 + (month - start_month)
-    return jnp.asarray(idx_values, dtype=jnp.int32)
 
 
 def build_observation_data(
@@ -179,9 +157,13 @@ def build_observation_data(
 def train_nutrition_modifier(
     config: NutritionModifierConfig,
     initial_modifier_params: Any,
-    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
 ) -> NutritionModifierFitResult:
-    """Train the nutrition modifier using gradient descent."""
+    """Train the nutrition modifier (`config.modifier_fn`) using gradient descent.
+
+    `initial_modifier_params` must match `config.modifier_fn`'s own parameter
+    pytree — e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params`
+    for `mlp_nm` — since they aren't interchangeable.
+    """
     input_data = prepare_data(config.file_path)
     obs_indices, obs_values, obs_scales = build_observation_data(
         config.file_path,
@@ -200,13 +182,15 @@ def train_nutrition_modifier(
         obs_indices=obs_indices,
         obs_values=obs_values,
         obs_scales=obs_scales,
-        modifier_fn=modifier_fn,
+        modifier_fn=config.modifier_fn,
         input_vars=config.input_vars,
         species_index=config.species_index,
     )
 
     # Create an optimizer
-    optimizer = build_optimizer(config)
+    optimizer = build_optimizer(
+        config.optimizer_name, config.learning_rate, config.global_clip_norm
+    )
     opt_state = optimizer.init(modifier_params)
 
     @jax.jit
@@ -236,9 +220,11 @@ def train_nutrition_modifier(
 def build_predicted_series(
     config: NutritionModifierConfig,
     fitted_modifier_params: Any,
-    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
 ) -> dict[str, np.ndarray]:
     """Simulate 3PG with and without the fitted nutrition modifier, for plotting.
+
+    Uses `config.modifier_fn` — must match whatever `fitted_modifier_params`
+    was fitted with (see `train_nutrition_modifier`).
 
     Returns
     -------
@@ -257,7 +243,7 @@ def build_predicted_series(
         input_data.species,
         input_data.deposition,
         extended_params,
-        modifier_fn,
+        config.modifier_fn,
         config.input_vars,
     )
     _, outputs_default = run_3pg(
@@ -295,24 +281,6 @@ def _months_to_dates(start_year: int, start_month: int, n_months: int) -> np.nda
     )
 
 
-def plot_loss_over_iterations(
-    loss_history: list[float], save_path: str | None = None, show: bool = True
-) -> None:
-    """Plot training loss over epochs."""
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(np.arange(len(loss_history)), loss_history, color="tab:blue", linewidth=2)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("Nutrition Modifier Loss Trajectory")
-    ax.grid(alpha=0.3)
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=200, bbox_inches="tight")
-    if show:
-        plt.show()
-
-
 def _named_traces(param_history: list[Any]) -> list[tuple[str, np.ndarray]]:
     """Flatten a pytree parameter history into (label, values-over-epochs) traces."""
     leaves_by_step = [jax.tree_util.tree_flatten_with_path(step)[0] for step in param_history]
@@ -343,34 +311,13 @@ def plot_param_history_over_iterations(
     if not param_history:
         return
 
-    traces = _named_traces(param_history)
-    n_traces = len(traces)
-
-    n_cols = min(3, n_traces)
-    n_rows = int(np.ceil(n_traces / n_cols))
-    fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows), layout="constrained"
+    plot_traces_grid(
+        _named_traces(param_history),
+        suptitle="Nutrition Modifier Parameter Trajectories",
+        xlabel="Epoch",
+        save_path=save_path,
+        show=show,
     )
-    axes_list = np.ravel(np.atleast_1d(axes)).tolist()
-
-    iterations = np.arange(len(param_history))
-    for ax, (label, values) in zip(axes_list[:n_traces], traces, strict=True):
-        ax.plot(iterations, values, color="tab:blue", linewidth=2)
-        ax.set_title(label)
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Value")
-        ax.grid(alpha=0.3)
-
-    for ax in axes_list[n_traces:]:
-        ax.set_visible(False)
-
-    fig.suptitle("Nutrition Modifier Parameter Trajectories")
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=200, bbox_inches="tight")
-    if show:
-        plt.show()
 
 
 def plot_observed_vs_predicted(
@@ -456,21 +403,35 @@ if __name__ == "__main__":
 
     # Which of ("N", "S", "T_avg") to build the modifier over
     input_vars = ("N", "S")
+
+    # Select which learnable nutrition-modifier function to fit.
+    modifier_fn = mlp_nm
+    if modifier_fn is poly_nm:
+        initial_modifier_params = init_modifier_params(input_vars)
+    elif modifier_fn is mlp_nm:
+        initial_modifier_params = init_mlp_modifier_params(
+            jax.random.PRNGKey(0), input_vars, hidden_sizes=(3, 2)
+        )
+    else:
+        raise ValueError(f"No initializer wired up for modifier_fn={modifier_fn!r}")
+
     config = NutritionModifierConfig(
         file_path=file_path,
         target_vars=["BA", "DBH", "Height", "WS", "WF", "WR"],
         input_vars=input_vars,
         optimizer_name="adam",
         learning_rate=1e-3,
-        num_epochs=5000,
+        num_epochs=2000,
+        modifier_fn=modifier_fn,
     )
 
-    initial_modifier_params = init_modifier_params(input_vars)
     fit_result = train_nutrition_modifier(config, initial_modifier_params=initial_modifier_params)
 
     image_dir = Path(config.image_dir)
     plot_loss_over_iterations(
         fit_result.loss_history,
+        title="Nutrition Modifier Loss Trajectory",
+        xlabel="Epoch",
         save_path=str(image_dir / "loss.png"),
         show=False,
     )

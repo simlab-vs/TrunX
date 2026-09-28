@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, clean_data_folder
+from trunx.gp3.allometrics import dms_to_decimal
 
 DOMINANT_SPECIES_THRESHOLD = 1
 MAX_QMD_MEAN_RELATIVE_DIFF = 0.10
@@ -209,13 +210,8 @@ def plot_ids_by_species(selected: pl.DataFrame) -> dict[str, list[str]]:
 
 
 def _dms_to_decimal(col: str) -> pl.Expr:
-    """Convert a signed DDMMSS string column (e.g. ``"+464900"``) to decimal degrees."""
-    sign = pl.when(pl.col(col).str.starts_with("-")).then(-1).otherwise(1)
-    digits = pl.col(col).str.slice(1)
-    degrees = digits.str.slice(0, 2).cast(pl.Float64)
-    minutes = digits.str.slice(2, 2).cast(pl.Float64)
-    seconds = digits.str.slice(4, 2).cast(pl.Float64)
-    return sign * (degrees + minutes / 60 + seconds / 3600)
+    """Convert a signed DMS string column (e.g. ``"+464900"``) to decimal degrees."""
+    return pl.col(col).map_elements(dms_to_decimal, return_dtype=pl.Float64)
 
 
 def plot_plot_locations(selected: pl.DataFrame, icp_df: pl.DataFrame) -> go.Figure:

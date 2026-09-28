@@ -230,7 +230,8 @@ def _(os, results_data_folder):
     )
     bayesian_output_dir = os.path.join(calibration_dir, "demetropolisz")
     hmc_output_dir = os.path.join(calibration_dir, "nuts")
-    return bayesian_output_dir, hmc_output_dir
+    gd_output_dir = os.path.join(calibration_dir, "gradient_descent")
+    return bayesian_output_dir, gd_output_dir, hmc_output_dir
 
 
 @app.cell
@@ -238,6 +239,7 @@ def _(
     FIT_PARAMS,
     GREEN_SHADES,
     bayesian_output_dir,
+    gd_output_dir,
     hmc_output_dir,
     os,
     paper_figs_dir,
@@ -253,11 +255,14 @@ def _(
         plot_variables=["WS", "WF", "WR"],
         include_bayesian=True,
         include_hmc=True,
+        include_gradient_descent=True,
+        gd_cache_dir=gd_output_dir,
         bayesian_label="PyMC (DEz)",
         hmc_label="HMC (NUTS)",
         series_colors={
             "default": GREEN_SHADES[3],
             "bayesian": GREEN_SHADES[5],
+            "gradient_descent": "green",
             "hmc": "orange",
         },
     )
