@@ -47,7 +47,11 @@ from trunx.gp3.bayesiancalibrations.pymc_param_est import (
     Run3PGLogLikeGrad,
     _configure_gpu_memory_sharing,
 )
-from trunx.gp3.bayesiancalibrations.save_load_results import save_results
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_checkpoint,
+    save_checkpoint,
+    save_results,
+)
 from trunx.gp3.model_inputs import Params
 
 # (name, size) for each entry a flat parameter vector is sliced into. `size` is 1 for a
@@ -225,6 +229,30 @@ def multi_plot_pymc_model(
     return model
 
 
+def _extract_last_values(
+    idata: az.InferenceData, param_names: Sequence[str]
+) -> list[dict[str, float | list[float]]]:
+    """Extract each chain's last posterior draw, for use as the next chunk's initvals.
+
+    A name in `INITIAL_STATE_PARAMS` (`WS0`/`WR0`/`WF0`) is per-plot (one value
+    per plot, not a shared scalar — see `multi_plot_pymc_model`), so its last
+    draw is kept as a plain list (JSON-serializable, for `save_checkpoint`)
+    instead of being collapsed with `float()`.
+    """
+    posterior = cast(Any, idata).posterior
+    return [
+        {
+            name: (
+                posterior[name].isel(chain=chain, draw=-1).values.tolist()
+                if name in INITIAL_STATE_PARAMS
+                else float(posterior[name].isel(chain=chain, draw=-1).values)
+            )
+            for name in param_names
+        }
+        for chain in range(posterior.sizes["chain"])
+    ]
+
+
 def run_pymc_multi_plot_inference(
     packed_plots: PackedPlotBatch,
     fixed_params: Params,
@@ -236,6 +264,9 @@ def run_pymc_multi_plot_inference(
     step_method: str = "demetropolisz",
     target_accept: float = 0.9,
     param_defaults: dict[str, float] | None = None,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for shared-parameter calibration across multiple plots.
 
@@ -267,6 +298,20 @@ def run_pymc_multi_plot_inference(
         centered on each plot's own measured value, so PyMC's default start
         there is already sensible. If None, PyMC falls back to its own
         default (random/midpoint) initialization for every parameter.
+    checkpoint_dir : str | None
+        Directory to save sampling checkpoints to and resume from. If a
+        checkpoint from a previous (possibly interrupted) run is found there,
+        sampling resumes from it instead of starting over. If None, sampling
+        runs in a single pass with no checkpointing.
+    checkpoint_every : int
+        Number of post-tuning draws per chain to sample between checkpoints.
+    resume_tune : int
+        Number of tuning steps used to re-warm the sampler at the start of
+        every chunk after the first (each chunk starts a fresh step object, so
+        its proposal scale/step size needs to briefly readapt). For `"nuts"`,
+        this re-tunes the step size and mass matrix from scratch each chunk,
+        which is more wasteful than for `"demetropolisz"` — a larger
+        `resume_tune` is worth considering there if checkpointing resumes often.
     """
     if step_method not in {"demetropolisz", "nuts"}:
         raise ValueError(f"step_method must be 'demetropolisz' or 'nuts', got {step_method!r}")
@@ -277,29 +322,58 @@ def run_pymc_multi_plot_inference(
         cores = chains
     _configure_gpu_memory_sharing(cores)
 
-    initvals = dict(param_defaults) if param_defaults is not None else None
+    param_names = list(priors.keys())
+    idata: az.InferenceData | None = None
+    draws_done = 0
+    initvals: Any = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+
+    if checkpoint_dir is not None:
+        checkpoint = load_checkpoint(checkpoint_dir)
+        if checkpoint is not None:
+            idata, draws_done, initvals = checkpoint
+            assert len(initvals) == chains, (
+                f"Checkpoint has {len(initvals)} chains, but {chains} were requested"
+            )
+            print(f"Resuming from checkpoint: {draws_done}/{num_samples} draws already completed")
 
     with model:
-        step = (
-            pm.NUTS(target_accept=target_accept) if step_method == "nuts" else pm.DEMetropolisZ()
-        )
-        trace = pm.sample(
-            draws=num_samples,
-            tune=num_warmup,
-            step=step,
-            chains=chains,
-            cores=cores,
-            initvals=cast(Any, initvals),
-            # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
-            # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
-            mp_ctx="spawn",
-            random_seed=42,
-            return_inferencedata=True,
-            progressbar=True,
-            compute_convergence_checks=True,
-        )
+        while draws_done < num_samples:
+            chunk_draws = min(checkpoint_every, num_samples - draws_done)
+            chunk_tune = num_warmup if idata is None else resume_tune
+            step = (
+                pm.NUTS(target_accept=target_accept)
+                if step_method == "nuts"
+                else pm.DEMetropolisZ()
+            )
+            chunk_trace = pm.sample(
+                draws=chunk_draws,
+                tune=chunk_tune,
+                step=step,
+                chains=chains,
+                cores=cores,
+                initvals=cast(Any, initvals),
+                # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
+                # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
+                mp_ctx="spawn",
+                random_seed=42,
+                return_inferencedata=True,
+                progressbar=True,
+                # Convergence is checked once on the full trace in run_pymc_multi_plot_analysis.
+                compute_convergence_checks=False,
+            )
+            idata = (
+                chunk_trace
+                if idata is None
+                else az.concat(cast(Any, idata), chunk_trace, dim="draw", inplace=False)
+            )
+            draws_done += chunk_draws
+            initvals = _extract_last_values(idata, param_names)
 
-    return trace, model
+            if checkpoint_dir is not None:
+                save_checkpoint(idata, draws_done, initvals, checkpoint_dir)
+                print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
+
+    return cast(az.InferenceData, idata), model
 
 
 def _species_names_in_batch(packed_plots: PackedPlotBatch) -> list[str]:
@@ -322,8 +396,14 @@ def run_pymc_multi_plot_analysis(
     cores: int | None = None,
     step_method: str = "demetropolisz",
     target_accept: float = 0.9,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ) -> None:
     """Run shared-parameter PyMC calibration across many plots and save results.
+
+    Sampling is checkpointed to `output_dir` every `checkpoint_every` draws, so
+    calling this again with the same `output_dir` resumes an interrupted run
+    instead of starting over.
 
     Parameters
     ----------
@@ -350,7 +430,7 @@ def run_pymc_multi_plot_analysis(
         parameters with a real prior and a bearing on an output still
         scored under `error_mode`) plus every `err_*` sigma in
         `params_file` — not every bounded parameter in the file.
-    step_method, target_accept
+    step_method, target_accept, checkpoint_every, resume_tune
         Forwarded to `run_pymc_multi_plot_inference`; see its docstring.
     """
     if error_mode not in ERROR_MODES:
@@ -400,6 +480,9 @@ def run_pymc_multi_plot_analysis(
         step_method=step_method,
         target_accept=target_accept,
         param_defaults=param_defaults,
+        checkpoint_dir=output_dir,
+        checkpoint_every=checkpoint_every,
+        resume_tune=resume_tune,
     )
 
     print("\nConvergence diagnostics:")
@@ -425,6 +508,8 @@ def run_pymc_multi_plot_analysis_for_file(
     step_method: str = "demetropolisz",
     target_accept: float = 0.9,
     max_plots: int | None = None,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
 ) -> None:
     """Run shared-parameter PyMC calibration across all plots in one parquet file."""
     if plot_ids is None:
@@ -448,6 +533,8 @@ def run_pymc_multi_plot_analysis_for_file(
         cores=cores,
         step_method=step_method,
         target_accept=target_accept,
+        checkpoint_every=checkpoint_every,
+        resume_tune=resume_tune,
     )
 
 
@@ -539,6 +626,20 @@ if __name__ == "__main__":
         default=None,
         help="Limit to this many plots, for a quick smoke test. Omit to use every plot.",
     )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=500,
+        help="Post-tuning draws per chain to sample between checkpoints. Re-running with "
+        "the same --output-dir resumes from the last checkpoint there (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--resume-tune",
+        type=int,
+        default=200,
+        help="Tuning steps used to re-warm the sampler at the start of every chunk after "
+        "the first (default: %(default)s)",
+    )
     args = parser.parse_args()
 
     start_time = time.perf_counter()
@@ -568,6 +669,8 @@ if __name__ == "__main__":
         cores=args.cores,
         step_method=args.step_method,
         target_accept=args.target_accept,
+        checkpoint_every=args.checkpoint_every,
+        resume_tune=args.resume_tune,
     )
 
     elapsed_time = time.perf_counter() - start_time
