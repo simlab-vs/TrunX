@@ -23,10 +23,14 @@ from pyproj import Transformer
 
 from trunx.config import clean_data_folder, data_folder
 from trunx.gp3.allometrics import (
+    BIOMASS_COLS,
+    PLOT_FLAG_METRICS,
     CoefficientsDict,
     add_allometric_columns,
     aggregate_per_plot,
+    computed_flags,
     load_forrester_eq3,
+    measured_flag,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,10 +54,11 @@ def _load_plots() -> pl.DataFrame:
     -------
     pl.DataFrame
         Columns: `plot_id`, `inv_nr`, `lat`, `lon`, `altitude`,
-        ``date``.
+        ``date``, `plot_area_m2` (large sample circle, possibly reduced by
+        boundaries).
     """
     df = pl.read_csv(os.path.join(_NFI_RAW_FOLDER, "Givi_plot_level.csv")).rename(
-        {"CLNR": "plot_id", "INVNR": "inv_nr", "Z25": "altitude"}
+        {"CLNR": "plot_id", "INVNR": "inv_nr", "Z25": "altitude", "KRFLGR": "plot_area_m2"}
     )
 
     transformer = Transformer.from_crs("EPSG:21781", "EPSG:4326", always_xy=True)
@@ -65,7 +70,7 @@ def _load_plots() -> pl.DataFrame:
             pl.Series("lon", lon_arr),
             pl.col("DATUMF").str.strptime(pl.Date, "%d/%m/%Y").alias("date"),
         ]
-    ).select(["plot_id", "inv_nr", "lat", "lon", "altitude", "date"])
+    ).select(["plot_id", "inv_nr", "lat", "lon", "altitude", "date", "plot_area_m2"])
 
 
 def _load_trees() -> pl.DataFrame:
@@ -147,6 +152,9 @@ def prepare_nfi_tree_data(output_path: str | None = None) -> pl.DataFrame:
             (10000.0 / pl.col("tree_rep_fact")).alias("area_m2"),
             pl.col("date").dt.year().alias("year"),
             pl.col("date").dt.month().alias("month"),
+            # NFI heights (HOEHE) are field measurements on sample trees.
+            measured_flag("height", pl.lit(True)),
+            *computed_flags(BIOMASS_COLS),
         )
     )
 
@@ -239,6 +247,8 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
 
     Biomass components are computed using allometric eqns from Forrester et al. (2017).
     Leaf area index is ``sum(la_m2_per_tree * rep_fact) / 10000``.
+    Height is the expansion-factor weighted mean over sample trees with a
+    measured height (null when none was measured).
 
     Parameters
     ----------
@@ -260,6 +270,13 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
             pl.col("lon").first(),
             pl.col("altitude").first(),
             pl.col("date").first(),
+            pl.col("plot_area_m2").first().alias("area_m2"),
+            (
+                (pl.col("height") * pl.col("tree_rep_fact")).sum()
+                / pl.col("tree_rep_fact").filter(pl.col("height").is_not_null()).sum()
+            )
+            .fill_nan(None)
+            .alias("height"),
         ],
     )
 
@@ -273,6 +290,7 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
             pl.col("date").dt.year().alias("year"),
         )
         .drop("sb_kg", "fb_kg", "rb_kg", "la_m2")
+        .with_columns(computed_flags(PLOT_FLAG_METRICS))
         .sort(["plot_id", "date"])
     )
 
@@ -293,7 +311,8 @@ def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
         `lon`, `altitude`, `n_stems` (ha⁻¹), `dbh_qmd` (quadratic mean
         diameter), `dbh_mean` (arithmetic mean), `dbh_std`,
         `biom_stem`, `biom_foliage`, `biom_root` (all t ha⁻¹),
-        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹).
+        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹), `height` (m), `area_m2`
+        (large sample circle; per-ha values use the tree expansion factors).
     """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "nfi_cleaned.parquet"))

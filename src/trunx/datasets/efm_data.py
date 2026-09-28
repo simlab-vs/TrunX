@@ -9,10 +9,14 @@ import polars as pl
 
 from trunx.config import clean_data_folder, data_folder
 from trunx.gp3.allometrics import (
+    BIOMASS_COLS,
+    PLOT_FLAG_METRICS,
     CoefficientsDict,
     add_allometric_columns,
     aggregate_per_plot,
+    computed_flags,
     load_forrester_eq3,
+    measured_flag,
     scale_to_hectare,
 )
 
@@ -103,21 +107,30 @@ def _load_geo(folder: str) -> pl.DataFrame:
 
 
 def _load_trees(folder: str) -> pl.DataFrame:
-    """Load and clean the EFM tree-level CSV."""
+    """Load and clean the EFM tree-level CSV.
+
+    Uses the measured `height` (sample trees, in m) where available and the
+    provider's gap-filled `height_calc` otherwise, recorded in `flag_height`.
+    """
     return (
         pl.read_csv(os.path.join(folder, "efm_tree_data.csv"), null_values=["NA"])
         .filter(pl.col("species").is_in(SPECIES_LIST))
-        .drop("height")
+        .with_columns(
+            pl.col("height").is_not_null().alias("height_is_measured"),
+            pl.coalesce("height", "height_calc").alias("height"),
+        )
+        .with_columns(measured_flag("height", pl.col("height_is_measured")))
         .rename(
             {
                 "diameter": "dbh_cm",
-                "height_calc": "height",
                 "species": "specie",
                 "plot": "plot_id",
                 "TreeNo": "tree_id",
             }
         )
-        .select(["plot_id", "year", "tree_id", "specie", "status", "dbh_cm", "height"])
+        .select(
+            ["plot_id", "year", "tree_id", "specie", "status", "dbh_cm", "height", "flag_height"]
+        )
     )
 
 
@@ -164,6 +177,7 @@ def prepare_efm_tree_data(output_path: str | None = None) -> pl.DataFrame:
             (pl.col("year").cast(pl.String) + pl.lit("-07-01"))
             .str.strptime(pl.Date, "%Y-%m-%d")
             .alias("date"),
+            *computed_flags(BIOMASS_COLS),
         )
         .with_columns(pl.col("date").dt.month().alias("month"))
     )
@@ -241,7 +255,6 @@ def _aggregate_alive(trees: pl.DataFrame) -> pl.DataFrame:
             .alias("date"),
             pl.lit("alive").alias("status"),
         )
-        .drop(["area_m2"])
         .select(
             [
                 "specie",
@@ -252,6 +265,7 @@ def _aggregate_alive(trees: pl.DataFrame) -> pl.DataFrame:
                 "lon",
                 "lat",
                 "altitude",
+                "area_m2",
                 "biom_stem",
                 "biom_root",
                 "biom_foliage",
@@ -264,6 +278,7 @@ def _aggregate_alive(trees: pl.DataFrame) -> pl.DataFrame:
                 "height",
             ]
         )
+        .with_columns(computed_flags(PLOT_FLAG_METRICS))
     )
 
 

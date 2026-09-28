@@ -10,45 +10,50 @@ from trunx.datasets.efm_data import prepare_efm_data, prepare_efm_tree_data
 from trunx.datasets.icp_level2_data import prepare_icp_plot_data, prepare_icp_tree_data
 from trunx.datasets.lwf_data import prepare_lwf_data, prepare_lwf_tree_data
 from trunx.datasets.nfi_data import prepare_nfi_data, prepare_nfi_tree_data
+from trunx.gp3.allometrics import BIOMASS_COLS, PLOT_FLAG_METRICS
 
 logger = logging.getLogger(__name__)
 
+TREE_FLAG_COLUMNS = [f"flag_{c}" for c in ["height", *BIOMASS_COLS]]
+PLOT_FLAG_COLUMNS = [f"flag_{c}" for c in PLOT_FLAG_METRICS]
+
 TREE_COLUMNS = [
-    # "area_m2",
-    # "basal_area",
-    # "biom_foliage",
-    # "biom_root",
-    # "biom_stem",
+    "basal_area",
+    "biom_foliage",
+    "biom_root",
+    "biom_stem",
     "date",
     "dbh_cm",
     "altitude",
     "height",
-    # "la_m2",
-    # "lat",
-    # "lon",
+    "la_m2",
+    "lat",
+    "lon",
     "plot_id",
     "specie",
     "tree_id",
+    *TREE_FLAG_COLUMNS,
 ]
 
 PLOT_COLUMNS = [
     "altitude",
-    # "basal_area",
-    # "biom_foliage",
-    # "biom_root",
-    # "biom_stem",
+    "area_m2",
+    "basal_area",
+    "biom_foliage",
+    "biom_root",
+    "biom_stem",
     "date",
     "dbh_qmd",
     "height",
     "lai",
-    # "lat",
-    # "lon",
+    "lat",
+    "lon",
     "dbh_mean",
     "dbh_std",
     "n_stems",
     "plot_id",
     "specie",
-    # "year",
+    *PLOT_FLAG_COLUMNS,
 ]
 
 
@@ -71,7 +76,7 @@ def get_tree_level_tables() -> dict[str, pl.DataFrame]:
 def get_combined_tree_data(output_path: str | None = None) -> pl.DataFrame:
     """Stack every dataset's tree-level table into one, with a `source` column.
 
-    Casts `plot_id`/`tree_id` to string and `dbh_cm`/`altitude`/`height`/
+    Casts `plot_id`/`tree_id`/`flag_*` to string and `dbh_cm`/`altitude`/`height`/
     `date` to matching types across sources, since e.g. NFI/EFM use
     numeric plot and tree ids while LWF/ICP use strings.
 
@@ -98,6 +103,7 @@ def get_combined_tree_data(output_path: str | None = None) -> pl.DataFrame:
                 pl.col("altitude").cast(pl.Float64),
                 pl.col("height").cast(pl.Float64),
                 pl.col("date").cast(pl.Date),
+                pl.col(TREE_FLAG_COLUMNS).cast(pl.Utf8),
                 pl.lit(name).alias("source"),
             )
             for name, df in get_tree_level_tables().items()
@@ -117,6 +123,7 @@ def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
         pl.col("plot_id").cast(pl.Utf8),
         pl.col("altitude").cast(pl.Float64),
+        pl.col("area_m2").cast(pl.Float64),
         # "year" is not in all datasets, so we need to handle it carefully
         # pl.col("year").cast(pl.Int64),
         pl.col("n_stems").cast(pl.Float64),
@@ -124,6 +131,7 @@ def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
         pl.col("lat").cast(pl.Float64),
         pl.col("lon").cast(pl.Float64),
         pl.col("height").cast(pl.Float64),
+        pl.col(PLOT_FLAG_COLUMNS).cast(pl.Utf8),
         pl.lit(name).alias("source"),
     ).select([*PLOT_COLUMNS, "source"])
 
@@ -134,7 +142,6 @@ def get_combined_plot_data(output_path: str | None = None) -> pl.DataFrame:
     Uses each dataset's real `prepare_*_data`/`prepare_icp_plot_data`
     output — already filtered to single-species plots and scaled to
     per-hectare quantities — not a re-aggregation from tree-level data.
-    `height` only exists for EFM/LWF/ICP; it's null for NFI.
 
     Parameters
     ----------

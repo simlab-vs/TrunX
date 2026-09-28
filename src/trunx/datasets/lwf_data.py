@@ -26,10 +26,14 @@ import polars as pl
 
 from trunx.config import clean_data_folder, data_folder
 from trunx.gp3.allometrics import (
+    BIOMASS_COLS,
+    PLOT_FLAG_METRICS,
     CoefficientsDict,
     add_allometric_columns,
     aggregate_per_plot,
+    computed_flags,
     load_forrester_eq3,
+    measured_flag,
     scale_to_hectare,
 )
 
@@ -122,13 +126,15 @@ def _load_trees() -> pl.DataFrame:
             os.path.join(_LWF_FOLDER, "Givi_LWFdata_Jun26_flagged.csv"), null_values=["NA"]
         )
         .filter(pl.col("tree_species").is_in(SPECIES_LIST))
-        .drop("height")
+        # Raw height fills trees the QA could not check (NO_NEIGHBORS); only
+        # interpolated (IMPUTED) heights are flagged as computed.
+        .with_columns(pl.coalesce("height_corrected", "height").alias("height"))
+        .with_columns(measured_flag("height", pl.col("imputation_flag_height") != "IMPUTED"))
         .rename(
             {
                 "banr": "tree_id",
                 "tree_species": "specie",
                 "dbh_corrected": "dbh_cm",
-                "height_corrected": "height",
                 "tree_status": "status",
                 "date_observation": "date",
             }
@@ -148,6 +154,7 @@ def _load_trees() -> pl.DataFrame:
                 "status",
                 "dbh_cm",
                 "height",
+                "flag_height",
                 "lat",
                 "lon",
             ]
@@ -194,6 +201,7 @@ def prepare_lwf_tree_data(output_path: str | None = None) -> pl.DataFrame:
             (math.pi * pl.col("dbh_cm").pow(2) / 40000.0).alias("basal_area"),
             pl.lit(1.0).alias("n_stems"),
             pl.col("date").dt.month().alias("month"),
+            *computed_flags(BIOMASS_COLS),
         )
     )
 
@@ -263,7 +271,6 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
             pl.col("n_stems").cast(pl.Int64),
             pl.lit("alive").alias("status"),
         )
-        .drop(["area_m2"])
         .select(
             [
                 "specie",
@@ -274,6 +281,7 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
                 "lon",
                 "lat",
                 "altitude",
+                "area_m2",
                 "biom_stem",
                 "biom_root",
                 "biom_foliage",
@@ -286,6 +294,7 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
                 "height",
             ]
         )
+        .with_columns(computed_flags(PLOT_FLAG_METRICS))
     )
 
 
@@ -302,7 +311,7 @@ def prepare_lwf_data(output_path: str | None = None) -> pl.DataFrame:
     -------
     pl.DataFrame
         Columns: `specie`, `plot_id`, `year`, `date`, `status`, `lon`, `lat`,
-        `altitude`, `biom_stem`, `biom_root`, `biom_foliage` (t ha⁻¹),
+        `altitude`, `area_m2` (site plot area), `biom_stem`, `biom_root`, `biom_foliage` (t ha⁻¹),
         `lai` (m² m⁻²), `basal_area` (m² ha⁻¹), `n_stems` (ha⁻¹), `dbh_qmd`
         (quadratic mean diameter), `dbh_mean` (arithmetic mean), `dbh_std`,
         `height`.
