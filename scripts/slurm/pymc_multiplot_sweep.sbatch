@@ -31,9 +31,13 @@
 #   sbatch --array=0-15 --export=ALL,TRUNX_MULTIPLOT_SPECIES="Fagus sylvatica" ...
 #   sbatch --array=0-15 --export=ALL,TRUNX_PROJECT_DIR=/path/to/checkout ...
 #
-# run_pymc_multi_plot_analysis has no mid-run checkpoint (unlike the single-plot
-# pymc_param_est.py path calibration_sweep.sbatch uses), so a preempted standby
-# task restarts its combination from scratch rather than resuming it.
+# run_pymc_multi_plot_analysis checkpoints every --checkpoint-every draws (see
+# pymc_param_est_multiplots.py), so a preempted standby task resumes from its last
+# checkpoint on the next submission instead of restarting from scratch — as long as
+# it's resubmitted against the same --output-dir. --checkpoint-every itself is
+# method-specific, same as warmup/samples below: NUTS checkpoints every 200 draws
+# (short runs, cheap to redo a partial chunk), DEMetropolisZ every 1e6 (checkpointing
+# more often on a long chain adds netcdf-write overhead for little benefit).
 
 #SBATCH --job-name=trunx-pymc-multiplot-sweep
 #SBATCH --output=data/results/pymc_multiplot_results/logs/%x-%A_%a.out
@@ -41,7 +45,7 @@
 #SBATCH --partition=Dance
 #SBATCH --qos=standby_qos
 #SBATCH --cpus-per-task=5
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --time=2-00:00:00
 #SBATCH --requeue
 
@@ -94,9 +98,11 @@ STEP_METHOD="${STEP_METHODS[$METHOD_IDX]}"
 if [[ "$STEP_METHOD" == "demetropolisz" ]]; then
     NUM_WARMUP=1000000
     NUM_SAMPLES=5000000
+    CHECKPOINT_EVERY=1000000
 else
     NUM_WARMUP=1000
     NUM_SAMPLES=1000
+    CHECKPOINT_EVERY=200
 fi
 
 SPECIES_SLUG="${SPECIES// /_}"
@@ -109,6 +115,7 @@ echo "Literature source: $LITERATURE_SOURCE"
 echo "Error mode:        $ERROR_MODE"
 echo "Step method:       $STEP_METHOD"
 echo "Warmup/samples:    $NUM_WARMUP / $NUM_SAMPLES"
+echo "Checkpoint every:  $CHECKPOINT_EVERY"
 echo "Output dir:        $OUTPUT_DIR"
 echo
 
@@ -139,5 +146,6 @@ srun --cpus-per-task="$SLURM_CPUS_PER_TASK" \
         --output-dir "$OUTPUT_DIR" \
         --num-warmup "$NUM_WARMUP" \
         --num-samples "$NUM_SAMPLES" \
+        --checkpoint-every "$CHECKPOINT_EVERY" \
         --chains 4 \
         --cores 4

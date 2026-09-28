@@ -23,7 +23,7 @@ from matplotlib.patches import Rectangle
 from sklearn.metrics import mean_absolute_error as mae
 from sklearn.metrics import root_mean_squared_error as rmse
 
-from trunx.config import data_folder, results_data_folder, threepg_data_folder
+from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
     DIAGNOSTIC_ONLY_ERROR_NAMES,
     ERROR_MODES,
@@ -33,7 +33,6 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
     species_plot_ids,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
-    fit_params_for_mode,
     load_param_defaults_from_file,
     load_priors_from_file,
 )
@@ -530,49 +529,6 @@ def _params_in_trace(inference_data_path: str, candidates: Iterable[str]) -> lis
     return [name for name in candidates if name in posterior_vars]
 
 
-def _calibrated_params_from_results(
-    candidates: frozenset[str],
-    bayesian_output_dir: str,
-    hmc_output_dir: str,
-    map_output_dir: str,
-    gradient_descent_dir: str,
-    include_bayesian: bool,
-    include_hmc: bool,
-    include_map: bool,
-    include_gradient_descent: bool,
-) -> set[str]:
-    """Union of `candidates` names actually present in whichever saved results are included.
-
-    Reads straight from what each included method actually saved (MCMC
-    posterior variables, `map_estimate.json`, `gradient_descent_result.json`)
-    instead of trusting a computed/static parameter list, so plotting always
-    matches what a given run was actually calibrated on — even across a
-    `fit_params_for_mode`/`FIT_PARAMS` change made after that run was saved
-    (see `run_gradient_descent_model`'s own stale-cache handling for the same
-    concern on the gradient descent side).
-    """
-    found: set[str] = set()
-    for included, method_dir in (
-        (include_bayesian, bayesian_output_dir),
-        (include_hmc, hmc_output_dir),
-    ):
-        if included:
-            found.update(
-                _params_in_trace(os.path.join(method_dir, "inference_data.nc"), candidates)
-            )
-    if include_map:
-        map_estimate_path = os.path.join(map_output_dir, "map_estimate.json")
-        if os.path.exists(map_estimate_path):
-            map_estimate, _ = load_map_estimate(map_estimate_path)
-            found.update(name for name in map_estimate if name in candidates)
-    if include_gradient_descent:
-        gd_path = os.path.join(gradient_descent_dir, "gradient_descent_result.json")
-        if os.path.exists(gd_path):
-            gd_fit = load_gradient_descent_result(gd_path)
-            found.update(name for name in gd_fit if name in candidates)
-    return found
-
-
 def load_convergence_summary(inference_data_path: str, param_names: list[str]) -> pd.DataFrame:
     """Load a saved inference run and compute `az.summary` for the given parameters.
 
@@ -625,8 +581,7 @@ def plot_trace_and_posterior(
         Path to a saved `inference_data.nc` (PyMC) or `numpyro_inference_data.nc` (HMC).
     param_names : list[str]
         Parameter names to plot. A name with no posterior in this saved run
-        (e.g. gathered from a different included method's results — see
-        `_calibrated_params_from_results`) is silently skipped, matching
+        (e.g. only sampled by the other MCMC method) is silently skipped, matching
         `load_convergence_summary`'s own handling of the same case.
     priors : dict[str, tuple[float, float]]
         Prior (lower, upper) bounds per parameter, drawn as red lines. Parameters
@@ -710,8 +665,7 @@ def plot_posterior_comparison(
         Path to the saved HMC (NUTS) `inference_data.nc`.
     param_names : list[str]
         Parameters to plot. A name missing a posterior in either saved trace
-        (e.g. gathered from a different included method's results — see
-        `_calibrated_params_from_results`) is silently skipped, since this
+        (e.g. only sampled by one of the two methods) is silently skipped, since this
         plot's whole point is overlaying both methods for the same parameter.
     priors : dict[str, tuple[float, float]] | None
         Prior (lower, upper) bounds per parameter, drawn as gray vertical lines.
@@ -1085,6 +1039,8 @@ def plot_convergence_comparison(
         param_names = fit_params + [
             f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" not in excluded_error_names
         ]
+    # A name listed twice (e.g. an `err_*` already in `fit_params`) would get two bars.
+    param_names = list(dict.fromkeys(param_names))
 
     default_colors = {"PyMC (DEz)": "tab:blue", "HMC (NUTS)": "tab:orange"}
     method_colors = {**default_colors, **(method_colors or {})}
@@ -1289,7 +1245,6 @@ def plot_parameter_value_comparison(
 
 def plot_and_save(
     plot_id: str,
-    plot_output_dir: str,
     error_terms: str,
     literature_source: str,
     method: str = "",
@@ -1301,17 +1256,17 @@ def plot_and_save(
 ):
     """Plot and save comparison/convergence/trace/posterior figures for a plot.
 
+    Single-method figures (trace, posterior) are saved in that method's results
+    folder; figures comparing methods are saved in a `plots` folder next to the
+    method folders.
+
     Parameters
     ----------
     plot_id : str
         ICP plot identifier.
-    plot_output_dir : str
-        Directory to save the plots in.
     error_terms : str
-        Calibration scenario name, used both for the saved filenames and to look up
-        which `err_*` names were excluded from fitting via `bayesian_config.ERROR_MODES`
-        (falls back to `DIAGNOSTIC_ONLY_ERROR_NAMES` if not a recognized scenario), so
-        the convergence plot only asks for `err_*` posteriors that actually exist.
+        Calibration scenario name (a key of `bayesian_config.ERROR_MODES`), used as
+        the saved-run directory segment.
     literature_source : str
         Source of the literature for the saved filenames.
     include_bayesian, include_hmc, include_gradient_descent, include_map : bool
@@ -1321,100 +1276,59 @@ def plot_and_save(
     method : str
         Calibration method to use.
     include_process_error : bool
-        Selects both which saved sweep to read and how its calibrated parameters
-        are determined. `False` (old method) reads `results/calibration_sweep`
-        and selects calibrated parameters the original way, via
-        `fit_params_for_mode`. `True` (new method) reads
-        `results/latent_calibration_sweep` (whose runs fit WS0/WR0/WF0 —
-        `INITIAL_STATE_PARAMS` — and their perr_WS/perr_WR/perr_WF sigmas —
-        `PROCESS_ERROR_PARAM_NAMES` — as latent process-error parameters) and
-        determines calibrated parameters straight from the saved results
-        themselves instead (see `_calibrated_params_from_results`), since that
-        sweep's per-mode saved runs may not fully agree with the current
-        `fit_params_for_mode`.
+        Whether to read `results/latent_calibration_sweep` (True) or
+        `results/calibration_sweep` (False). In both cases the calibrated
+        parameters are read from the included methods' saved `inference_data.nc`.
     """
-    plot_output_dir = os.path.join(plot_output_dir, plot_id)
-    os.makedirs(plot_output_dir, exist_ok=True)
-
     output_dir = os.path.join(
         results_data_folder,
         "latent_calibration_sweep" if include_process_error else "calibration_sweep",
     )
 
-    # Mirrors the calibration_sweep directory layout (site/[literature_source/]mode),
-    # so filenames stay unique across every (literature_source, error_terms) combination
-    # saved into the same plot_id folder instead of overwriting each other. Solling's
-    # data is hand-curated and never varies by literature_source (see
-    # resolve_source_file_path), so it's left out of solling's filenames.
-    combo_parts = [error_terms] if plot_id == "solling" else [literature_source, error_terms]
-    combo_parts = [part for part in combo_parts if part]
-    combo_prefix = "_".join(combo_parts) + "_" if combo_parts else ""
-
+    # Solling's data is hand-curated and never varies by literature_source (see
+    # resolve_source_file_path), so its results aren't nested under one.
     if plot_id == "solling":
-        _bayesian_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/demetropolisz")
-        _hmc_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/nuts")
-        _gradient_descent_dir = os.path.join(
-            output_dir, f"{plot_id}/{error_terms}/gradient_descent"
-        )
-        _map_output_dir = os.path.join(output_dir, f"{plot_id}/{error_terms}/map")
-        _file_path = os.path.join(output_dir, f"{plot_id}/{plot_id}_data.xlsx")
+        _site_dir = os.path.join(output_dir, plot_id)
     else:
-        _bayesian_output_dir = os.path.join(
-            output_dir, f"{plot_id}/{literature_source}/{error_terms}/demetropolisz"
-        )
-        _hmc_output_dir = os.path.join(
-            output_dir, f"{plot_id}/{literature_source}/{error_terms}/nuts"
-        )
-        _gradient_descent_dir = os.path.join(
-            output_dir, f"{plot_id}/{literature_source}/{error_terms}/gradient_descent"
-        )
-        _map_output_dir = os.path.join(
-            output_dir, f"{plot_id}/{literature_source}/{error_terms}/map"
-        )
-        _file_path = os.path.join(output_dir, f"{plot_id}/{literature_source}/{plot_id}_data.xlsx")
+        _site_dir = os.path.join(output_dir, plot_id, literature_source)
+    _file_path = os.path.join(_site_dir, f"{plot_id}_data.xlsx")
+    _combo_dir = os.path.join(_site_dir, error_terms)
+    _bayesian_output_dir = os.path.join(_combo_dir, "demetropolisz")
+    _hmc_output_dir = os.path.join(_combo_dir, "nuts")
+    _gradient_descent_dir = os.path.join(_combo_dir, "gradient_descent")
+    _map_output_dir = os.path.join(_combo_dir, "map")
+    _comparison_dir = os.path.join(_combo_dir, "plots")
+    os.makedirs(_comparison_dir, exist_ok=True)
 
-    mode_name = error_terms if error_terms in ERROR_MODES else "biomass_only"
-
-    if not include_process_error:
-        # Old method: results/calibration_sweep's runs were all saved against
-        # this same fixed selection — the hardcoded FIT_PARAMS list for solling
-        # (hand-curated data, not mode-dependent), or otherwise every parameter
-        # with both a min and max in the file's own param_bound sheet.
-        fit_params = (
-            FIT_PARAMS if plot_id == "solling" else list(load_priors_from_file(_file_path))
+    # Calibrated parameters are whatever the saved MCMC runs actually sampled, so
+    # plotting always matches the run even if the fit configuration changed since.
+    _error_names = [f"err_{var}" for var in PLOT_VARIABLES]
+    _candidate_names = (
+        frozenset(Params._fields)
+        | frozenset(INITIAL_STATE_PARAMS)
+        | PROCESS_ERROR_PARAM_NAMES
+        | frozenset(_error_names)
+    )
+    _sampled_names = {
+        name
+        for included, method_dir in (
+            (include_bayesian, _bayesian_output_dir),
+            (include_hmc, _hmc_output_dir),
         )
-        trace_param_names = fit_params
-    else:
-        # New method: results/latent_calibration_sweep's saved runs may
-        # predate the current fit_params_for_mode (see
-        # _calibrated_params_from_results), so calibrated parameters are
-        # discovered straight from whichever saved results are included
-        # instead. INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES (WS0/WR0/WF0
-        # and their perr_* sigmas) are in the candidates so they're picked up
-        # automatically wherever a run actually fit them.
-        _process_error_names = frozenset(INITIAL_STATE_PARAMS) | PROCESS_ERROR_PARAM_NAMES
-        _candidate_names = frozenset(Params._fields) | _process_error_names
-        _calibrated_params = _calibrated_params_from_results(
-            _candidate_names,
-            _bayesian_output_dir,
-            _hmc_output_dir,
-            _map_output_dir,
-            _gradient_descent_dir,
-            include_bayesian,
-            include_hmc,
-            include_map,
-            include_gradient_descent,
+        if included
+        for name in _params_in_trace(
+            os.path.join(method_dir, "inference_data.nc"), _candidate_names
         )
-        if not _calibrated_params:
-            # Nothing saved yet for any included method — fall back to the
-            # config-computed set so a first-ever plotting call still works.
-            _calibrated_params = set(fit_params_for_mode(_file_path, mode_name))
+    }
+    if not _sampled_names:
+        raise FileNotFoundError(f"No saved inference_data.nc for included methods in {_combo_dir}")
 
-        # Physiology-only names (a real Params field) — gradient descent has no
-        # process-error mechanism, so INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES
-        # are kept out of fit_params itself (it's also passed to run_gradient_descent_model).
-        fit_params = sorted(_calibrated_params & set(Params._fields))
-        trace_param_names = sorted(_calibrated_params)
+    # Physiology-only names (a real Params field) — gradient descent has no
+    # process-error mechanism, so INITIAL_STATE_PARAMS/PROCESS_ERROR_PARAM_NAMES
+    # are kept out of fit_params (it's also passed to run_gradient_descent_model).
+    fit_params = sorted(_sampled_names & set(Params._fields))
+    trace_param_names = sorted(_sampled_names - set(_error_names))
+    sampled_error_names = [name for name in _error_names if name in _sampled_names]
 
     _fig, _metrics_df = plot_comparison(
         _file_path,
@@ -1429,7 +1343,7 @@ def plot_and_save(
         gd_cache_dir=_gradient_descent_dir,
     )
     _fig.savefig(
-        os.path.join(plot_output_dir, f"{combo_prefix}prediction_comparison_{plot_id}.png"),
+        os.path.join(_comparison_dir, "prediction_comparison.png"),
         dpi=200,
         bbox_inches="tight",
     )
@@ -1440,12 +1354,12 @@ def plot_and_save(
         include_bayesian=include_bayesian,
         include_hmc=include_hmc,
         fit_params=trace_param_names,
-        excluded_error_names=ERROR_MODES.get(error_terms, DIAGNOSTIC_ONLY_ERROR_NAMES),
+        param_names=trace_param_names + sampled_error_names,
     )
     # print(_conv_df)
     # plt.show()
     _conv_fig.savefig(
-        os.path.join(plot_output_dir, f"{combo_prefix}convergence_comparison_{plot_id}.png"),
+        os.path.join(_comparison_dir, "convergence_comparison.png"),
         dpi=200,
         bbox_inches="tight",
     )
@@ -1460,9 +1374,9 @@ def plot_and_save(
         _priors = load_priors_from_file(
             _file_path, [name for name in trace_param_names if name not in INITIAL_STATE_PARAMS]
         )
-        for _method_name, _method_included, _method_output_dir in (
-            ("demetropolisz", include_bayesian, _bayesian_output_dir),
-            ("nuts", include_hmc, _hmc_output_dir),
+        for _method_included, _method_output_dir in (
+            (include_bayesian, _bayesian_output_dir),
+            (include_hmc, _hmc_output_dir),
         ):
             if not _method_included:
                 continue
@@ -1470,16 +1384,10 @@ def plot_and_save(
                 os.path.join(_method_output_dir, "inference_data.nc"), trace_param_names, _priors
             )
             _trace_fig.savefig(
-                os.path.join(plot_output_dir, f"{combo_prefix}trace_{_method_name}_{plot_id}.png"),
-                dpi=200,
-                bbox_inches="tight",
+                os.path.join(_method_output_dir, "trace.png"), dpi=200, bbox_inches="tight"
             )
             _posterior_fig.savefig(
-                os.path.join(
-                    plot_output_dir, f"{combo_prefix}posterior_{_method_name}_{plot_id}.png"
-                ),
-                dpi=200,
-                bbox_inches="tight",
+                os.path.join(_method_output_dir, "posterior.png"), dpi=200, bbox_inches="tight"
             )
             plt.close(_trace_fig)
             plt.close(_posterior_fig)
@@ -1494,7 +1402,7 @@ def plot_and_save(
             gd_cache_dir=_gradient_descent_dir if include_gradient_descent else None,
         )
         _posterior_comparison_fig.savefig(
-            os.path.join(plot_output_dir, f"{combo_prefix}posterior_comparison_{plot_id}.png"),
+            os.path.join(_comparison_dir, "posterior_comparison.png"),
             dpi=200,
             bbox_inches="tight",
         )
@@ -1514,54 +1422,62 @@ def plot_and_save(
     # print(_param_df)
     # plt.show()
     _param_fig.savefig(
-        os.path.join(plot_output_dir, f"{combo_prefix}parameter_value_comparison_{plot_id}.png"),
+        os.path.join(_comparison_dir, "parameter_value_comparison.png"),
         dpi=200,
         bbox_inches="tight",
     )
     # plt.close(_param_fig)
 
-    print(f"Saved plots to {plot_output_dir}")
+    print(f"Saved plots to {_combo_dir}")
     gc.collect()
     jax.clear_caches()
 
 
 if __name__ == "__main__":
-    plot_ids = ["solling"]
+    # plot_ids = ["solling"]
     plot_ids = species_plot_ids["Picea abies"]
-
-    plot_output_dir = os.path.join(data_folder, "results/comparison_plots")
-
-    os.makedirs(plot_output_dir, exist_ok=True)
 
     _include_bayesian = True
     _include_hmc = True
     _include_gradient_descent = True
     _include_map = False
     _include_process_error = False
+    _literature_sources = ["Forrester", "Trotsiuk"]
 
-    for error_terms in ERROR_MODES:
-        print(f"Processing error_terms={error_terms}...")
-        for plot_id in plot_ids:
-            print(f"Processing plot_id={plot_id}...")
-            try:
-                plot_and_save(
-                    plot_id=plot_id,
-                    plot_output_dir=plot_output_dir,
-                    error_terms=error_terms,
-                    literature_source="Forrester",
-                    include_process_error=_include_process_error,
-                    include_bayesian=_include_bayesian,
-                    include_hmc=_include_hmc,
-                    include_gradient_descent=_include_gradient_descent,
-                    include_map=_include_map,
-                )
-            except Exception as e:
-                print(f"Error processing plot_id={plot_id}: {e}")
+    for literature_source in _literature_sources:
+        if literature_source == "Forrester":
+            plot_ids = (
+                species_plot_ids["Pices abies"]
+                + species_plot_ids["Fagus sylvatica"]
+                + species_plot_ids["Pinus sylvestris"]
+            )
+        elif literature_source == "Trotsiuk":
+            plot_ids = species_plot_ids["Pices abies"] + species_plot_ids["Fagus sylvatica"]
+        else:
+            raise ValueError("Invalid literature source")
 
-        plot_posterior_across_plots(
-            plot_ids=plot_ids,
-            literature_source="Forrester",
-            error_terms=error_terms,
-            method="demetropolisz",
-            include_process_error=_include_process_error,
-        )
+        for error_terms in ERROR_MODES:
+            print(f"Processing error_terms={error_terms}...")
+            for plot_id in plot_ids:
+                print(f"Processing plot_id={plot_id}...")
+                try:
+                    plot_and_save(
+                        plot_id=plot_id,
+                        error_terms=error_terms,
+                        literature_source="Forrester",
+                        include_process_error=_include_process_error,
+                        include_bayesian=_include_bayesian,
+                        include_hmc=_include_hmc,
+                        include_gradient_descent=_include_gradient_descent,
+                        include_map=_include_map,
+                    )
+                except Exception as e:
+                    print(f"Error processing plot_id={plot_id}: {e}")
+
+            plot_posterior_across_plots(
+                plot_ids=plot_ids,
+                literature_source="Forrester",
+                error_terms=error_terms,
+                method="demetropolisz",
+                include_process_error=_include_process_error,
+            )
