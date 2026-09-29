@@ -214,7 +214,7 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    plot_ids = ["50.0013"]
+    plot_ids = ["21308001"]
     for plot_id in plot_ids:
         # plot_dbh_distribution(
         #     plot_id=plot_id,
@@ -224,5 +224,5 @@ if __name__ == "__main__":
         #     show=True,
         # )
         fig, outputs = run_threepg_for_plot(
-            plot_id=plot_id, source="ICP", plot_output=True, r_comparison=True
+            plot_id=plot_id, source="EFM", plot_output=True, r_comparison=True
         )
