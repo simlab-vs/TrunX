@@ -277,8 +277,9 @@ def build_predicted_series(
     Returns
     -------
     dict[str, np.ndarray]
-        `"dates"` (one per simulated month) plus `"pred_fitted_<var>"` and
-        `"pred_default_<var>"` for each of `config.target_vars`.
+        `"dates"` (one per simulated month) plus, for each of `config.target_vars`,
+        `"pred_fitted_<var>"` (fitted phys params + modifier), `"pred_phys_<var>"`
+        (fitted phys params only) and `"pred_default_<var>"` (default params).
     """
     input_data = prepare_data(file_path)
     extended_params = ExtendedParams(modifier_params=fitted_modifier_params)
@@ -297,17 +298,28 @@ def build_predicted_series(
         config.modifier_fn,
         config.input_vars,
     )
-    _, outputs_default = run_3pg(
+    _, outputs_phys = run_3pg(
         input_data.initial_state,
         input_data.climate,
         fitted_params,
         input_data.site,
         input_data.species,
     )
+    _, outputs_default = run_3pg(
+        input_data.initial_state,
+        input_data.climate,
+        input_data.params,
+        input_data.site,
+        input_data.species,
+    )
 
     series: dict[str, np.ndarray] = {}
     for var_name in config.target_vars:
-        for label, outputs in (("fitted", outputs_fitted), ("default", outputs_default)):
+        for label, outputs in (
+            ("fitted", outputs_fitted),
+            ("phys", outputs_phys),
+            ("default", outputs_default),
+        ):
             predictions = outputs[var_name]
             if predictions.ndim == 2:
                 predictions = predictions[:, config.species_index]
@@ -325,13 +337,14 @@ def compute_rmse(
     file_path: str,
     predicted_series: dict[str, np.ndarray],
 ) -> pl.DataFrame:
-    """RMSE per target variable of one plot, with and without the fitted nutrition modifier.
+    """RMSE per target variable of one plot, for each series of `build_predicted_series`.
 
     Returns
     -------
     pl.DataFrame
-        One row per target variable: `plot`, `variable`, `n_obs`, `rmse_with_nm`
-        and `rmse_without_nm`.
+        One row per target variable: `plot`, `variable`, `n_obs`, `rmse_phys_nm`
+        (fitted phys params + modifier), `rmse_phys` (fitted phys params only) and
+        `rmse_default` (default params).
     """
     observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
     observed_dates = np.array(
@@ -351,7 +364,7 @@ def compute_rmse(
             "variable": var_name,
             "n_obs": int(mask.sum()),
         }
-        for label, column in (("with_nm", "fitted"), ("without_nm", "default")):
+        for label, column in (("phys_nm", "fitted"), ("phys", "phys"), ("default", "default")):
             predictions = predicted_series[f"pred_{column}_{var_name}"][obs_indices[mask]]
             row[f"rmse_{label}"] = float(
                 np.sqrt(np.mean((predictions - observed_values[mask]) ** 2))
@@ -418,7 +431,7 @@ def plot_observed_vs_predicted(
     save_path: str | None = None,
     show: bool = True,
 ) -> None:
-    """Plot one plot's observed data against predictions with and without the fitted modifier."""
+    """Plot one plot's observed data against each series of `build_predicted_series`."""
     observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
     observed_years = observed_data["year"].cast(pl.Int32).to_numpy()
     observed_months = observed_data["month"].cast(pl.Int32).to_numpy()
@@ -442,14 +455,22 @@ def plot_observed_vs_predicted(
         ax.plot(
             dates,
             predicted_series[f"pred_fitted_{var_name}"],
-            label="With nutrition modifier",
+            label="Fitted phys params + nutrition modifier",
             color="tab:blue",
             linewidth=2,
         )
         ax.plot(
             dates,
+            predicted_series[f"pred_phys_{var_name}"],
+            label="Fitted phys params only",
+            color="tab:orange",
+            linewidth=2,
+            linestyle="-.",
+        )
+        ax.plot(
+            dates,
             predicted_series[f"pred_default_{var_name}"],
-            label="Without nutrition modifier",
+            label="Default params",
             color="tab:green",
             linewidth=2,
             linestyle="--",
@@ -478,7 +499,7 @@ def plot_observed_vs_predicted(
     for ax in axes_list[len(target_vars) :]:
         ax.set_visible(False)
 
-    fig.suptitle(f"Observed vs Predicted, With/Without Nutrition Modifier: {Path(file_path).stem}")
+    fig.suptitle(f"Observed vs Predicted: {Path(file_path).stem}")
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
