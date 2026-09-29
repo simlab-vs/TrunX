@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -14,8 +14,10 @@ import optax
 import polars as pl
 
 from trunx.config import images_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import species_plot_ids
 from trunx.gp3.bayesiancalibrations.pymc_icp_plots import prepare_plot_input
 from trunx.gp3.extended_helper import INPUT_VARIABLES, init_mlp_modifier_params, mlp_nm, poly_nm
+from trunx.gp3.gradient_descent import apply_fitted_params, load_param_bounds
 from trunx.gp3.model_inputs import ExtendedParams, InputData, SiteData
 from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg
@@ -41,10 +43,12 @@ _METRIC_LABELS = {
 class NutritionModifierConfig:
     """Configuration for the nutrition modifier."""
 
-    file_path: str  # Path to the input data file
+    file_paths: list[str]  # Input data files, one per plot, calibrated jointly
     target_vars: list[str]  # List of target variables to optimize against
 
     observed_sheet: str = "observed"  # Sheet name for observed data
+    fit_phys_params: list[str] | None = None
+    param_bounds_sheet: str = "param_bound"
     species_index: int = 0  # Index of the species to optimize for
     # Which of ("N", "S", "T_avg") the modifier is built over
     input_vars: tuple[str, ...] = INPUT_VARIABLES
@@ -54,11 +58,6 @@ class NutritionModifierConfig:
     num_epochs: int = 1000  # Number of training epochs
     standardize_targets: bool = True  # Whether to standardize target variables
     image_dir: str = field(default_factory=lambda: str(images_folder / "nn_nutrition_modifier"))
-    # Which learnable nutrition-modifier function to fit — e.g. poly_nm (default) or
-    # mlp_nm from extended_helper.py. Its matching initial_modifier_params (passed
-    # separately to train_nutrition_modifier) must come from that function's own
-    # initializer — init_modifier_params for poly_nm, init_mlp_modifier_params
-    # (needs a PRNG key) for mlp_nm — since their parameter pytrees aren't interchangeable.
     modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm
 
 
@@ -67,6 +66,7 @@ class NutritionModifierFitResult:
     """Container for nutrition modifier training results."""
 
     fitted_modifier_params: Any
+    fitted_phys_params: dict[str, float]
     loss_history: list[float]
     param_history: list[Any]
 
@@ -92,8 +92,12 @@ def make_loss_function(
     modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
     input_vars: tuple[str, ...] = INPUT_VARIABLES,
     species_index: int = 0,
-):
-    """Create a loss function for the 3PG model with a nutrition modifier."""
+) -> Callable[[dict[str, Any]], jnp.ndarray]:
+    """Create a loss jointly over physiological and nutrition-modifier parameters.
+
+    The returned loss takes a pytree `{"phys_params": {name: value}, "modifier_params": ...}`;
+    `phys_params` overrides the matching `input_data.params` fields for `species_index`.
+    """
     n_obs = len(obs_indices)
     variable_weights = {
         "BA": 1.0,
@@ -104,12 +108,16 @@ def make_loss_function(
         "WR": 1.0,
     }
 
-    def loss_function(modifier_params):
-        extended_params = ExtendedParams(modifier_params=modifier_params)
+    def loss_function(trainable: dict[str, Any]) -> jnp.ndarray:
+        phys_params = trainable["phys_params"]
+        params = apply_fitted_params(
+            input_data.params, list(phys_params), phys_params, species_index
+        )
+        extended_params = ExtendedParams(modifier_params=trainable["modifier_params"])
         _, pg3_outputs = run_3pg(
             input_data.initial_state,
             input_data.climate,
-            input_data.params,
+            params,
             input_data.site,
             input_data.species,
             input_data.deposition,
@@ -158,60 +166,98 @@ def train_nutrition_modifier(
     config: NutritionModifierConfig,
     initial_modifier_params: Any,
 ) -> NutritionModifierFitResult:
-    """Train the nutrition modifier (`config.modifier_fn`) using gradient descent.
+    """Jointly train `config.fit_phys_params` and the nutrition modifier over all plots.
 
-    `initial_modifier_params` must match `config.modifier_fn`'s own parameter
-    pytree — e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params`
-    for `mlp_nm` — since they aren't interchangeable.
+    The loss is the mean of the per-plot losses, so every plot weighs equally; the
+    physiological parameters start from the first plot's values.
+    `initial_modifier_params` must match `config.modifier_fn`'s own parameter pytree —
+    e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params` for `mlp_nm` —
+    since they aren't interchangeable.
     """
-    input_data = prepare_data(config.file_path)
-    obs_indices, obs_values, obs_scales = build_observation_data(
-        config.file_path,
-        input_data.site,
-        config.target_vars,
-        standardize_targets=config.standardize_targets,
-    )
+    plot_losses = []
+    for file_path in config.file_paths:
+        input_data = prepare_data(file_path)
+        obs_indices, obs_values, obs_scales = build_observation_data(
+            file_path,
+            input_data.site,
+            config.target_vars,
+            standardize_targets=config.standardize_targets,
+        )
+        plot_losses.append(
+            make_loss_function(
+                input_data=input_data,
+                target_vars=config.target_vars,
+                obs_indices=obs_indices,
+                obs_values=obs_values,
+                obs_scales=obs_scales,
+                modifier_fn=config.modifier_fn,
+                input_vars=config.input_vars,
+                species_index=config.species_index,
+            )
+        )
 
-    modifier_params = jax.tree_util.tree_map(
-        lambda leaf: jnp.asarray(leaf, dtype=jnp.float32), initial_modifier_params
-    )
-    # Create the loss function
-    loss_function = make_loss_function(
-        input_data=input_data,
-        target_vars=config.target_vars,
-        obs_indices=obs_indices,
-        obs_values=obs_values,
-        obs_scales=obs_scales,
-        modifier_fn=config.modifier_fn,
-        input_vars=config.input_vars,
-        species_index=config.species_index,
-    )
+    def loss_function(trainable: dict[str, Any]) -> jnp.ndarray:
+        """Mean of the per-plot losses."""
+        return jnp.mean(jnp.stack([plot_loss(trainable) for plot_loss in plot_losses]))
 
+    first_file_path = config.file_paths[0]
+    first_params = prepare_data(first_file_path).params
+    sheet_bounds = {
+        name: bounds
+        for name, bounds in load_param_bounds(first_file_path, config.param_bounds_sheet).items()
+        if not np.isnan(bounds).any()
+    }
+    fit_phys_params = (
+        list(sheet_bounds) if config.fit_phys_params is None else config.fit_phys_params
+    )
+    missing = [name for name in fit_phys_params if name not in sheet_bounds]
+    if missing:
+        raise ValueError(f"No min/max in '{config.param_bounds_sheet}' for: {missing}")
+    lower = {name: sheet_bounds[name][0] for name in fit_phys_params}
+    upper = {name: sheet_bounds[name][1] for name in fit_phys_params}
+
+    def clip_to_bounds(phys_params: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+        """Clip each physiological parameter to its [min, max] bounds."""
+        return {
+            name: jnp.clip(value, lower[name], upper[name]) for name, value in phys_params.items()
+        }
+
+    phys_params = {
+        name: jnp.atleast_1d(jnp.asarray(getattr(first_params, name)))[config.species_index]
+        for name in fit_phys_params
+    }
+    trainable = jax.tree_util.tree_map(
+        lambda leaf: jnp.asarray(leaf, dtype=jnp.float32),
+        {"phys_params": clip_to_bounds(phys_params), "modifier_params": initial_modifier_params},
+    )
     # Create an optimizer
     optimizer = build_optimizer(
         config.optimizer_name, config.learning_rate, config.global_clip_norm
     )
-    opt_state = optimizer.init(modifier_params)
+    opt_state = optimizer.init(trainable)
 
     @jax.jit
     def update(params, opt_state):
         loss, grads = jax.value_and_grad(loss_function)(params)
         updates, opt_state = optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
+        params = cast(dict[str, Any], optax.apply_updates(params, updates))
+        params["phys_params"] = clip_to_bounds(params["phys_params"])
         return params, opt_state, loss
 
     loss_history: list[float] = []
     param_history: list[Any] = []
     for epoch in range(config.num_epochs):
-        modifier_params, opt_state, loss = update(modifier_params, opt_state)
+        trainable, opt_state, loss = update(trainable, opt_state)
         loss_history.append(float(loss))
-        param_history.append(jax.tree_util.tree_map(np.asarray, modifier_params))
+        param_history.append(jax.tree_util.tree_map(np.asarray, trainable))
         if epoch % 1000 == 0:
             print(f"Epoch {epoch}, Loss: {loss}")
 
-    print(f"Final Loss: {loss_history[-1]}", f"Final modifier params: {modifier_params}")
+    fitted_phys_params = {name: float(v) for name, v in trainable["phys_params"].items()}
+    print(f"Final Loss: {loss_history[-1]}", f"Final phys params: {fitted_phys_params}")
     return NutritionModifierFitResult(
-        fitted_modifier_params=modifier_params,
+        fitted_modifier_params=trainable["modifier_params"],
+        fitted_phys_params=fitted_phys_params,
         loss_history=loss_history,
         param_history=param_history,
     )
@@ -219,9 +265,11 @@ def train_nutrition_modifier(
 
 def build_predicted_series(
     config: NutritionModifierConfig,
+    file_path: str,
     fitted_modifier_params: Any,
+    fitted_phys_params: dict[str, float],
 ) -> dict[str, np.ndarray]:
-    """Simulate 3PG with and without the fitted nutrition modifier, for plotting.
+    """Simulate one plot (`file_path`) with fitted and default parameters, for plotting.
 
     Uses `config.modifier_fn` — must match whatever `fitted_modifier_params`
     was fitted with (see `train_nutrition_modifier`).
@@ -232,13 +280,16 @@ def build_predicted_series(
         `"dates"` (one per simulated month) plus `"pred_fitted_<var>"` and
         `"pred_default_<var>"` for each of `config.target_vars`.
     """
-    input_data = prepare_data(config.file_path)
+    input_data = prepare_data(file_path)
     extended_params = ExtendedParams(modifier_params=fitted_modifier_params)
+    fitted_params = apply_fitted_params(
+        input_data.params, list(fitted_phys_params), fitted_phys_params, config.species_index
+    )
 
     _, outputs_fitted = run_3pg(
         input_data.initial_state,
         input_data.climate,
-        input_data.params,
+        fitted_params,
         input_data.site,
         input_data.species,
         input_data.deposition,
@@ -249,7 +300,7 @@ def build_predicted_series(
     _, outputs_default = run_3pg(
         input_data.initial_state,
         input_data.climate,
-        input_data.params,
+        fitted_params,
         input_data.site,
         input_data.species,
     )
@@ -267,6 +318,46 @@ def build_predicted_series(
     start_month = int(np.asarray(input_data.site.month_i).reshape(-1)[0])
     series["dates"] = _months_to_dates(start_year, start_month, n_months)
     return series
+
+
+def compute_rmse(
+    config: NutritionModifierConfig,
+    file_path: str,
+    predicted_series: dict[str, np.ndarray],
+) -> pl.DataFrame:
+    """RMSE per target variable of one plot, with and without the fitted nutrition modifier.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per target variable: `plot`, `variable`, `n_obs`, `rmse_with_nm`
+        and `rmse_without_nm`.
+    """
+    observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
+    observed_dates = np.array(
+        [
+            np.datetime64(f"{year}-{month:02d}", "M")
+            for year, month in zip(observed_data["year"], observed_data["month"], strict=True)
+        ]
+    )
+    obs_indices = (observed_dates - predicted_series["dates"][0]).astype(int)
+
+    rows = []
+    for var_name in config.target_vars:
+        observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
+        mask = ~np.isnan(observed_values)
+        row: dict[str, Any] = {
+            "plot": Path(file_path).stem,
+            "variable": var_name,
+            "n_obs": int(mask.sum()),
+        }
+        for label, column in (("with_nm", "fitted"), ("without_nm", "default")):
+            predictions = predicted_series[f"pred_{column}_{var_name}"][obs_indices[mask]]
+            row[f"rmse_{label}"] = float(
+                np.sqrt(np.mean((predictions - observed_values[mask]) ** 2))
+            )
+        rows.append(row)
+    return pl.DataFrame(rows)
 
 
 def _months_to_dates(start_year: int, start_month: int, n_months: int) -> np.ndarray:
@@ -322,12 +413,13 @@ def plot_param_history_over_iterations(
 
 def plot_observed_vs_predicted(
     config: NutritionModifierConfig,
+    file_path: str,
     predicted_series: dict[str, np.ndarray],
     save_path: str | None = None,
     show: bool = True,
 ) -> None:
-    """Plot observed data against predictions with and without the fitted nutrition modifier."""
-    observed_data = pl.read_excel(config.file_path, sheet_name=config.observed_sheet)
+    """Plot one plot's observed data against predictions with and without the fitted modifier."""
+    observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
     observed_years = observed_data["year"].cast(pl.Int32).to_numpy()
     observed_months = observed_data["month"].cast(pl.Int32).to_numpy()
     observed_dates = np.array(
@@ -386,7 +478,7 @@ def plot_observed_vs_predicted(
     for ax in axes_list[len(target_vars) :]:
         ax.set_visible(False)
 
-    fig.suptitle("Observed vs Predicted, With/Without Nutrition Modifier")
+    fig.suptitle(f"Observed vs Predicted, With/Without Nutrition Modifier: {Path(file_path).stem}")
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -396,16 +488,17 @@ def plot_observed_vs_predicted(
 
 
 if __name__ == "__main__":
-    # file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    plot_id = "04.1402"
-    literature_source = "Forrester"
-    file_path = prepare_plot_input(plot_id, literature_source=literature_source)
+    plot_ids = species_plot_ids["Picea abies"]
+    literature_source = "Trotsiuk"
+    file_paths = [
+        prepare_plot_input(plot_id, literature_source=literature_source) for plot_id in plot_ids
+    ]
 
     # Which of ("N", "S", "T_avg") to build the modifier over
     input_vars = ("N", "S")
 
     # Select which learnable nutrition-modifier function to fit.
-    modifier_fn = mlp_nm
+    modifier_fn = poly_nm
     if modifier_fn is poly_nm:
         initial_modifier_params = init_modifier_params(input_vars)
     elif modifier_fn is mlp_nm:
@@ -416,7 +509,7 @@ if __name__ == "__main__":
         raise ValueError(f"No initializer wired up for modifier_fn={modifier_fn!r}")
 
     config = NutritionModifierConfig(
-        file_path=file_path,
+        file_paths=file_paths,
         target_vars=["BA", "DBH", "Height", "WS", "WF", "WR"],
         input_vars=input_vars,
         optimizer_name="adam",
@@ -440,12 +533,21 @@ if __name__ == "__main__":
         save_path=str(image_dir / "param_history.png"),
         show=False,
     )
-    predicted_series = build_predicted_series(config, fit_result.fitted_modifier_params)
-    plot_observed_vs_predicted(
-        config,
-        predicted_series,
-        save_path=str(image_dir / "observed_vs_predicted.png"),
-        show=False,
-    )
+    rmse_tables = []
+    for plot_id, file_path in zip(plot_ids, file_paths, strict=True):
+        predicted_series = build_predicted_series(
+            config, file_path, fit_result.fitted_modifier_params, fit_result.fitted_phys_params
+        )
+        rmse_tables.append(compute_rmse(config, file_path, predicted_series))
+        plot_observed_vs_predicted(
+            config,
+            file_path,
+            predicted_series,
+            save_path=str(image_dir / f"observed_vs_predicted_{plot_id}.png"),
+            show=False,
+        )
+
+    with pl.Config(tbl_rows=-1, float_precision=3):
+        print(pl.concat(rmse_tables))
 
     plt.show()
