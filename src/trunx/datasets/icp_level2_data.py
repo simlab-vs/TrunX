@@ -254,12 +254,22 @@ def _filter_single_species(trees: pl.DataFrame) -> pl.DataFrame:
     return trees.join(single_species, on=["plot_id", "survey_year"], how="inner")
 
 
+def _altitude_m() -> pl.Expr:
+    """Altitude in metres, from the coded 50 m class `plot_altitude` where `altitude_m` is missing.
+
+    Class `c` covers `(c - 1) * 50` to `c * 50` m, so its midpoint is used.
+    """
+    return pl.coalesce(pl.col("altitude_m"), pl.col("plot_altitude") * 50.0 - 25.0).alias(
+        "altitude"
+    )
+
+
 def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFrame:
     """Aggregate tree-level data to plot-level per-ha values."""
     per_plot = aggregate_per_plot(
         trees.sort("date"),
         group_by=["plot_id", "specie", "date"],
-        extra_aggs=[pl.col("height").mean()],
+        extra_aggs=[pl.col("height").mean(), pl.col("soph_avg_age").mean().alias("stand_age")],
     )
 
     return (
@@ -272,7 +282,7 @@ def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFram
             pl.col("plot_longitude")
             .map_elements(dms_to_decimal, return_dtype=pl.Float64)
             .alias("lon"),
-            pl.col("altitude_m").alias("altitude"),
+            _altitude_m(),
             (pl.col("plot_size_ha") * 10000.0).alias("area_m2"),
             pl.col("date").dt.year().alias("year"),
         )
@@ -609,7 +619,7 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
             pl.col("ba_tree").alias("basal_area"),
             pl.lit(1.0).alias("n_stems"),
             (pl.col("plot_size_ha") * 10000.0).alias("area_m2"),
-            pl.col("altitude_m").alias("altitude"),
+            _altitude_m(),
             pl.col("date").dt.year().alias("year"),
             pl.col("date").dt.month().alias("month"),
             # ICP heights are field measurements; biomass is always Forrester allometry.
@@ -663,7 +673,9 @@ def _fill_with_measured(plot_df: pl.DataFrame, inventory: pl.DataFrame) -> pl.Da
     return df.with_columns(fills).drop("_date", cs.ends_with("_measured"))
 
 
-def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
+def prepare_icp_plot_data(
+    output_path: str | None = None, filter_single_species: bool = False
+) -> pl.DataFrame:
     """Aggregate ICP Level II tree data to plot level for 3PG calibration.
 
     Height, QMD and basal area reported in ``gr_inv`` (see
@@ -671,6 +683,20 @@ def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
     available; ``flag_height``, ``flag_dbh_qmd``, ``flag_basal_area``,
     ``flag_lai`` and ``flag_biom_*`` record whether each value is
     "measured" or "computed".
+
+    Parameters
+    ----------
+    output_path : str | None
+        Parquet path to write the result. Defaults to
+        `clean_data_folder/icp_plot_data.parquet`.
+    filter_single_species : bool
+        Keep only single-species (plot, survey year) observations (see
+        `_filter_single_species`). When False, mixed plots give one row per species.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (plot_id, specie, date).
     """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "icp_plot_data.parquet"))
@@ -678,8 +704,9 @@ def prepare_icp_plot_data(output_path: str | None = None) -> pl.DataFrame:
     trees = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     inventory = pl.read_parquet(os.path.join(clean_data_folder, "icp_inventory_data.parquet"))
     plots = _load_plots()
-    trees = _filter_single_species(trees)
-    logger.info("After single-species filter: %d records", trees.height)
+    if filter_single_species:
+        trees = _filter_single_species(trees)
+        logger.info("After single-species filter: %d records", trees.height)
 
     result = _aggregate_per_plot(trees, plots).pipe(_fill_with_measured, inventory)
     logger.info(

@@ -25,7 +25,7 @@ def _():
 
     from scripts.support_utils import load_prepare_data
     from trunx.config import data_folder
-    from trunx.gp3.PG3_model_impl import run_threepg_main, run_threepg_with_icp
+    from trunx.gp3.PG3_model_impl import run_threepg_for_plot, run_threepg_main
 
     return (
         data_folder,
@@ -33,7 +33,7 @@ def _():
         os,
         pl,
         run_threepg_main,
-        run_threepg_with_icp,
+        run_threepg_for_plot,
     )
 
 
@@ -93,8 +93,8 @@ def _(load_prepare_data, mo, pl):
 
 
 @app.cell
-def _(plot_id_ui, run_threepg_with_icp):
-    icp_fig, icp_outputs = run_threepg_with_icp(
+def _(plot_id_ui, run_threepg_for_plot):
+    icp_fig, icp_outputs = run_threepg_for_plot(
         plot_id=plot_id_ui.value, plot_output=True, r_comparison=True
     )
 

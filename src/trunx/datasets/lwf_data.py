@@ -298,7 +298,9 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def prepare_lwf_data(output_path: str | None = None) -> pl.DataFrame:
+def prepare_lwf_data(
+    output_path: str | None = None, filter_single_species: bool = False
+) -> pl.DataFrame:
     """Load, clean, and aggregate LWF data for 3PG calibration.
 
     Parameters
@@ -306,6 +308,9 @@ def prepare_lwf_data(output_path: str | None = None) -> pl.DataFrame:
     output_path : str | None
         Parquet path to write the result. Defaults to
         `clean_data_folder/lwf_cleaned.parquet`.
+    filter_single_species : bool
+        Keep only single-species (plot, year) measurements (see
+        `_filter_single_species`). When False, mixed plots give one row per species.
 
     Returns
     -------
@@ -324,8 +329,9 @@ def prepare_lwf_data(output_path: str | None = None) -> pl.DataFrame:
         "Loaded %d tree x year rows across %d plots", trees.height, trees["plot_id"].n_unique()
     )
 
-    trees = _filter_single_species(trees)
-    logger.info("After single-species filter: %d plots remain", trees["plot_id"].n_unique())
+    if filter_single_species:
+        trees = _filter_single_species(trees)
+        logger.info("After single-species filter: %d plots remain", trees["plot_id"].n_unique())
 
     result = _aggregate_per_plot(trees).sort(["specie", "plot_id", "date"])
     logger.info(
