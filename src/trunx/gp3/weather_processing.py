@@ -278,6 +278,7 @@ def fill_weather_with_era5(
     weather_df: pl.DataFrame,
     plot_id: str,
     start_year: int,
+    extend_to: datetime.date | None = None,
 ) -> tuple[list, pl.DataFrame]:
     """Fill missing monthly weather with ERA5 reanalysis data.
 
@@ -296,6 +297,9 @@ def fill_weather_with_era5(
         Plot identifier used to look up the matching ERA5 grid point.
     start_year : int
         First year the weather series must cover.
+    extend_to : datetime.date | None
+        Month the series must reach at least, filling months after the last
+        ICP record from ERA5; the series ends at the last ICP month when None.
 
     Returns
     -------
@@ -307,6 +311,8 @@ def fill_weather_with_era5(
 
     weather_pl = weather_df.with_columns(pl.date(pl.col("year"), pl.col("month"), 1).alias("date"))
     end_date = weather_pl.select(pl.col("date").max()).item()
+    if extend_to is not None:
+        end_date = max(end_date, extend_to)
     full_months = pl.DataFrame(
         {
             "date": pl.date_range(

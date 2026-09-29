@@ -292,13 +292,13 @@ def prepare_multiplot_param_bounds(
         Directory to write the parquet files to. Files are named
         ``params_bounds_{literature_source}_{Species_name}.parquet``.
     literature_sources : tuple[str, ...]
-        Keys into `pymc_icp_plots._LITERATURE_SOURCES`.
+        Keys into `create_combined_inputs._LITERATURE_SOURCES`.
     species_names : tuple[str, ...]
         Species to build files for. Defaults to the three species this project's
         multiplot pipeline actually calibrates (see `bayesian_config.species_plot_ids`);
         Trotsiuk's literature table only covers Picea abies and Fagus sylvatica.
     """
-    from trunx.gp3.bayesiancalibrations.pymc_icp_plots import _load_species_param_bound
+    from trunx.gp3.create_combined_inputs import _load_species_param_bound
 
     output_dir = Path(output_dir)
 

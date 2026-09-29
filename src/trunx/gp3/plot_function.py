@@ -491,8 +491,9 @@ def _plot_species_metrics(
             obs = observed_data[observed_data["specie"] == species].dropna(
                 subset=[config["python_col"]]
             )
+            date_col = "Date" if "Date" in obs.columns else "date"
             axes[idx].scatter(
-                obs["Date"],
+                obs[date_col],
                 obs[config["python_col"]],
                 s=20,
                 marker="s",
@@ -500,13 +501,15 @@ def _plot_species_metrics(
                 label=f"{obs_label}{label_suffix}",
             )
 
-            axes[idx].plot(obs["Date"], obs[config["python_col"]], alpha=0.6, color=obs_color)
+            axes[idx].plot(obs[date_col], obs[config["python_col"]], alpha=0.6, color=obs_color)
 
+        # Files without a species column hold site-level observations only
         if (
             draw_unfiltered_observed
             and observed_data is not None
             and config["python_col"] in observed_data.columns
             and "date" in observed_data.columns
+            and "specie" not in observed_data.columns
         ):
             axes[idx].scatter(
                 observed_data["date"],

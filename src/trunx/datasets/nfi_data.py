@@ -176,25 +176,14 @@ def _filter_single_species_plots(trees: pl.DataFrame) -> pl.DataFrame:
     Returns
     -------
     pl.DataFrame
-        Filtered tree-level data with an added ``species`` column at plot level.
+        Tree-level data of the kept plots.
     """
-    species_per_inv = (
-        trees.group_by(["plot_id", "inv_nr"])
-        .agg(
-            pl.col("specie").n_unique().alias("n_species"),
-            pl.col("specie").first().alias("specie"),
-        )
-        .filter(pl.col("n_species") == 1)
-    )
-
+    # One species in every inventory, always the same, is one species across the plot
     single_species_plots = (
-        species_per_inv.group_by("plot_id")
-        .agg(
-            pl.col("specie").n_unique().alias("n_distinct_species"),
-            pl.col("specie").first().alias("plot_species"),
-        )
-        .filter(pl.col("n_distinct_species") == 1)
-        .select(["plot_id", "plot_species"])
+        trees.group_by("plot_id")
+        .agg(pl.col("specie").n_unique().alias("n_species"))
+        .filter(pl.col("n_species") == 1)
+        .select("plot_id")
     )
 
     return trees.join(single_species_plots, on="plot_id", how="inner")
@@ -259,11 +248,11 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
     Returns
     -------
     pl.DataFrame
-        One row per (plot_id, inv_nr) with per-hectare stand quantities.
+        One row per (plot_id, inv_nr, specie) with per-hectare stand quantities.
     """
     per_ha = aggregate_per_plot(
         trees,
-        group_by=["plot_id", "inv_nr", "plot_species"],
+        group_by=["plot_id", "inv_nr", "specie"],
         weight_col="tree_rep_fact",
         extra_aggs=[
             pl.col("lat").first(),
@@ -281,7 +270,7 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
     )
 
     return (
-        per_ha.rename({"plot_species": "specie", "n_trees": "n_stems", "ba_m2": "basal_area"})
+        per_ha.rename({"n_trees": "n_stems", "ba_m2": "basal_area"})
         .with_columns(
             (pl.col("sb_kg") / 1000.0).alias("biom_stem"),
             (pl.col("fb_kg") / 1000.0).alias("biom_foliage"),
@@ -295,7 +284,9 @@ def _aggregate_per_plot(trees: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
+def prepare_nfi_data(
+    output_path: str | None = None, filter_single_species: bool = False
+) -> pl.DataFrame:
     """Load, clean, and aggregate Swiss NFI data for 3PG calibration.
 
     Parameters
@@ -303,6 +294,9 @@ def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
     output_path : str | None
         Parquet path to write the result.  Defaults to
         `clean_data_folder/nfi_cleaned.parquet`.
+    filter_single_species : bool
+        Keep only single-species plots (see `_filter_single_species_plots`). When False, mixed
+        plots give one row per species.
 
     Returns
     -------
@@ -324,12 +318,13 @@ def prepare_nfi_data(output_path: str | None = None) -> pl.DataFrame:
         trees["specie"].n_unique(),
     )
 
-    trees = _filter_single_species_plots(trees)
-    logger.info(
-        "After single-species filter: %d plot x inventory x tree rows, %d plots",
-        trees.height,
-        trees["plot_id"].n_unique(),
-    )
+    if filter_single_species:
+        trees = _filter_single_species_plots(trees)
+        logger.info(
+            "After single-species filter: %d plot x inventory x tree rows, %d plots",
+            trees.height,
+            trees["plot_id"].n_unique(),
+        )
 
     trees = _filter_consecutive_inventories(trees)
     logger.info(
