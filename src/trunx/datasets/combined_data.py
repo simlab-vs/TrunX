@@ -53,6 +53,7 @@ PLOT_COLUMNS = [
     "n_stems",
     "plot_id",
     "specie",
+    "stand_age",
     *PLOT_FLAG_COLUMNS,
 ]
 
@@ -118,8 +119,10 @@ def get_combined_tree_data(output_path: str | None = None) -> pl.DataFrame:
 
 def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
     """Cast one dataset's plot-level table to `PLOT_COLUMNS`, tagged with `source`."""
-    if "height" not in df.columns:
-        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("height"))
+    # Only some datasets report height and stand age (years, ICP only)
+    for col in ("height", "stand_age"):
+        if col not in df.columns:
+            df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
     return df.with_columns(
         pl.col("plot_id").cast(pl.Utf8),
         pl.col("altitude").cast(pl.Float64),
@@ -131,23 +134,28 @@ def _standardize_plot_table(name: str, df: pl.DataFrame) -> pl.DataFrame:
         pl.col("lat").cast(pl.Float64),
         pl.col("lon").cast(pl.Float64),
         pl.col("height").cast(pl.Float64),
+        pl.col("stand_age").cast(pl.Float64),
         pl.col(PLOT_FLAG_COLUMNS).cast(pl.Utf8),
         pl.lit(name).alias("source"),
     ).select([*PLOT_COLUMNS, "source"])
 
 
-def get_combined_plot_data(output_path: str | None = None) -> pl.DataFrame:
+def get_combined_plot_data(
+    output_path: str | None = None, filter_single_species: bool = False
+) -> pl.DataFrame:
     """Combine each dataset's already-prepared plot-level table into one.
 
     Uses each dataset's real `prepare_*_data`/`prepare_icp_plot_data`
-    output — already filtered to single-species plots and scaled to
-    per-hectare quantities — not a re-aggregation from tree-level data.
+    output — scaled to per-hectare quantities, one row per species — not a
+    re-aggregation from tree-level data.
 
     Parameters
     ----------
     output_path : str | None
         Parquet path to write the result. Defaults to
         `clean_data_folder/trunx_plot_level_data.parquet`.
+    filter_single_species : bool
+        Forwarded to each dataset's `prepare_*` function.
 
     Returns
     -------
@@ -158,10 +166,10 @@ def get_combined_plot_data(output_path: str | None = None) -> pl.DataFrame:
         output_path = str(os.path.join(clean_data_folder, "trunx_plot_level_data.parquet"))
 
     tables = {
-        "NFI": prepare_nfi_data(),
-        "EFM": prepare_efm_data(),
-        "LWF": prepare_lwf_data(),
-        "ICP": prepare_icp_plot_data(),
+        "NFI": prepare_nfi_data(filter_single_species=filter_single_species),
+        "EFM": prepare_efm_data(filter_single_species=filter_single_species),
+        "LWF": prepare_lwf_data(filter_single_species=filter_single_species),
+        "ICP": prepare_icp_plot_data(filter_single_species=filter_single_species),
     }
     combined = pl.concat(
         [_standardize_plot_table(name, df) for name, df in tables.items()],

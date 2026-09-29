@@ -282,8 +282,25 @@ def _aggregate_alive(trees: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def prepare_efm_data(output_path: str | None = None) -> pl.DataFrame:
-    """Load, clean, and aggregate EFM data for 3PG calibration."""
+def prepare_efm_data(
+    output_path: str | None = None, filter_single_species: bool = False
+) -> pl.DataFrame:
+    """Load, clean, and aggregate EFM data for 3PG calibration.
+
+    Parameters
+    ----------
+    output_path : str | None
+        Parquet path to write the result. Defaults to
+        `clean_data_folder/efm_cleaned.parquet`.
+    filter_single_species : bool
+        Keep only single-species (plot, year) measurements (see
+        `_filter_single_species`). When False, mixed plots give one row per species.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (specie, plot_id, year) of alive trees.
+    """
     if output_path is None:
         output_path = str(os.path.join(clean_data_folder, "efm_cleaned.parquet"))
 
@@ -294,8 +311,9 @@ def prepare_efm_data(output_path: str | None = None) -> pl.DataFrame:
         trees["plot_id"].n_unique(),
     )
 
-    trees = _filter_single_species(trees)
-    logger.info("After single-species filter: %d plots remain", trees["plot_id"].n_unique())
+    if filter_single_species:
+        trees = _filter_single_species(trees)
+        logger.info("After single-species filter: %d plots remain", trees["plot_id"].n_unique())
 
     trees = _filter_ingrowth_measurements(trees)
     logger.info(

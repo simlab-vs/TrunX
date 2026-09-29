@@ -14,7 +14,7 @@ from jax import config, grad
 from trunx.config import SPECIES_INDICES, project_root, threepg_data_folder
 
 # config.update("jax_debug_nans", True)  # Enable NaN debugging
-from trunx.gp3.create_data_inputs import create_input_data
+from trunx.gp3.create_combined_inputs import create_plot_input_file, load_plot_tables
 from trunx.gp3.model_inputs import Params, State
 from trunx.gp3.plot_function import (
     create_comparison_dataframe,
@@ -135,27 +135,27 @@ def run_threepg_main(
     return fig, outputs
 
 
-def run_threepg_with_icp(plot_id: str = "", plot_output=True, r_comparison=True):
-    """Run 3PG model with ICP weather data."""
+def run_threepg_for_plot(
+    plot_id: str, source: str = "ICP", plot_output: bool = True, r_comparison: bool = True
+):
+    """Run 3PG model on one plot, built from the combined plot and weather tables.
+
+    Parameters
+    ----------
+    plot_id : str
+        Plot identifier within `source`.
+    source : str
+        Dataset of the plot: "NFI", "EFM", "LWF" or "ICP".
+    plot_output : bool
+        Whether to plot the model outputs.
+    r_comparison : bool
+        Whether to also run r3PG and compare.
+    """
     file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"Deleted: {file_path}")
-    miss_months, observed_data = create_input_data(file_path, plot_id)
-    if len(miss_months) == 0:
-        fig, outputs = run_threepg_main(
-            file_path,
-            observed_data,
-            plot_output=plot_output,
-            r_comparison=r_comparison,
-            plot_id=plot_id,
-        )
-        return fig, outputs
-    else:
-        print(
-            "The weather data is not complete and need pre-processing before 3PG implementation."
-        )
-        return None, None
+    create_plot_input_file(plot_id, source, file_path, *load_plot_tables(plot_id, source))
+    return run_threepg_main(
+        file_path, plot_output=plot_output, r_comparison=r_comparison, plot_id=plot_id
+    )
 
 
 if __name__ == "__main__":
@@ -214,7 +214,7 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    plot_ids = ["15.0003"]
+    plot_ids = ["21308001"]
     for plot_id in plot_ids:
         # plot_dbh_distribution(
         #     plot_id=plot_id,
@@ -223,4 +223,6 @@ if __name__ == "__main__":
         #     fig_name=f"ICP_{plot_id}_dbh_distribution",
         #     show=True,
         # )
-        fig, outputs = run_threepg_with_icp(plot_id=plot_id, plot_output=True, r_comparison=True)
+        fig, outputs = run_threepg_for_plot(
+            plot_id=plot_id, source="EFM", plot_output=True, r_comparison=True
+        )
