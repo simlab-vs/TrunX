@@ -70,6 +70,25 @@ def build_optimizer(
     )
 
 
+def count_observed_rows(obs_values: dict[str, jnp.ndarray], target_vars: list[str]) -> int:
+    """Count observation rows with at least one observed target variable.
+
+    Parameters
+    ----------
+    obs_values : dict[str, jnp.ndarray]
+        Observed values, keyed by variable name, one entry per observation row.
+    target_vars : list[str]
+        Variables to score.
+
+    Returns
+    -------
+    int
+        Number of rows where any of `target_vars` is not NaN.
+    """
+    observed = np.stack([~np.isnan(np.asarray(obs_values[v]).reshape(-1)) for v in target_vars])
+    return int(observed.any(axis=0).sum())
+
+
 def weighted_squared_error(
     pg3_outputs: dict[str, jnp.ndarray],
     target_vars: list[str],

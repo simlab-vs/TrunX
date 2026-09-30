@@ -238,6 +238,7 @@ def model_step(
         fSW=fSW,
         fAge=fA,
         fN=fN,
+        f_nutri_classic_learnable=f_nutri_classic_learnable,
         fF=fF,
         phi=phi,
         eta_R=eta_R,

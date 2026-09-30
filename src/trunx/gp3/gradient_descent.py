@@ -23,6 +23,7 @@ from trunx.gp3.run_3pg import run_3pg
 from trunx.gp3.training_utils import (
     build_observation_indices,
     build_optimizer,
+    count_observed_rows,
     plot_loss_over_iterations,
     plot_traces_grid,
     weighted_squared_error,
@@ -72,7 +73,7 @@ def make_loss_function(
     target_vars: list[str],
 ):
     """Create a loss function for gradient descent optimization."""
-    n_obs = len(obs_indices)
+    n_obs = count_observed_rows(obs_values, target_vars)
     base_params = input_data.params
     variable_weights = {
         "BA": 1.0,

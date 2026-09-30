@@ -17,13 +17,14 @@ from numpyro.distributions.transforms import AffineTransform, ComposeTransform, 
 from numpyro.infer import HMC, MCMC, NUTS, init_to_uniform, init_to_value
 
 from trunx.config import data_folder, results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES, FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
 from trunx.gp3.bayesiancalibrations.calibration_utils import (
     clip_defaults_to_priors,
     plot_inference_results,
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    keep_fitted_error_priors,
     literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
@@ -478,6 +479,7 @@ def run_full_analysis(
 def run_hmc_analysis(
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_names: list[str] | None = None,
+    error_mode: str = "biomass_only",
     predict_with_uncert: bool = False,
     show_plots: bool = False,
     chain_method: str = "parallel",
@@ -498,6 +500,9 @@ def run_hmc_analysis(
     param_names : list[str] | None
         List of parameter names to estimate. If None, uses default set.
         Parameters must exist in the param_bound sheet of the file.
+    error_mode : str
+        Key into `ERROR_MODES`; only its `err_*` sigmas are kept in the priors, so
+        only their observations are scored.
     predict_with_uncert : bool
         Whether to generate predictions with uncertainty quantification
     """
@@ -506,8 +511,7 @@ def run_hmc_analysis(
     priors = load_priors_from_file(
         file_path, param_names, bound_overrides=literature_bound_overrides(file_path)
     )
-    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
-        priors.pop(error_name, None)
+    priors = keep_fitted_error_priors(priors, error_mode)
     param_defaults = load_param_defaults_from_file(file_path, list(priors.keys()))
     param_defaults = clip_defaults_to_priors(param_defaults, priors)
     print(f"Loaded priors for parameters: {list(priors.keys())}")

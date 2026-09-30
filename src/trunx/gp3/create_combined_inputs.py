@@ -1,8 +1,9 @@
 """Create 3PG input files from the combined plot-level and weather tables.
 
-Works for any plot in `trunx_plot_level_data.parquet` (NFI, EFM, LWF, ICP), using
-its monthly weather from `trunx_plot_weather.parquet`. Deposition is only
-available for ICP plots; other sources get zero deposition.
+This is the single builder of 3PG plot inputs for the project. Works for any plot
+in `trunx_plot_level_data.parquet` (NFI, EFM, LWF, ICP), using its monthly weather
+from `trunx_plot_weather.parquet`. Deposition is only available for ICP plots;
+other sources get zero deposition.
 """
 
 import logging
@@ -14,13 +15,16 @@ import polars as pl
 
 from trunx.config import SPECIES_INDICES, clean_data_folder, threepg_data_folder
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
-from trunx.gp3.create_data_inputs import add_deposition_to_weather
+from trunx.gp3.prepare_deposition import load_monthly_deposition
 
 logger = logging.getLogger(__name__)
 
 _CLIMATE_COLUMNS = ["year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad"]
 # Needed at the first survey: the initial state, plus mean DBH to estimate the stand age
 _FIRST_SURVEY_COLUMNS = ["n_stems", "biom_stem", "biom_root", "biom_foliage", "dbh_mean"]
+_DEP_COLUMNS = ["dep_n_tot", "dep_s_so4"]
+# Years of a plot's deposition record averaged to fill months it does not cover
+_DEP_FILL_YEARS = 5
 
 
 _LITERATURE_SOURCES = {
@@ -169,9 +173,35 @@ def _site_sheet(first_survey: dict, last_survey: dict) -> pl.DataFrame:
     )
 
 
-def _observed_sheet(surveys: pl.DataFrame) -> pl.DataFrame:
-    """Build the observed sheet, one row per survey and species; missing values stay null."""
-    return surveys.select(
+def _plot_gpp(
+    plot_id: str,
+    source: str,
+    gpp: pl.DataFrame | None,
+    first_survey: dict,
+    last_survey: dict,
+) -> pl.DataFrame:
+    """Select an ICP plot's monthly GOSIF GPP within the simulated period; empty otherwise."""
+    schema = {"year": pl.Int32, "month": pl.Int8, "GPP": pl.Float64}
+    if source != "ICP":
+        return pl.DataFrame(schema=schema)
+    if gpp is None:
+        gpp = pl.read_csv(os.path.join(clean_data_folder, "GOSIF_GPP_icp.csv"))
+    month = _month_index(pl.col("year"), pl.col("month"))
+    return gpp.filter(
+        (pl.col("plot_id") == float(plot_id))
+        & month.is_between(
+            _month_index(pl.lit(first_survey["year"]), pl.lit(first_survey["month"])),
+            _month_index(pl.lit(last_survey["year"]), pl.lit(last_survey["month"])),
+        )
+    ).select(pl.col(name).cast(dtype) for name, dtype in schema.items())
+
+
+def _observed_sheet(surveys: pl.DataFrame, gpp: pl.DataFrame) -> pl.DataFrame:
+    """Build the observed sheet, one row per survey or GPP month and species.
+
+    Stand-level GPP is repeated for every species; missing values stay null.
+    """
+    survey_obs = surveys.select(
         "specie",
         "month",
         "year",
@@ -184,6 +214,91 @@ def _observed_sheet(surveys: pl.DataFrame) -> pl.DataFrame:
         pl.col("height").alias("Height"),
         pl.col("n_stems").alias("N"),
         pl.col("lai").alias("LAI"),
+    )
+    gpp_obs = surveys.select("specie").unique().join(gpp, how="cross")
+    return (
+        survey_obs.join(gpp_obs, on=["specie", "year", "month"], how="full", coalesce=True)
+        .with_columns(pl.date(pl.col("year"), pl.col("month"), 1).dt.month_end().alias("date"))
+        .sort("date", "specie")
+    )
+
+
+def _fill_from_nearest_years(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    """Fill nulls of `col` with its same-calendar-month mean over the nearest observed years."""
+    observed = df.filter(pl.col(col).is_not_null()).select(
+        "month", pl.col("year").alias("obs_year"), pl.col(col).alias("obs")
+    )
+    fill = (
+        df.filter(pl.col(col).is_null())
+        .select("year", "month")
+        .join(observed, on="month")
+        .group_by("year", "month")
+        .agg(
+            pl.col("obs")
+            .sort_by((pl.col("obs_year") - pl.col("year")).abs(), "obs_year")
+            .head(_DEP_FILL_YEARS)
+            .mean()
+            .alias("fill")
+        )
+    )
+    return (
+        df.join(fill, on=["year", "month"], how="left")
+        .with_columns(pl.coalesce(col, "fill").alias(col))
+        .drop("fill")
+    )
+
+
+def add_deposition_to_weather(
+    weather_df: pl.DataFrame,
+    plot_id: str,
+    deposition: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Join an ICP plot's monthly deposition onto its weather.
+
+    Months without deposition, e.g. before or after monitoring, get the same-calendar-month
+    mean of the `_DEP_FILL_YEARS` nearest years of the plot's record. Plots without any
+    deposition get zeros.
+
+    Parameters
+    ----------
+    weather_df : pl.DataFrame
+        Monthly weather with ``year`` and ``month`` columns.
+    plot_id : str
+        ICP plot identifier.
+    deposition : pl.DataFrame | None
+        Pre-loaded monthly ICP deposition; loaded from disk when None.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``weather_df`` with ``dep_n_tot`` and ``dep_s_so4`` columns.
+    """
+    if deposition is None:
+        deposition = load_monthly_deposition()
+    record = deposition.filter(pl.col("plot_id") == plot_id).select(
+        pl.col("year").cast(pl.Int64), pl.col("month").cast(pl.Int64), *_DEP_COLUMNS
+    )
+    if record.is_empty():
+        logger.warning("No deposition for plot_id %s — filling with zeros", plot_id)
+        return weather_df.with_columns([pl.lit(0.0).alias(c) for c in _DEP_COLUMNS])
+
+    months = weather_df.select(pl.col("year", "month").cast(pl.Int64))
+    dep = months.join(record, on=["year", "month"], how="full", coalesce=True)
+    n_missing = months.join(dep, on=["year", "month"]).select(
+        pl.any_horizontal(pl.col(_DEP_COLUMNS).is_null()).sum()
+    )
+    for col in _DEP_COLUMNS:
+        dep = _fill_from_nearest_years(dep, col)
+    if n_missing.item():
+        logger.info(
+            "Filled %d month(s) of deposition for plot_id %s from the nearest %d years",
+            n_missing.item(),
+            plot_id,
+            _DEP_FILL_YEARS,
+        )
+
+    return weather_df.join(dep, on=["year", "month"], how="left").with_columns(
+        pl.col(_DEP_COLUMNS).fill_null(0.0)
     )
 
 
@@ -204,17 +319,17 @@ def load_plot_tables(plot_id: str, source: str) -> tuple[pl.DataFrame, pl.DataFr
     return read("trunx_plot_level_data.parquet"), read("trunx_plot_weather.parquet")
 
 
-def create_plot_input_file(
+def build_plot_input_sheets(
     plot_id: str,
     source: str,
-    output_file: str,
     plot_data: pl.DataFrame,
     weather_data: pl.DataFrame,
     literature_source: str = "Forrester",
     age_models: dict[str, tuple[float, float]] | None = None,
     deposition: pl.DataFrame | None = None,
-) -> str:
-    """Create a 3PG input Excel file for one plot of the combined datasets.
+    gpp: pl.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Build the 3PG input sheets for one plot of the combined datasets.
 
     Mixed plots give one species row, `parameters` column and set of `param_bound`
     and `observed` rows per species; species without 3PG parameters are dropped.
@@ -228,8 +343,6 @@ def create_plot_input_file(
         Plot identifier, as in `plot_data`.
     source : str
         Dataset of the plot: "NFI", "EFM", "LWF" or "ICP".
-    output_file : str
-        Path of the Excel file to write.
     plot_data : pl.DataFrame
         Combined plot-level table (`combined_data.get_combined_plot_data`).
     weather_data : pl.DataFrame
@@ -242,11 +355,14 @@ def create_plot_input_file(
         when creating many plots.
     deposition : pl.DataFrame | None
         Pre-loaded monthly ICP deposition; loaded from disk when None.
+    gpp : pl.DataFrame | None
+        Pre-loaded monthly GOSIF GPP of ICP plots, added to the `observed` sheet;
+        loaded from disk when None.
 
     Returns
     -------
-    str
-        `output_file`.
+    dict[str, pd.DataFrame]
+        Sheet name to table, in 3PG input file order.
     """
     plot_df = _plot_observations(plot_data, plot_id, source)
     weather_df = _plot_weather(weather_data, plot_id, source)
@@ -315,17 +431,61 @@ def create_plot_input_file(
         os.path.join(threepg_data_folder, "solling_data.xlsx"), sheet_name="error_param"
     )
 
+    return {
+        "climate": climate_df.to_pandas(),
+        "parameters": parameters,
+        "species": species_df.to_pandas(),
+        "site": site_df.to_pandas(),
+        "thinning": pd.DataFrame(),
+        "sizeDist": pd.DataFrame(),
+        "observed": _observed_sheet(
+            surveys, _plot_gpp(plot_id, source, gpp, first_survey, last_survey)
+        ).to_pandas(),
+        "param_bound": param_bound,
+        "error_param": error_param,
+    }
+
+
+def create_plot_input_file(
+    plot_id: str,
+    source: str,
+    output_file: str,
+    plot_data: pl.DataFrame,
+    weather_data: pl.DataFrame,
+    literature_source: str = "Forrester",
+    age_models: dict[str, tuple[float, float]] | None = None,
+    deposition: pl.DataFrame | None = None,
+    gpp: pl.DataFrame | None = None,
+) -> str:
+    """Create a 3PG input Excel file for one plot of the combined datasets.
+
+    The sheets are built by `build_plot_input_sheets`, see there for the parameters.
+
+    Parameters
+    ----------
+    output_file : str
+        Path of the Excel file to write.
+
+    Returns
+    -------
+    str
+        `output_file`.
+    """
+    sheets = build_plot_input_sheets(
+        plot_id,
+        source,
+        plot_data,
+        weather_data,
+        literature_source=literature_source,
+        age_models=age_models,
+        deposition=deposition,
+        gpp=gpp,
+    )
+
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
-        climate_df.to_pandas().to_excel(writer, sheet_name="climate", index=False)
-        parameters.to_excel(writer, sheet_name="parameters", index=False)
-        species_df.to_pandas().to_excel(writer, sheet_name="species", index=False)
-        site_df.to_pandas().to_excel(writer, sheet_name="site", index=False)
-        pd.DataFrame().to_excel(writer, sheet_name="thinning", index=False)
-        pd.DataFrame().to_excel(writer, sheet_name="sizeDist", index=False)
-        _observed_sheet(surveys).to_pandas().to_excel(writer, sheet_name="observed", index=False)
-        param_bound.to_excel(writer, sheet_name="param_bound", index=False)
-        error_param.to_excel(writer, sheet_name="error_param", index=False)
+        for name, sheet in sheets.items():
+            sheet.to_excel(writer, sheet_name=name, index=False)
 
     logger.info("Wrote 3PG input for %s plot %s to %s", source, plot_id, output_file)
     return output_file

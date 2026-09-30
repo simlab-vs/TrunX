@@ -104,9 +104,7 @@ def run_bayesian_for_plot(
     fit_params = fit_params_for_mode(file_path, error_mode)
 
     error_names = [
-        name
-        for name in load_priors_from_file(file_path)
-        if name.startswith("err_") and name not in ERROR_MODES[error_mode]
+        name for name in load_priors_from_file(file_path) if name in ERROR_MODES[error_mode]
     ]
 
     output_dir = os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}")
@@ -121,6 +119,7 @@ def run_bayesian_for_plot(
         file_path=file_path,
         param_to_optimize=fit_params + error_names,
         include_process_error=include_process_error,
+        error_mode=error_mode,
         chains=chains,
         cores=cores,
         num_warmup=num_warmup,
@@ -221,7 +220,7 @@ if __name__ == "__main__":
 
     plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species]
 
-    plot_ids = ["solling"]
+    plot_ids = ["04.0302"]
     # Add argument parser
     parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
     parser.add_argument(

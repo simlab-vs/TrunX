@@ -21,7 +21,10 @@ import pandas as pd
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODE_PARAM_DEPENDENCIES
+from trunx.gp3.bayesiancalibrations.bayesian_config import (
+    ERROR_MODE_PARAM_DEPENDENCIES,
+    fitted_error_names,
+)
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -208,6 +211,55 @@ def fit_params_for_mode(file_path: str, mode: str) -> list[str]:
     params_with_priors = set(load_priors_from_file(file_path))
     params_calibratable = set(ERROR_MODE_PARAM_DEPENDENCIES[mode]["parameters"])
     return sorted(params_with_priors & params_calibratable)
+
+
+def scored_variables_for_mode(file_path: str, mode: str) -> list[str]:
+    """Output variables scored under `mode`, as in the PyMC calibrations.
+
+    A variable is scored when `file_path` has an `err_{var}` sigma prior that
+    `bayesian_config.ERROR_MODES[mode]` fits.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    mode : str
+        Key into `bayesian_config.ERROR_MODES`.
+
+    Returns
+    -------
+    list[str]
+        Scored output variable names, e.g. ``["WS", "WR", "WF"]``.
+    """
+    fitted = fitted_error_names(mode)
+    return [
+        name.removeprefix("err_") for name in load_priors_from_file(file_path) if name in fitted
+    ]
+
+
+def keep_fitted_error_priors(
+    priors: dict[str, tuple[float, float]], mode: str
+) -> dict[str, tuple[float, float]]:
+    """Drop the `err_*` sigma priors that `mode` does not fit.
+
+    Parameters
+    ----------
+    priors : dict[str, tuple[float, float]]
+        Parameter names mapped to (min, max) prior bounds.
+    mode : str
+        Key into `bayesian_config.ERROR_MODES`.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        `priors` without the unfitted `err_*` entries; other parameters are kept.
+    """
+    fitted = fitted_error_names(mode)
+    return {
+        name: bounds
+        for name, bounds in priors.items()
+        if not name.startswith("err_") or name in fitted
+    }
 
 
 # Literature tables that carry a real per-species bound for the parameters most
@@ -413,8 +465,8 @@ def load_observations_from_section(
         The plot's climate section. `idx` is assigned by row position
         (0-based), so this must be the exact `[site.from, site.to]` window
         `climate` (the `ClimateData` actually simulated) was built from —
-        already true of `prepare_multiplots_data.py`'s output, which trims
-        to that window at write time (see `trim_to_window`) — or every
+        already true of `prepare_multiplots_data.py`'s output, whose climate
+        `create_combined_inputs.build_plot_input_sheets` trims to that window — or every
         observation will be indexed against the wrong month (and can run
         off the end of the array).
     species_names : list[str]
@@ -578,7 +630,7 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
     )
 
     # climate_df is already trimmed to [site.from, site.to] by prepare_multiplots_data.py
-    # (see trim_to_window there), the same window `climate` (above) was built from — so
+    # (via create_combined_inputs), the same window `climate` (above) was built from — so
     # idx=0 here lines up with the same month as ClimateData's row 0.
     observations = load_observations_from_section(
         observed_df=observed_df,
