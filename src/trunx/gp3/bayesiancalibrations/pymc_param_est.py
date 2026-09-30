@@ -24,7 +24,6 @@ from pytensor.graph.op import Op, OutputStorageType
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
-    DIAGNOSTIC_ONLY_ERROR_NAMES,
     FIT_PARAMS,
     INITIAL_STATE_PARAMS,
     PROCESS_ERROR_PARAM_NAMES,
@@ -35,6 +34,7 @@ from trunx.gp3.bayesiancalibrations.calibration_utils import (
     predict_from_parameter_draws,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    keep_fitted_error_priors,
     literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
@@ -592,6 +592,7 @@ def run_pymc_analysis(
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
     include_process_error: bool = False,
+    error_mode: str = "biomass_only",
     chains: int = 3,
     cores: int | None = None,
     num_warmup: int = 10000,
@@ -621,6 +622,9 @@ def run_pymc_analysis(
         e.g. combined with a `"biomass_only"`-style `param_to_optimize`, you'd fit 3
         observation-noise sigmas (err_WS/err_WR/err_WF) plus all 3 process-error
         sigmas (perr_WS/perr_WR/perr_WF).
+    error_mode : str
+        Key into `ERROR_MODES`; only its `err_*` sigmas are kept in the priors, so
+        only their observations are scored.
     step_method, target_accept
         Forwarded to `run_pymc_inference`; see its docstring.
     """
@@ -639,8 +643,7 @@ def run_pymc_analysis(
     priors = load_priors_from_file(
         file_path, priors_param_names, bound_overrides=literature_bound_overrides(file_path)
     )
-    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
-        priors.pop(error_name, None)
+    priors = keep_fitted_error_priors(priors, error_mode)
     if include_process_error:
         # WS0/WR0/WF0 get a pm.Normal prior in pymc_model, centered on state's own
         # nominal value with spread from perr_WS/WR/WF (loaded above) — not a

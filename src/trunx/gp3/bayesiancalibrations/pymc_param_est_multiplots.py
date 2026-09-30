@@ -38,6 +38,7 @@ from trunx.gp3.bayesiancalibrations.jax_bayesian_param_est_multiplots import (
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     fit_params_for_mode,
+    keep_fitted_error_priors,
     literature_bounds_for_species,
     load_param_defaults_from_file,
     load_plot_ids_from_file,
@@ -420,9 +421,9 @@ def run_pymc_multi_plot_analysis(
     error_mode : str
         Key into `ERROR_MODES` (`"all_error_terms"`, `"biomass_only"`,
         `"biomass_DBH_only"`, or `"DBH_only"`) selecting which `err_*`
-        observation-noise terms are excluded from the fit. Also narrows the
+        observation-noise terms are fitted. Also narrows the
         default physiology parameter set (see `param_names`) to those with
-        a bearing on `error_mode`'s still-active outputs — matching
+        a bearing on `error_mode`'s fitted outputs — matching
         `run_calibration_sweep.py`'s `fit_params_for_mode` usage.
     param_names : list[str] | None
         Parameter names to calibrate. If None, defaults to
@@ -433,9 +434,6 @@ def run_pymc_multi_plot_analysis(
     step_method, target_accept, checkpoint_every, resume_tune
         Forwarded to `run_pymc_multi_plot_inference`; see its docstring.
     """
-    if error_mode not in ERROR_MODES:
-        raise ValueError(f"error_mode must be one of {sorted(ERROR_MODES)}, got {error_mode!r}")
-
     packed_plots, fixed_params = load_and_pack_plots(params_file, plot_files)
 
     if param_names is None:
@@ -453,8 +451,7 @@ def run_pymc_multi_plot_analysis(
     priors = load_priors_from_file(
         params_file, priors_param_names, bound_overrides=bound_overrides
     )
-    for error_name in ERROR_MODES[error_mode]:
-        priors.pop(error_name, None)
+    priors = keep_fitted_error_priors(priors, error_mode)
     if include_process_error:
         # WS0/WR0/WF0 get a per-plot pm.Normal prior in multi_plot_pymc_model, centered on
         # each plot's own nominal value with spread from perr_WS/WR/WF (loaded above) — not

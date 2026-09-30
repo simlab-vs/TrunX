@@ -23,16 +23,38 @@ FIT_PARAMS = [
     "nHC",
 ]
 
-# Named calibration scenarios (see `run_calibration_sweep.py`), each mapping to the
-# error names excluded from that scenario's fit — i.e. the `DIAGNOSTIC_ONLY_ERROR_NAMES`
-# override used while running it. Also consulted by `bayesian_comparison_plots.py` to
-# know which err_* posteriors actually exist for a given scenario's saved run.
+# Named calibration scenarios (the `error_mode` argument of every calibration), each
+# mapping to the observation-noise sigmas fitted in that scenario; only the observed
+# variables with a fitted `err_{var}` are scored. Also consulted by
+# `bayesian_comparison_plots.py` to know which err_* posteriors actually exist for a
+# given scenario's saved run.
 ERROR_MODES: dict[str, frozenset[str]] = {
-    "all_error_terms": frozenset(),
-    "biomass_only": frozenset({"err_DBH", "err_BA", "err_Height"}),
-    "biomass_DBH_only": frozenset({"err_BA", "err_Height"}),
-    "DBH_only": frozenset({"err_BA", "err_Height", "err_WF", "err_WS", "err_WR"}),
+    "all_error_terms": frozenset(
+        {"err_DBH", "err_BA", "err_Height", "err_WS", "err_WF", "err_WR"}
+    ),
+    "biomass_only": frozenset({"err_WS", "err_WF", "err_WR"}),
+    "biomass_DBH_only": frozenset({"err_DBH", "err_WS", "err_WF", "err_WR"}),
+    "DBH_only": frozenset({"err_DBH"}),
 }
+
+
+def fitted_error_names(error_mode: str) -> frozenset[str]:
+    """Return the `err_*` sigma names fitted under `error_mode`.
+
+    Parameters
+    ----------
+    error_mode : str
+        Key into `ERROR_MODES`.
+
+    Returns
+    -------
+    frozenset[str]
+        Fitted observation-noise sigma names.
+    """
+    if error_mode not in ERROR_MODES:
+        raise ValueError(f"error_mode must be one of {sorted(ERROR_MODES)}, got {error_mode!r}")
+    return ERROR_MODES[error_mode]
+
 
 # `thinPower` and `rhoMin` also pin against their current bounds in some data files,
 # but published calibrations disagree by up to 2x on those two (e.g. Trotsiuk et al.
@@ -45,13 +67,14 @@ ERROR_MODES: dict[str, frozenset[str]] = {
 # aWS/nWS on the mean stem biomass per tree. `BA` and `Height` are then computed
 # from that same DBH. The ICP observations for all three are instead built by
 # summing per-tree allometric equations over each stand's actual DBH distribution
-# (see create_data_inputs.py) — a different, distribution-aware aggregation that
+# (see allometrics.py) — a different, distribution-aware aggregation that
 # the model's single-mean-tree inversion cannot match whenever a stand has real
 # size spread. Fitting err_DBH/err_BA/err_Height therefore pushes the optimizer
 # to trade away real WS/WF/WR accuracy for a target the model can't correctly
-# represent, so their sigma priors are excluded from calibration; the variables
-# are still simulated and can be plotted for reference. See TODO.md.
-DIAGNOSTIC_ONLY_ERROR_NAMES = ERROR_MODES["biomass_only"]
+# represent, so their sigma priors are not fitted by the default `"biomass_only"`
+# error mode; the variables are still simulated and can be plotted for reference.
+# See TODO.md.
+DIAGNOSTIC_ONLY_ERROR_NAMES = ERROR_MODES["all_error_terms"] - ERROR_MODES["biomass_only"]
 
 # Calibration parameter names that override an initial `State` field instead of a
 # `Params` field, letting the initial-condition biomass pools be treated as uncertain
@@ -231,12 +254,12 @@ def error_mode_param_dependencies(mode: str) -> dict[str, list[str]]:
     -------
     dict[str, list[str]]
         `"direct"` and `"indirect"` parameter names, unioned over every
-        output whose error term is active (not excluded) under `mode`. A
-        parameter direct for at least one active output is reported as
-        direct, even if indirect for another.
+        output whose error term is fitted under `mode`. A parameter direct
+        for at least one active output is reported as direct, even if
+        indirect for another.
     """
     active_outputs = [
-        output for output in OUTPUT_PARAM_DEPENDENCIES if f"err_{output}" not in ERROR_MODES[mode]
+        output for output in OUTPUT_PARAM_DEPENDENCIES if f"err_{output}" in ERROR_MODES[mode]
     ]
     direct = list(
         dict.fromkeys(
@@ -293,7 +316,7 @@ species_plot_ids = {
         "04.1402",
         "04.1403",
         "14.0017",
-        "52.0010",
+        # "52.0010",
         "53.0701",
         "59.0008",
     ],

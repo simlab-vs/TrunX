@@ -38,7 +38,7 @@ SPECIES_TARGET: list[str] = [
 
 _FORRESTER_EQ3: CoefficientsDict = load_forrester_eq3()
 _AGE_REFERENCE_YEAR = 2000
-_COUNTRIES_EXCLUDE: list[str] = ["Belgium", "Spain"]
+_COUNTRIES_EXCLUDE: list[str] = ["Belgium", "Spain", "Serbia"]
 
 _DEP_NAMES: list[str] = [
     "ph",
@@ -78,6 +78,16 @@ _DEP_NAMES: list[str] = [
 ]
 
 _DEP_NON_CONC: list[str] = ["dep_alk", "dep_ph", "dep_cond"]
+
+# Deposition plausibility limits, beyond which values are treated as unit or
+# placeholder errors.
+_DEP_MAX_QUANTITY_MM = 1000.0
+_DEP_MAX_NS_CONC_MG_L = 100.0
+_DEP_MAX_NTOT_DIN_RATIO = 3.0
+_DEP_MAX_DON_MG_L = 5.0
+# More distinct records than this for one sampler and period means the reported
+# dates are broken (e.g. a whole year of samples sharing one period's dates).
+_DEP_MAX_RECORDS_PER_SAMPLER_PERIOD = 3
 
 _SOIL_NAMES: list[str] = [
     "ph",
@@ -356,15 +366,22 @@ def _load_crown(trees: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
-    """Load deposition and aggregate over a ±5-year window around each census date.
+def _load_deposition_periods() -> tuple[pl.DataFrame, list[str], list[str]]:
+    """Load cleaned throughfall deposition as one plot-level record per sampling period.
 
-    Parameters
-    ----------
-    trees : pl.DataFrame
-        Tree census data with ``tree_id``, ``plot_id``, and ``date`` columns.
+    Concentrations are converted to fluxes (kg/ha) and records from multiple
+    samplers of the same plot and period are averaged.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, list[str], list[str]]
+        Period records, flux deposition columns, and non-flux deposition columns.
     """
     path = _find_csv(os.path.join(_ICP_FOLDER, "595_dp_*/dp_dem.csv"))
+    countries = pl.read_csv(
+        os.path.join(os.path.dirname(path), "adds/dictionaries/d_country.csv"), separator=";"
+    )
+    excluded_codes = countries.filter(pl.col("lib_country").is_in(_COUNTRIES_EXCLUDE))["code"]
     src_renames = {
         "n_total": "n_tot",
         "c_total": "c_tot",
@@ -389,6 +406,7 @@ def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
             pl.col("date_start").is_not_null()
             & pl.col("date_end").is_not_null()
             & (pl.col("code_sampler") == 1)
+            & ~pl.col("code_country").is_in(excluded_codes.implode())
         )
     )
 
@@ -411,23 +429,68 @@ def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
     if dep_cols:
         df = df.with_columns(cs.by_name(*dep_cols).fill_nan(None))
 
+    ns_conc = ["dep_n_tot", "dep_n_nh4", "dep_n_no3", "dep_s_so4"]
+    din = pl.col("dep_n_nh4") + pl.col("dep_n_no3")
+    df = df.with_columns(
+        pl.when(cs.by_name(*ns_conc).le(_DEP_MAX_NS_CONC_MG_L)).then(cs.by_name(*ns_conc)),
+        quantity=pl.when(pl.col("quantity").is_between(0, _DEP_MAX_QUANTITY_MM)).then(
+            pl.col("quantity")
+        ),
+    ).with_columns(
+        dep_n_tot=pl.when(
+            (pl.col("dep_n_tot") > _DEP_MAX_NTOT_DIN_RATIO * din)
+            & (pl.col("dep_n_tot") - din > _DEP_MAX_DON_MG_L)
+        )
+        .then(None)
+        .otherwise(pl.col("dep_n_tot"))
+    )
+
     df = df.with_columns(
         dep_n_tot=pl.when(pl.col("dep_n_tot").is_null())
-        .then(pl.col("dep_n_nh4") + pl.col("dep_n_no3") + pl.col("dep_n_org").fill_null(0))
+        .then(din + pl.col("dep_n_org").fill_null(0))
         .otherwise(pl.col("dep_n_tot"))
     )
 
     if flux_cols:
         df = df.with_columns(cs.by_name(*flux_cols) * pl.col("quantity") / 100)
 
+    df = df.with_columns(
+        pl.col("date_start", "date_end").str.slice(0, 10).str.to_date(strict=False)
+    ).drop_nulls(subset=["date_start", "date_end"])
+
+    # Drop resubmitted duplicates, then sampler-periods with broken dates
+    period = ["plot_id", "date_start", "date_end"]
+    df = df.unique(subset=[*period, "sampler_id", *dep_cols, "quantity"]).filter(
+        pl.len().over(*period, "sampler_id") <= _DEP_MAX_RECORDS_PER_SAMPLER_PERIOD
+    )
+
+    df = df.group_by(period).agg(
+        pl.col("survey_year").first(), cs.by_name(*dep_cols, "quantity").mean()
+    )
+    return df, flux_cols, non_conc
+
+
+def _sum_or_null(expr: pl.Expr) -> pl.Expr:
+    """Sum an expression in an aggregation, returning null when all values are null."""
+    return pl.when(expr.is_not_null().any()).then(expr.sum())
+
+
+def _load_deposition(trees: pl.DataFrame) -> pl.DataFrame:
+    """Load deposition and aggregate over a ±5-year window around each census date.
+
+    Parameters
+    ----------
+    trees : pl.DataFrame
+        Tree census data with ``tree_id``, ``plot_id``, and ``date`` columns.
+    """
+    df, flux_cols, non_conc = _load_deposition_periods()
+
     # Annual aggregation per plot
     annual_agg: list[pl.Expr] = [pl.len().alias("num_deposition_obs")]
-    if flux_cols:
-        annual_agg.append(cs.by_name(*flux_cols).sum())
+    annual_agg.extend(_sum_or_null(pl.col(c)).alias(c) for c in flux_cols)
     if non_conc:
         annual_agg.append(cs.by_name(*non_conc).mean())
-    if "quantity" in df.columns:
-        annual_agg.append(pl.col("quantity").sum().alias("yearly_precip"))
+    annual_agg.append(_sum_or_null(pl.col("quantity")).alias("yearly_precip"))
 
     df_annual = df.group_by("plot_id", "survey_year").agg(annual_agg)
 

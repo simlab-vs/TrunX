@@ -1,13 +1,10 @@
 """Run DEMetropolisZ, NUTS, gradient descent, and MAP for every site, twice each.
 
-Once fitting all error terms (DBH/BA/Height included), and once fitting only
-biomass (WS/WF/WR) — the project's default, see `bayesian_config`'s
-`DIAGNOSTIC_ONLY_ERROR_NAMES`. The two modes are produced by temporarily
-overriding that constant rather than by any new calibration logic: DEMetropolisZ,
-NUTS, and MAP all read it (via `pymc_param_est`/`map_param_est`) to decide which
-error priors to drop before sampling/optimising; gradient descent has no sigma
-priors at all, so its equivalent is fitting against all six `PLOT_VARIABLES`
-instead of biomass alone.
+Once per error mode in `ERROR_KEYS` (see `bayesian_config.ERROR_MODES`), which
+selects the observed variables that are fitted. DEMetropolisZ, NUTS, and MAP take it
+as their `error_mode` argument, which drops the excluded error priors before
+sampling/optimising; gradient descent has no sigma priors at all, so its equivalent
+is fitting against the `PLOT_VARIABLES` the mode does not exclude.
 
 Writes `<output-dir>/<site_id>/<mode>/{demetropolisz,nuts,map,gradient_descent}/` for
 `"solling"`, and `<output-dir>/<site_id>/<literature_source>/<mode>/{...}/` for every
@@ -25,8 +22,6 @@ import shutil
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import pandas as pd
 
@@ -101,30 +96,6 @@ METHODS = ["demetropolisz"]
 ERROR_KEYS = ["all_error_terms", "biomass_only", "DBH_only"]
 
 ERROR_MODES = {key: ERROR_MODES[key] for key in ERROR_KEYS}
-
-# Modules that did `from bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES` and so
-# each hold their own binding of it — patched directly by `diagnostic_only_error_names`.
-_PATCHED_MODULES = (pymc_param_est, map_param_est)
-
-
-@contextmanager
-def diagnostic_only_error_names(names: frozenset[str]) -> Iterator[None]:
-    """Temporarily override `DIAGNOSTIC_ONLY_ERROR_NAMES` for `pymc_param_est`/`map_param_est`.
-
-    Both modules imported the frozenset by name (`from bayesian_config import
-    DIAGNOSTIC_ONLY_ERROR_NAMES`), which binds it into their own module namespace —
-    reassigning `bayesian_config.DIAGNOSTIC_ONLY_ERROR_NAMES` itself wouldn't reach
-    either already-bound name, so this patches each module's own attribute directly
-    instead, restoring the original afterward.
-    """
-    originals = [module.DIAGNOSTIC_ONLY_ERROR_NAMES for module in _PATCHED_MODULES]
-    for module in _PATCHED_MODULES:
-        module.DIAGNOSTIC_ONLY_ERROR_NAMES = names
-    try:
-        yield
-    finally:
-        for module, original in zip(_PATCHED_MODULES, originals, strict=True):
-            module.DIAGNOSTIC_ONLY_ERROR_NAMES = original
 
 
 def apply_literature_bounds(file_path: str) -> None:
@@ -229,7 +200,7 @@ def run_job(
         Forwarded to the MAP run (`run_map_analysis`).
     """
     source_file_path = resolve_source_file_path(site_id, literature_source=literature_source)
-    diagnostic_only_names = ERROR_MODES[mode_name]
+    fitted_names = ERROR_MODES[mode_name]
 
     if site_id == "solling":
         site_output_dir = os.path.join(output_dir, site_id)
@@ -267,49 +238,49 @@ def run_job(
     start = time.perf_counter()
 
     if method == "demetropolisz":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            # Fixed at 10 checkpoints total regardless of num_warmup/num_samples — at
-            # the default 5e6 samples, the run_pymc_analysis default (500) would mean
-            # 10,000 checkpoints, each paying its own disk-write overhead.
-            demetropolisz_checkpoint_every = max(500, demetropolisz_num_samples // 5)
-            pymc_param_est.run_pymc_analysis(
-                output_dir=os.path.join(site_dir, "demetropolisz"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                include_process_error=include_process_error,
-                chains=chains,
-                num_warmup=demetropolisz_num_warmup,
-                num_samples=demetropolisz_num_samples,
-                checkpoint_every=demetropolisz_checkpoint_every,
-                step_method="demetropolisz",
-            )
+        # Fixed at 10 checkpoints total regardless of num_warmup/num_samples — at
+        # the default 5e6 samples, the run_pymc_analysis default (500) would mean
+        # 10,000 checkpoints, each paying its own disk-write overhead.
+        demetropolisz_checkpoint_every = max(500, demetropolisz_num_samples // 5)
+        pymc_param_est.run_pymc_analysis(
+            output_dir=os.path.join(site_dir, "demetropolisz"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            chains=chains,
+            num_warmup=demetropolisz_num_warmup,
+            num_samples=demetropolisz_num_samples,
+            checkpoint_every=demetropolisz_checkpoint_every,
+            step_method="demetropolisz",
+        )
     elif method == "nuts":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            nuts_checkpoint_every = max(1, nuts_num_samples // 5)
-            pymc_param_est.run_pymc_analysis(
-                output_dir=os.path.join(site_dir, "nuts"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                include_process_error=include_process_error,
-                chains=chains,
-                num_warmup=nuts_num_warmup,
-                num_samples=nuts_num_samples,
-                checkpoint_every=nuts_checkpoint_every,
-                step_method="nuts",
-            )
+        nuts_checkpoint_every = max(1, nuts_num_samples // 5)
+        pymc_param_est.run_pymc_analysis(
+            output_dir=os.path.join(site_dir, "nuts"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            chains=chains,
+            num_warmup=nuts_num_warmup,
+            num_samples=nuts_num_samples,
+            checkpoint_every=nuts_checkpoint_every,
+            step_method="nuts",
+        )
     elif method == "map":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            map_param_est.run_map_analysis(
-                output_dir=os.path.join(site_dir, "map"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                include_process_error=include_process_error,
-                n_vmap_restarts=n_vmap_restarts,
-                n_vmap_steps=n_vmap_steps,
-                laplace_draws=laplace_draws,
-            )
+        map_param_est.run_map_analysis(
+            output_dir=os.path.join(site_dir, "map"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            n_vmap_restarts=n_vmap_restarts,
+            n_vmap_steps=n_vmap_steps,
+            laplace_draws=laplace_draws,
+        )
     elif method == "gradient_descent":
-        target_vars = [var for var in PLOT_VARIABLES if f"err_{var}" not in diagnostic_only_names]
+        target_vars = [var for var in PLOT_VARIABLES if f"err_{var}" in fitted_names]
         config = GradientDescentConfig(
             target_vars=target_vars, fit_params=fit_params, file_path=file_path
         )

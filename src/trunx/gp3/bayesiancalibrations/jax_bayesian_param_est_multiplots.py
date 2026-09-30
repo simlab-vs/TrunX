@@ -33,9 +33,11 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
     PlotData,
+    fit_params_for_mode,
     load_plot_data,
     load_plot_ids_from_file,
     load_priors_from_file,
+    scored_variables_for_mode,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.run_3pg import run_3pg
@@ -443,14 +445,51 @@ def run_multi_plot_analysis(
     params_file: str,
     plot_files: list[tuple[str, str]],
     param_names: list[str] | None = None,
+    error_mode: str = "biomass_only",
     num_warmup: int = 1000,
     num_samples: int = 1000,
     num_chains: int = 4,
     seed: int = 42,
 ) -> tuple[MCMC, dict]:
-    """Run shared-parameter HMC inference across many plots."""
+    """Run shared-parameter HMC inference across many plots.
+
+    Parameters
+    ----------
+    params_file : str
+        Parquet file with the shared parameter bounds and `err_*` sigma priors.
+    plot_files : list[tuple[str, str]]
+        (plot parquet file, plot_id) pairs.
+    param_names : list[str] | None
+        Physiology parameters to calibrate. If None, defaults to
+        `fit_params_for_mode(params_file, error_mode)`.
+    error_mode : str
+        Key into `ERROR_MODES` selecting which outputs are scored, as in
+        `pymc_param_est_multiplots.run_pymc_multi_plot_analysis`. Only observed
+        variables with a fitted `err_{var}` prior in `params_file` enter the
+        likelihood, each with its own per-plot noise scale.
+    num_warmup, num_samples, num_chains, seed
+        MCMC settings.
+
+    Returns
+    -------
+    tuple[MCMC, dict]
+        The fitted MCMC object and its posterior samples.
+    """
+    scored = scored_variables_for_mode(params_file, error_mode)
+    if param_names is None:
+        param_names = fit_params_for_mode(params_file, error_mode)
     priors = load_priors_from_file(params_file, param_names)
     packed_plots, fixed_params = load_and_pack_plots(params_file, plot_files)
+
+    skipped = sorted(set(packed_plots.observations) - set(scored))
+    packed_plots = packed_plots._replace(
+        observations={
+            name: obs for name, obs in packed_plots.observations.items() if name in scored
+        }
+    )
+    if not packed_plots.observations:
+        raise ValueError(f"No observations are scored under error_mode {error_mode!r}")
+    print(f"Scoring {sorted(packed_plots.observations)}; skipping {skipped} ({error_mode})")
 
     rng_key = random.PRNGKey(seed)
     _, subkey = random.split(rng_key)
@@ -481,6 +520,7 @@ def run_multi_plot_analysis_for_file(
     plot_file: str,
     params_file: str,
     param_names: list[str] | None = None,
+    error_mode: str = "biomass_only",
     num_warmup: int = 200,
     num_samples: int = 200,
     num_chains: int = 2,
@@ -488,7 +528,10 @@ def run_multi_plot_analysis_for_file(
     plot_ids: list[str] | None = None,
     max_plots: int | None = None,
 ) -> tuple[MCMC, dict]:
-    """Run shared-parameter inference across all plots in one parquet file."""
+    """Run shared-parameter inference across all plots in one parquet file.
+
+    See `run_multi_plot_analysis` for `param_names` and `error_mode`.
+    """
     if plot_ids is None:
         plot_ids = load_plot_ids_from_file(plot_file)
     if max_plots is not None:
@@ -501,6 +544,7 @@ def run_multi_plot_analysis_for_file(
         params_file=params_file,
         plot_files=plot_files,
         param_names=param_names,
+        error_mode=error_mode,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
@@ -509,13 +553,16 @@ def run_multi_plot_analysis_for_file(
 
 
 if __name__ == "__main__":
-    species = "Picea_abies"
-    plot_ids = species_plot_ids.get(species, [])
+    species = "Picea abies"
+    plot_ids = species_plot_ids[species]
 
     run_multi_plot_analysis_for_file(
-        plot_file=os.path.join(threepg_data_folder, f"icp_plot_data_{species}.parquet"),
+        plot_file=os.path.join(
+            threepg_data_folder, f"icp_plot_data_{species.replace(' ', '_')}.parquet"
+        ),
         params_file=os.path.join(threepg_data_folder, "params_bounds.parquet"),
         param_names=None,
+        error_mode="biomass_only",
         max_plots=4,  # Limit to 4 plots for quick testing; remove or increase for full analysis.
         num_warmup=20,
         num_samples=20,

@@ -991,7 +991,7 @@ def plot_convergence_comparison(
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
-    excluded_error_names: frozenset[str] = DIAGNOSTIC_ONLY_ERROR_NAMES,
+    fitted_error_names: frozenset[str] = ERROR_MODES["biomass_only"],
     include_bayesian: bool = True,
     include_hmc: bool = True,
     method_colors: dict[str, str] | None = None,
@@ -1006,14 +1006,12 @@ def plot_convergence_comparison(
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
         Parameters to compare. Defaults to `fit_params` plus one `err_{var}` per
-        variable in `PLOT_VARIABLES` that isn't in `excluded_error_names`.
-    excluded_error_names : frozenset[str]
-        `err_*` names to leave out of the default `param_names` — the ones with no
-        sigma prior (and so no posterior) in the run being plotted. Defaults to
-        `DIAGNOSTIC_ONLY_ERROR_NAMES`; pass the scenario's own entry from
-        `bayesian_config.ERROR_MODES` instead when plotting a specific named
-        calibration scenario (e.g. `"all_error_terms"` fits every `err_*`, so its
-        exclusion set is empty). Ignored if `param_names` is given explicitly.
+        variable in `PLOT_VARIABLES` that is in `fitted_error_names`.
+    fitted_error_names : frozenset[str]
+        `err_*` names fitted (and so with a posterior) in the run being plotted.
+        Defaults to the `"biomass_only"` entry of `bayesian_config.ERROR_MODES`; pass
+        the scenario's own entry instead when plotting another named calibration
+        scenario. Ignored if `param_names` is given explicitly.
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself
@@ -1037,7 +1035,7 @@ def plot_convergence_comparison(
 
     if param_names is None:
         param_names = fit_params + [
-            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" not in excluded_error_names
+            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" in fitted_error_names
         ]
     # A name listed twice (e.g. an `err_*` already in `fit_params`) would get two bars.
     param_names = list(dict.fromkeys(param_names))
