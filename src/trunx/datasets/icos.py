@@ -32,14 +32,17 @@ logger = logging.getLogger(__name__)
 L2_ARCHIVE_DATATYPE = "http://meta.icos-cp.eu/resources/cpmeta/etcArchiveProduct"
 
 
-def get_ICOS_clients(token: str) -> tuple[MetadataClient, DataClient]:
+def get_ICOS_clients(username: str, password: str) -> tuple[MetadataClient, DataClient]:
     """Initialize the metadata and data clients for the ICOS data portal.
+
+    The authentication token is fetched, and renewed when it expires, by icoscp_core.
 
     Parameters
     ----------
-    token: str
-        Authentication token for the ICOS portal.
-        Can be fetched from https://cpauth.icos-cp.eu. Token are only valid for 27 hours.
+    username: str
+        Username (email) of the ICOS account, see https://cpauth.icos-cp.eu.
+    password: str
+        Password of the ICOS account.
 
     Returns
     -------
@@ -47,11 +50,11 @@ def get_ICOS_clients(token: str) -> tuple[MetadataClient, DataClient]:
         Metadata client (for searching) and data client (for downloading).
     """
     try:
-        return bootstrap.fromCookieToken(token)
+        return bootstrap.fromCredentials(username, password)
 
     # icoscp_core raises bare exceptions, we thus have to catch-all and re-raise
     except Exception as e:
-        logger.error("Potential error in ICOS client initialization (token not shown).")
+        logger.error(f"Potential error in ICOS client initialization for user {username}.")
         logger.error(f"Original exception: {e}")
         raise
 
