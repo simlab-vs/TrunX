@@ -46,7 +46,7 @@ SECTION_COLS: dict[str, list[str]] = {
         "biom_root",
         "biom_foliage",
     ],
-    "observed": ["specie", "month", "year", "GPP", "DBH", "WS", "WF", "WR", "LAI"],
+    "observed": ["specie", "month", "year", "DBH", "WS", "WF", "WR", "LAI"],
 }
 
 

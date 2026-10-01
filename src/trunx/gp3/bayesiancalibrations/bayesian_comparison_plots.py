@@ -20,8 +20,7 @@ import polars as pl
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from sklearn.metrics import mean_absolute_error as mae
-from sklearn.metrics import root_mean_squared_error as rmse
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
@@ -55,6 +54,18 @@ LABEL_MAP = {
     "WR": "Root biomass",
     "WF": "Foliage biomass",
 }
+
+
+def rmse(observed: np.ndarray, predicted: np.ndarray) -> float:
+    """Root mean squared error over the observed (non-NaN) entries."""
+    valid = ~np.isnan(observed)
+    return float(root_mean_squared_error(observed[valid], predicted[valid]))
+
+
+def mae(observed: np.ndarray, predicted: np.ndarray) -> float:
+    """Mean absolute error over the observed (non-NaN) entries."""
+    valid = ~np.isnan(observed)
+    return float(mean_absolute_error(observed[valid], predicted[valid]))
 
 
 def build_time_index(climate, site_data) -> pd.DatetimeIndex:
@@ -316,7 +327,10 @@ def plot_comparison(
     input_data = prepare_data(file_path)
     time_months = build_time_index(input_data.climate, input_data.site)
 
-    observations = pl.read_excel(file_path, sheet_name="observed")
+    # Rows without any plotted variable (e.g. GPP-only months) have nothing to show.
+    observations = pl.read_excel(file_path, sheet_name="observed").filter(
+        pl.any_horizontal(pl.col(plot_variables).is_not_null())
+    )
     obs_time = pd.to_datetime(
         pd.Series(observations["year"].to_numpy()).astype(str)
         + "-"
@@ -500,7 +514,7 @@ def plot_comparison(
         title = site_name
         if calibrated_metrics:
             mean_rmse = np.mean([row["bayesian_rmse"] for row in calibrated_metrics])
-            calibrated_names = "/".join(row["variable"] for row in calibrated_metrics)
+            calibrated_names = "/".join(str(row["variable"]) for row in calibrated_metrics)
             title += f" — mean RMSE ({calibrated_names}): {mean_rmse:.2f}"
         map_estimate_dir = map_output_dir if map_output_dir is not None else bayesian_output_dir
         if map_estimate_dir is not None:
@@ -1433,7 +1447,7 @@ def plot_and_save(
 
 if __name__ == "__main__":
     # plot_ids = ["solling"]
-    plot_ids = species_plot_ids["Picea abies"]
+    # plot_ids = species_plot_ids["Picea abies"] + species_plot_ids["Fagus sylvatica"]
 
     _include_bayesian = True
     _include_hmc = True
@@ -1445,12 +1459,12 @@ if __name__ == "__main__":
     for literature_source in _literature_sources:
         if literature_source == "Forrester":
             plot_ids = (
-                species_plot_ids["Pices abies"]
+                species_plot_ids["Picea abies"]
                 + species_plot_ids["Fagus sylvatica"]
                 + species_plot_ids["Pinus sylvestris"]
             )
         elif literature_source == "Trotsiuk":
-            plot_ids = species_plot_ids["Pices abies"] + species_plot_ids["Fagus sylvatica"]
+            plot_ids = species_plot_ids["Picea abies"] + species_plot_ids["Fagus sylvatica"]
         else:
             raise ValueError("Invalid literature source")
 
@@ -1462,7 +1476,7 @@ if __name__ == "__main__":
                     plot_and_save(
                         plot_id=plot_id,
                         error_terms=error_terms,
-                        literature_source="Forrester",
+                        literature_source=literature_source,
                         include_process_error=_include_process_error,
                         include_bayesian=_include_bayesian,
                         include_hmc=_include_hmc,
@@ -1472,10 +1486,14 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Error processing plot_id={plot_id}: {e}")
 
-            plot_posterior_across_plots(
-                plot_ids=plot_ids,
-                literature_source="Forrester",
-                error_terms=error_terms,
-                method="demetropolisz",
-                include_process_error=_include_process_error,
-            )
+            for method in ["nuts", "demetropolisz"]:
+                try:
+                    plot_posterior_across_plots(
+                        plot_ids=plot_ids,
+                        literature_source=literature_source,
+                        error_terms=error_terms,
+                        method=method,
+                        include_process_error=_include_process_error,
+                    )
+                except Exception as e:
+                    print(f"Error processing: {e}")
