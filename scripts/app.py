@@ -4,7 +4,7 @@ from support_utils import (
     load_prepare_data,
 )
 
-from trunx.gp3.PG3_model_impl import run_threepg_main, run_threepg_with_icp
+from trunx.gp3.PG3_model_impl import run_threepg_for_plot, run_threepg_main
 from trunx.plot_utils import plot_geographic_location_species
 
 st.set_page_config(page_title="ICP Forests EDA", layout="wide")
@@ -104,7 +104,7 @@ if page == "3PG model":
             "Select Plot ID", options=["50.0013", "50.0015"], help="Choose the plot ID to analyze"
         )
         st.subheader(f"Implementation using ICP weather data (Plot id: {plot_id_choice})")
-        result = run_threepg_with_icp(plot_id=plot_id_choice, plot_output=True, r_comparison=True)
+        result = run_threepg_for_plot(plot_id=plot_id_choice, plot_output=True, r_comparison=True)
     else:
         st.subheader("Implementation using Trotsiuk eg. weather data for beech")
 

@@ -22,12 +22,12 @@ from jax.scipy.stats import norm
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
-    DIAGNOSTIC_ONLY_ERROR_NAMES,
     FIT_PARAMS,
     INITIAL_STATE_PARAMS,
     PROCESS_ERROR_PARAM_NAMES,
 )
 from trunx.gp3.bayesiancalibrations.load_files import (
+    keep_fitted_error_priors,
     literature_bound_overrides,
     load_observations_from_file,
     load_param_defaults_from_file,
@@ -368,6 +368,7 @@ def run_map_analysis(
     file_path: str = os.path.join(threepg_data_folder, "solling_data.xlsx"),
     param_to_optimize: list[str] | None = None,
     include_process_error: bool = False,
+    error_mode: str = "biomass_only",
     method: str = "L-BFGS-B",
     maxeval: int = 5000,
     n_restarts: int = 0,
@@ -387,6 +388,9 @@ def run_map_analysis(
         Whether to additionally treat the initial-state biomass pools WS0/WR0/WF0 as
         uncertain, fitted quantities — see `pymc_param_est.run_pymc_analysis`'s
         parameter of the same name for the full explanation; identical behavior here.
+    error_mode : str
+        Key into `ERROR_MODES`; only its `err_*` sigmas are kept in the priors, so
+        only their observations are scored.
     n_vmap_restarts, n_vmap_steps : int
         Forwarded to `run_map_estimation`'s GPU-parallel restart search.
     laplace_draws : int
@@ -410,8 +414,7 @@ def run_map_analysis(
     priors = load_priors_from_file(
         file_path, priors_param_names, bound_overrides=literature_bound_overrides(file_path)
     )
-    for error_name in DIAGNOSTIC_ONLY_ERROR_NAMES:
-        priors.pop(error_name, None)
+    priors = keep_fitted_error_priors(priors, error_mode)
     if include_process_error:
         # WS0/WR0/WF0 get a pm.Normal prior in pymc_model, centered on state's own
         # nominal value with spread from perr_WS/WR/WF (loaded above) — not a

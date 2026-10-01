@@ -15,6 +15,10 @@ from trunx.gp3.allometrics import dms_to_decimal
 
 base_url = "https://data.globalecology.unh.edu/data/GOSIF-GPP_v2/Monthly/Mean/"
 
+# 3PG's `gDM_mol` (g dry matter per mol C), fixed at 24 in every parameter set; used to
+# express GOSIF GPP in the model's GPP unit (t DM/ha/month).
+_GDM_PER_MOL_C = 24.0
+
 
 def get_icp_data():
     """Load ICP data, filter for relevant species, and convert coordinates."""
@@ -44,10 +48,12 @@ def get_icp_data():
 
 
 def get_GOSIF_GPP_for_icp(icp_df):
-    """Download GOSIF GPP for ICP forest locations and save to CSV."""
-    SCALE_FACTOR = 0.01  # scale factor from GOSIF documentation
-    # GOSIF documentation states these are fill values for missing data
-    FILL_VALUES = [32766, 32767]
+    """Download GOSIF GPP for ICP forest locations and save it to CSV in t DM/ha/month."""
+    # Monthly scale factor and fill values (water bodies, lands under snow/ice all year)
+    # from the GOSIF-GPP v2 readme, Fair_Data_Use_Policy_and_Readme_GOSIF-GPP_v2.pdf,
+    # in the parent folder of `base_url`.
+    SCALE_FACTOR = 0.01
+    FILL_VALUES = [65535, 65534]
     icp_loc = icp_df.select(["Lat", "Lon", "plot_id"])
 
     all_frames = []
@@ -95,11 +101,18 @@ def get_GOSIF_GPP_for_icp(icp_df):
             all_frames.append(df)
 
     final_df = pl.concat(all_frames).unique()
+    final_df = final_df.filter(pl.col("GPP").is_not_nan())  # drop fill-value pixels
     final_df = final_df.with_columns(
         pl.col("GPP") * SCALE_FACTOR  # GPP in gC/m2/month
     )
     final_df = final_df.with_columns(
         pl.col("GPP") / 12.011  # GPP in gC/m2/month -> mol C/m2/month
+    )
+    final_df = final_df.with_columns(
+        pl.col("GPP") * _GDM_PER_MOL_C  # GPP in mol C/m2/month -> g DM/m2/month
+    )
+    final_df = final_df.with_columns(
+        pl.col("GPP") / 100  # GPP in g DM/m2/month -> t DM/ha/month
     )
 
     final_df.write_csv(os.path.join(clean_data_folder, "GOSIF_GPP_icp.csv"))
