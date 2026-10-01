@@ -161,3 +161,172 @@ def add_allometric_columns(
         _expr("rb").alias("allo_rb_kg"),
         _expr("la").alias("allo_la_m2"),
     )
+
+
+def aggregate_per_plot(
+    trees: pl.DataFrame,
+    group_by: list[str],
+    dbh_col: str = "dbh_cm",
+    weight_col: str | None = None,
+    extra_aggs: list[pl.Expr] | None = None,
+) -> pl.DataFrame:
+    """Sum per-tree stand quantities within each stand observation.
+
+    Sums the per-tree `biom_stem`, `biom_foliage`, `biom_root`, `la_m2`
+    and `basal_area` columns (as added by `prepare_*_tree_data`). With
+    `weight_col` (e.g. a per-hectare expansion factor), each tree's
+    contribution is scaled by that column before summing, so the group
+    totals are already per hectare; without it, the totals are plain
+    per-group sums and callers scale them to a per-hectare basis
+    themselves (e.g. by dividing by plot area).
+
+    Parameters
+    ----------
+    trees : pl.DataFrame
+        Tree-level data with `biom_stem`, `biom_foliage`, `biom_root`,
+        `la_m2` and `basal_area` columns.
+    group_by : list[str]
+        Columns identifying a stand observation (e.g. plot and date).
+    dbh_col : str
+        Name of the tree-level DBH column (values in cm) to aggregate.
+    weight_col : str | None
+        Per-tree expansion factor column. `None` sums raw tree counts.
+    extra_aggs : list[pl.Expr] | None
+        Additional aggregation expressions evaluated in the same
+        `group_by`, e.g. mean height or coordinates.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per group with `n_trees`, `dbh_qmd` (quadratic mean
+        diameter), `dbh_mean` (arithmetic mean), `dbh_std` (population
+        standard deviation), `sb_kg`, `fb_kg`, `rb_kg`, `la_m2`, `ba_m2`,
+        plus any `extra_aggs` columns.
+    """
+    weight = pl.col(weight_col) if weight_col is not None else None
+
+    def _sum(col: str) -> pl.Expr:
+        # Null (not 0) when no tree has a value, e.g. species without coefficients.
+        total = (pl.col(col) * weight).sum() if weight is not None else pl.col(col).sum()
+        return pl.when(pl.col(col).is_not_null().any()).then(total)
+
+    sums = [
+        _sum("biom_stem").alias("sb_kg"),
+        _sum("biom_foliage").alias("fb_kg"),
+        _sum("biom_root").alias("rb_kg"),
+        _sum("la_m2").alias("la_m2"),
+        _sum("basal_area").alias("ba_m2"),
+    ]
+    aggs = (
+        [
+            weight.sum().alias("n_trees"),
+            ((pl.col(dbh_col).pow(2) * weight).sum() / weight.sum()).sqrt().alias("dbh_qmd"),
+            ((pl.col(dbh_col) * weight).sum() / weight.sum()).alias("dbh_mean"),
+            (
+                (pl.col(dbh_col).pow(2) * weight).sum() / weight.sum()
+                - ((pl.col(dbh_col) * weight).sum() / weight.sum()).pow(2)
+            )
+            .sqrt()
+            .alias("dbh_std"),
+        ]
+        if weight is not None
+        else [
+            pl.len().alias("n_trees"),
+            pl.col(dbh_col).pow(2).mean().sqrt().alias("dbh_qmd"),
+            pl.col(dbh_col).mean().alias("dbh_mean"),
+            pl.col(dbh_col).std(ddof=0).alias("dbh_std"),
+        ]
+    )
+    return trees.group_by(group_by).agg(*aggs, *sums, *(extra_aggs or []))
+
+
+BIOMASS_COLS: list[str] = ["biom_stem", "biom_foliage", "biom_root"]
+PLOT_FLAG_METRICS: list[str] = ["height", "dbh_qmd", "basal_area", "lai", *BIOMASS_COLS]
+
+
+def computed_flags(cols: list[str]) -> list[pl.Expr]:
+    """Build ``flag_<col>`` columns set to "computed" where ``col`` has a value.
+
+    Parameters
+    ----------
+    cols : list[str]
+        Columns whose values are derived rather than measured.
+
+    Returns
+    -------
+    list[pl.Expr]
+        One expression per column, null where the column is null.
+    """
+    return [
+        pl.when(pl.col(c).is_not_null()).then(pl.lit("computed")).alias(f"flag_{c}") for c in cols
+    ]
+
+
+def measured_flag(col: str, is_measured: pl.Expr) -> pl.Expr:
+    """Build ``flag_<col>``: "measured" if `is_measured`, else "computed", null if no value.
+
+    Parameters
+    ----------
+    col : str
+        Column to flag.
+    is_measured : pl.Expr
+        Boolean expression, true where the value is a field measurement.
+
+    Returns
+    -------
+    pl.Expr
+        The ``flag_<col>`` expression.
+    """
+    return (
+        pl.when(pl.col(col).is_null())
+        .then(None)
+        .when(is_measured)
+        .then(pl.lit("measured"))
+        .otherwise(pl.lit("computed"))
+        .alias(f"flag_{col}")
+    )
+
+
+def scale_to_hectare(df: pl.DataFrame, area_ha: pl.Expr) -> pl.DataFrame:
+    """Convert plot-total allometric sums to per-hectare stand quantities.
+
+    Divides the `sb_kg`, `fb_kg`, `rb_kg`, `la_m2`, `ba_m2`, `n_trees`
+    columns produced by :func:`aggregate_per_plot` (without `weight_col`)
+    by `area_ha`.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Per-plot totals, e.g. from joining the output of
+        :func:`aggregate_per_plot` to plot metadata with an area column.
+    area_ha : pl.Expr
+        Plot area, in hectares (e.g. `pl.col("area_m2") / 10000.0`).
+
+    Returns
+    -------
+    pl.DataFrame
+        Input with `biom_stem`, `biom_foliage`, `biom_root` (t ha⁻¹),
+        `lai` (m² m⁻²), `basal_area` (m² ha⁻¹) and `n_trees` (ha⁻¹) added,
+        and the raw `sb_kg`, `fb_kg`, `rb_kg`, `la_m2`, `ba_m2` columns
+        dropped.
+    """
+    return df.with_columns(
+        (pl.col("sb_kg") / area_ha / 1000.0).alias("biom_stem"),
+        (pl.col("fb_kg") / area_ha / 1000.0).alias("biom_foliage"),
+        (pl.col("rb_kg") / area_ha / 1000.0).alias("biom_root"),
+        (pl.col("la_m2") / (area_ha * 10000.0)).alias("lai"),
+        (pl.col("ba_m2") / area_ha).alias("basal_area"),
+        (pl.col("n_trees") / area_ha).alias("n_trees"),
+    ).drop("sb_kg", "fb_kg", "rb_kg", "la_m2", "ba_m2")
+
+
+def dms_to_decimal(dms: int | str) -> float:
+    """Convert DMS packed as ±DDMMSS or ±DDDMMSS to decimal degrees."""
+    sign = -1 if str(dms).startswith("-") else 1
+    dms = abs(int(dms))
+
+    degrees = dms // 10000
+    minutes = (dms % 10000) // 100
+    seconds = dms % 100
+
+    return sign * (degrees + minutes / 60 + seconds / 3600)

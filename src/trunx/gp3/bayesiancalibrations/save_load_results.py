@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import arviz as az
@@ -105,6 +106,35 @@ def save_map_estimate(
     file_path = os.path.join(output_dir, filename)
     with open(file_path, "w") as f:
         json.dump({"logp": logp, "map_estimate": map_estimate}, f, indent=2)
+    return file_path
+
+
+def save_runtime(
+    seconds: float,
+    output_dir: str,
+    filename: str = "runtime.json",
+) -> str:
+    """
+    Save a calibration run's wall-clock duration to a JSON file.
+
+    Parameters
+    ----------
+    seconds : float
+        Elapsed wall-clock time, in seconds (e.g. from `time.perf_counter()`).
+    output_dir : str
+        Directory to save the file in (created if missing).
+    filename : str
+        Name of the JSON file.
+
+    Returns
+    -------
+    str
+        Full path to the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, filename)
+    with open(file_path, "w") as f:
+        json.dump({"seconds": seconds}, f, indent=2)
     return file_path
 
 
@@ -244,7 +274,7 @@ def load_inference_data(file_path: str) -> az.InferenceData:
 def save_checkpoint(
     idata: az.InferenceData,
     draws_done: int,
-    initvals: list[dict[str, float]],
+    initvals: Sequence[Mapping[str, float | list[float]]],
     checkpoint_dir: str,
 ) -> None:
     """
@@ -256,8 +286,11 @@ def save_checkpoint(
         Posterior draws accumulated across all completed sampling chunks.
     draws_done : int
         Number of post-tuning draws per chain completed so far.
-    initvals : list[dict[str, float]]
-        Last sampled parameter values for each chain, used to seed the next chunk.
+    initvals : Sequence[Mapping[str, float | list[float]]]
+        Last sampled parameter values for each chain, used to seed the next
+        chunk. A value is a plain float for a shared scalar parameter, or a
+        list of floats for a per-plot vector parameter (e.g. the multi-plot
+        pipeline's `INITIAL_STATE_PARAMS`) — either way, JSON-serializable.
     checkpoint_dir : str
         Directory to save the checkpoint files in (created if missing).
     """
@@ -279,7 +312,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     checkpoint_dir: str,
-) -> tuple[az.InferenceData, int, list[dict[str, float]]] | None:
+) -> tuple[az.InferenceData, int, list[dict[str, float | list[float]]]] | None:
     """
     Load a checkpoint previously saved with `save_checkpoint`, if one exists.
 
@@ -290,7 +323,7 @@ def load_checkpoint(
 
     Returns
     -------
-    tuple[az.InferenceData, int, list[dict[str, float]]] | None
+    tuple[az.InferenceData, int, list[dict[str, float | list[float]]]] | None
         (posterior draws so far, draws completed per chain, per-chain resume values),
         or None if no checkpoint is found in `checkpoint_dir`.
     """

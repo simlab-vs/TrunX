@@ -76,6 +76,12 @@ def _(NFI_raw_data_loc, Transformer, os, pl):
 
 @app.cell
 def _(raw_data_plot_level):
+    raw_data_plot_level.head()
+    return
+
+
+@app.cell
+def _(raw_data_plot_level):
     raw_data_plot_level["plot_id", "INVNR"].n_unique()
     return
 
@@ -83,6 +89,14 @@ def _(raw_data_plot_level):
 @app.cell
 def _(raw_data_plot_level):
     print(raw_data_plot_level.select("plot_id").n_unique())
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Plot locations
+    """)
     return
 
 
@@ -112,7 +126,7 @@ def _(go, pl, raw_data_plot_level):
         margin=dict(r=0, t=0, l=0, b=0),
         legend=dict(x=0, y=1),
         title=dict(
-            text="Tree locations",
+            text="",
             x=0.5,
             xanchor="center",
         ),
@@ -170,6 +184,12 @@ def _(NFI_raw_data_loc, os, pl):
 
     print("Number of trees:", raw_data_tree_level.select("tree_id").n_unique())
     return (raw_data_tree_level,)
+
+
+@app.cell
+def _(raw_data_tree_level):
+    print(raw_data_tree_level.head())
+    return
 
 
 @app.cell(hide_code=True)
@@ -387,7 +407,7 @@ def _(pl, single_species_growth_data):
 def _(growth_data, pl):
     growth_data.group_by("plot_id", "specie_name").agg(
         num_periods=pl.col("year").n_unique()
-    ).filter(pl.col("num_periods") == 5).group_by("specie_name").agg(
+    ).filter(pl.col("num_periods") >= 5).group_by("specie_name").agg(
         count=pl.col("plot_id").n_unique()
     )
     return

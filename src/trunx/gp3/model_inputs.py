@@ -1,6 +1,6 @@
 """Class definition for data."""
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -236,8 +236,9 @@ class Params(NamedTuple):
 class ExtendedParams(NamedTuple):
     """Extended parameter information."""
 
-    # Additional parameters for extended model
-    poly_params: jnp.ndarray  # Weights for polynomial nutritional modifier
+    # Parameters for whichever nutrition modifier is passed as `run_3pg`'s
+    # `modifier_fn`
+    modifier_params: Any
 
 
 class InputData(BaseModel):

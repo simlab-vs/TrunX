@@ -266,6 +266,12 @@ def fill_missing_months(
         if col in df_complete.columns:
             df_complete = df_complete.with_columns(pl.col(col).fill_null(0).alias(col))
 
+    # Rolling-mean/climatology imputation of near-zero flux values can leave a
+    # tiny (~1e-16) negative float64 rounding residual; fluxes can't be negative.
+    df_complete = df_complete.with_columns(
+        [pl.col(col).clip(lower_bound=0.0) for col in flux_cols if col in df_complete.columns]
+    )
+
     return df_complete.sort("plot_id", "year", "month")
 
 

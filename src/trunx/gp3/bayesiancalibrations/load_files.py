@@ -21,6 +21,7 @@ import pandas as pd
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODE_PARAM_DEPENDENCIES
 from trunx.gp3.helper_function import is_dormant
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.prepare_climate import prepare_climate
@@ -183,6 +184,32 @@ def load_priors_from_file(
     return priors
 
 
+def fit_params_for_mode(file_path: str, mode: str) -> list[str]:
+    """Parameters both priored in `file_path` and calibratable under `mode`.
+
+    Intersects `file_path`'s parameters that have a real prior with
+    `bayesian_config.ERROR_MODE_PARAM_DEPENDENCIES[mode]`'s direct/indirect
+    parameters for that scenario's active outputs — a parameter with a prior
+    but no bearing on any output being fit under `mode` (e.g. `aH` under
+    `"biomass_only"`, which excludes `Height`) is left out.
+
+    Parameters
+    ----------
+    file_path : str
+        Parquet or Excel file with a param_bound(+error_param) table.
+    mode : str
+        Key into `bayesian_config.ERROR_MODES`.
+
+    Returns
+    -------
+    list[str]
+        Parameter names with both a prior and a bearing on `mode`, sorted.
+    """
+    params_with_priors = set(load_priors_from_file(file_path))
+    params_calibratable = set(ERROR_MODE_PARAM_DEPENDENCIES[mode]["parameters"])
+    return sorted(params_with_priors & params_calibratable)
+
+
 # Literature tables that carry a real per-species bound for the parameters most
 # prone to pinning against a data file's own (often narrower or stand-specific)
 # range. Tmax: Forrester et al. 2021's central-European calibration. MaxAge:
@@ -193,22 +220,21 @@ _LITERATURE_BOUND_SOURCES = {
 }
 
 
-def literature_bound_overrides(
-    file_path: str, literature_dir: str = str(threepg_data_folder)
+def literature_bounds_for_species(
+    species_names: list[str], literature_dir: str = str(threepg_data_folder)
 ) -> dict[str, tuple[float, float]]:
     """Species-dependent literature bounds for parameters prone to pinning.
 
-    Widens Tmax and MaxAge to a literature-backed (min, max) for the species
-    in `file_path`'s `species` sheet, in place of whatever narrower bound the
-    data file itself carries. A parameter is left out — deferring to the
-    file's own bound, if it has one — when the literature table has no entry
-    for one of the file's species, or when the file mixes species with
-    disagreeing literature bounds.
+    Widens Tmax and MaxAge to a literature-backed (min, max) for
+    `species_names`, in place of whatever narrower bound the data file
+    itself carries. A parameter is left out — deferring to the file's own
+    bound, if it has one — when the literature table has no entry for one
+    of `species_names`, or when they disagree on the literature bound.
 
     Parameters
     ----------
-    file_path : str
-        Excel file with a `species` sheet, e.g. a 3PG plot input file.
+    species_names : list[str]
+        Species to look up, e.g. every species present in a plot file.
     literature_dir : str
         Directory holding the literature parquet tables.
 
@@ -216,10 +242,8 @@ def literature_bound_overrides(
     -------
     dict[str, tuple[float, float]]
         `Tmax`/`MaxAge` mapped to (min, max), for whichever of the two has an
-        unambiguous literature bound for every species in the file.
+        unambiguous literature bound for every one of `species_names`.
     """
-    species_names = pl.read_excel(file_path, sheet_name="species")["species"].unique().to_list()
-
     overrides = {}
     for param_name, source_file in _LITERATURE_BOUND_SOURCES.items():
         table = pl.read_parquet(os.path.join(literature_dir, source_file))
@@ -238,6 +262,28 @@ def literature_bound_overrides(
             overrides[param_name] = species_bounds.pop()
 
     return overrides
+
+
+def literature_bound_overrides(
+    file_path: str, literature_dir: str = str(threepg_data_folder)
+) -> dict[str, tuple[float, float]]:
+    """`literature_bounds_for_species` for the species in `file_path`'s `species` sheet.
+
+    Parameters
+    ----------
+    file_path : str
+        Excel file with a `species` sheet, e.g. a 3PG plot input file.
+    literature_dir : str
+        Directory holding the literature parquet tables.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        `Tmax`/`MaxAge` mapped to (min, max), for whichever of the two has an
+        unambiguous literature bound for every species in the file.
+    """
+    species_names = pl.read_excel(file_path, sheet_name="species")["species"].unique().to_list()
+    return literature_bounds_for_species(species_names, literature_dir)
 
 
 def load_param_defaults_from_file(
@@ -364,7 +410,13 @@ def load_observations_from_section(
     observed_df : pl.DataFrame
         Flattened observed section for one plot.
     climate_df : pl.DataFrame
-        Flattened climate section for one plot.
+        The plot's climate section. `idx` is assigned by row position
+        (0-based), so this must be the exact `[site.from, site.to]` window
+        `climate` (the `ClimateData` actually simulated) was built from —
+        already true of `prepare_multiplots_data.py`'s output, which trims
+        to that window at write time (see `trim_to_window`) — or every
+        observation will be indexed against the wrong month (and can run
+        off the end of the array).
     species_names : list[str]
         Species names in model order.
 
@@ -525,6 +577,9 @@ def load_plot_data(plot_file: str, plot_id: str, params_file: str) -> tuple[Plot
         ),
     )
 
+    # climate_df is already trimmed to [site.from, site.to] by prepare_multiplots_data.py
+    # (see trim_to_window there), the same window `climate` (above) was built from — so
+    # idx=0 here lines up with the same month as ClimateData's row 0.
     observations = load_observations_from_section(
         observed_df=observed_df,
         climate_df=climate_df,

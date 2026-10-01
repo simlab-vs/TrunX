@@ -19,6 +19,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install BLAS for PyTensor
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
       - name: Restore global uv cache
         id: cache-restore
         uses: actions/cache/restore@v4

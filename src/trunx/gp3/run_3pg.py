@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import debug, lax
 
-from trunx.gp3.extended_helper import poly_nm
+from trunx.gp3.extended_helper import INPUT_VARIABLES, poly_nm
 from trunx.gp3.helper_function import (
     apply_self_thinning_with_mortality_factors,
     apply_stress_mortality,
@@ -33,10 +33,12 @@ from trunx.gp3.helper_function import (
     f_vpd,
     is_dormant,
 )
-from trunx.gp3.model_inputs import State
+from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 
 
-def model_step(state, climate_month, params, site, species):
+def model_step(
+    state: State, climate_month: ClimateData, params: Params, site: SiteData, species: SpeciesData
+):
     """Compute one model step."""
     (
         T_avg,
@@ -96,8 +98,8 @@ def model_step(state, climate_month, params, site, species):
     # ftmp_gc = 1.0
     fcg = f_cg(params, co2)
     conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
-
-    alpha_c = params.alphaCx * fT * fF * fN * phi * fcalpha * fpoly_nn
+    f_nutri_classic_learnable = fN * fpoly_nn
+    alpha_c = params.alphaCx * fT * fF * f_nutri_classic_learnable * phi * fcalpha
 
     alpha_c = jnp.where(LAI == 0.0, 0.0, alpha_c)
     # Primary production
@@ -265,28 +267,52 @@ def model_step(state, climate_month, params, site, species):
     return new_state, outputs
 
 
-def run_3pg(initial_state, climate, params, site, species, deposition=None, extended_params=None):
-    """Run 3PG model."""
-    dep_n_tot = getattr(deposition, "dep_n_tot", None)
-    dep_s_so4 = getattr(deposition, "dep_s_so4", None)
+def run_3pg(
+    initial_state: State,
+    climate: ClimateData,
+    params: Params,
+    site: SiteData,
+    species: SpeciesData,
+    deposition=None,
+    extended_params=None,
+    modifier_fn=poly_nm,
+    input_vars=INPUT_VARIABLES,
+):
+    """Run 3PG model.
 
-    if dep_n_tot is None or dep_s_so4 is None:
-        warnings.warn(
-            "Missing deposition fields (dep_n_tot and/or dep_s_so4); "
-            "running 3PG without deposition effects using zeros.",
-            UserWarning,
-            stacklevel=2,
-        )
-        dep_n_tot = jnp.zeros_like(climate.T_avg, dtype=float)
-        dep_s_so4 = jnp.zeros_like(climate.T_avg, dtype=float)
-
+    Parameters
+    ----------
+    modifier_fn : Callable
+        Nutrition modifier applied to `extended_params.modifier_params`, e.g.
+        `poly_nm`, or `mlp_nm` from `extended_helper.py`.
+        Ignored when `extended_params` is None.
+    input_vars : tuple[str, ...]
+        Which of `("N", "S", "T_avg")` (nitrogen deposition, sulphur deposition,
+        temperature) `modifier_fn` was built over, and in what order — must
+        match `extended_params.modifier_params`'s axes/fields. Ignored when
+        `extended_params` is None.
+    """
     if extended_params is None:
-        fpoly_nn = jnp.ones_like(dep_n_tot, dtype=float)
+        fpoly_nn = jnp.ones_like(climate.T_avg, dtype=float)
     else:
-        fpoly_nn = poly_nm(
-            extended_params.poly_params,
-            jnp.stack([dep_n_tot, dep_s_so4], axis=-1),
-        )
+        channels = {"T_avg": climate.T_avg}
+        if "N" in input_vars or "S" in input_vars:
+            dep_n_tot = getattr(deposition, "dep_n_tot", None)
+            dep_s_so4 = getattr(deposition, "dep_s_so4", None)
+            if dep_n_tot is None or dep_s_so4 is None:
+                warnings.warn(
+                    "Missing deposition fields (dep_n_tot and/or dep_s_so4); "
+                    "running 3PG without deposition effects using zeros.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                dep_n_tot = jnp.zeros_like(climate.T_avg, dtype=float)
+                dep_s_so4 = jnp.zeros_like(climate.T_avg, dtype=float)
+            channels["N"] = dep_n_tot
+            channels["S"] = dep_s_so4
+
+        inputs = jnp.stack([channels[name] for name in input_vars], axis=-1)
+        fpoly_nn = modifier_fn(extended_params.modifier_params, inputs, input_vars)
 
     climate_stack = jnp.stack(
         [

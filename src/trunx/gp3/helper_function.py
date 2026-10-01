@@ -708,7 +708,7 @@ def calculate_transpiration(
         e20 = jnp.array(2.2)
 
     # Convert solar radiation from MJ/m²/day to W/m² for daytime
-    solar_rad_w = solar_rad * 1e6 / day_length
+    solar_rad_w = solar_rad * 1e6 / (day_length + 1e-8)  # Avoid division by zero
 
     # Net radiation (W/m²)
     netRad = params.Qa + params.Qb * solar_rad_w
