@@ -1,7 +1,7 @@
 """Learnable componenet of the 3PG model: a nutrition modifier optimized using gradient descent."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -60,6 +60,8 @@ class NutritionModifierConfig:
     file_paths: list[str]  # Input data files, one per plot, calibrated jointly
     target_vars: list[str]  # List of target variables to optimize against
 
+    # Variables plotted against observations; defaults to `target_vars`
+    plot_variables: list[str] | None = None
     observed_sheet: str = "observed"  # Sheet name for observed data
     fit_phys_params: list[str] | None = None
     param_bounds_sheet: str = "param_bound"
@@ -291,11 +293,19 @@ def _run_labels(config: NutritionModifierConfig) -> dict[str, str]:
     Without `config.fit_phys_params` the `"phys"` run uses the default parameters, so it
     is the same as `"default"`, which is then left out.
     """
-    phys = "Fitted phys params" if config.fit_phys_params else "Default phys params"
-    labels = {"fitted": f"{phys} + nutrition modifier", "phys": f"{phys}, no modifier"}
+    phys = "Fitted" if config.fit_phys_params else "Default"
+    labels = {
+        "fitted": f"{phys} physiological parameters, with nutrition modifier",
+        "phys": f"{phys} physiological parameters, without nutrition modifier",
+    }
     if config.fit_phys_params:
-        labels["default"] = "Default phys params, no modifier"
+        labels["default"] = "Default physiological parameters, without nutrition modifier"
     return labels
+
+
+def _plot_variables(config: NutritionModifierConfig) -> list[str]:
+    """Variables plotted against observations: `config.plot_variables`, else the targets."""
+    return config.plot_variables or config.target_vars
 
 
 _RUN_STYLES: dict[str, dict[str, str]] = {
@@ -319,9 +329,10 @@ def build_predicted_series(
     Returns
     -------
     dict[str, np.ndarray]
-        `"dates"` (one per simulated month) plus, for each of `config.target_vars`,
-        `"pred_fitted_<var>"` (fitted phys params + modifier), `"pred_phys_<var>"`
-        (fitted phys params only) and `"pred_default_<var>"` (default params).
+        `"dates"` (one per simulated month) plus, for each of `config.target_vars` and
+        the plot variables, `"pred_fitted_<var>"` (fitted phys params + modifier),
+        `"pred_phys_<var>"` (fitted phys params only) and `"pred_default_<var>"`
+        (default params).
         `alpha_c` and `f_nutri_classic_learnable` are always included, to show the
         modifier's effect on them, plus `"learned_modifier"` (the modifier's monthly value).
     """
@@ -358,7 +369,9 @@ def build_predicted_series(
     )
 
     series: dict[str, np.ndarray] = {}
-    for var_name in [*config.target_vars, "alpha_c", "f_nutri_classic_learnable"]:
+    for var_name in dict.fromkeys(
+        [*config.target_vars, *_plot_variables(config), "alpha_c", "f_nutri_classic_learnable"]
+    ):
         for label, outputs in (
             ("fitted", outputs_fitted),
             ("phys", outputs_phys),
@@ -386,14 +399,15 @@ def compute_rmse(
     file_path: str,
     predicted_series: dict[str, np.ndarray],
 ) -> pl.DataFrame:
-    """RMSE per target variable of one plot, for each series of `build_predicted_series`.
+    """RMSE per plot variable of one plot, for each series of `build_predicted_series`.
 
     Returns
     -------
     pl.DataFrame
-        One row per target variable: `plot`, `variable`, `n_obs`, and `rmse_<run>` for
-        each distinct run of `_run_labels`: `rmse_fitted` (with the modifier),
-        `rmse_phys` (without it) and, when phys params are fitted, `rmse_default`.
+        One row per plot variable (see `_plot_variables`): `plot`, `variable`, `target`
+        (whether it is one of `config.target_vars`), `n_obs`, and `rmse_<run>` for each
+        distinct run of `_run_labels`: `rmse_fitted` (with the modifier), `rmse_phys`
+        (without it) and, when phys params are fitted, `rmse_default`.
     """
     observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
     observed_dates = np.array(
@@ -405,12 +419,13 @@ def compute_rmse(
     obs_indices = (observed_dates - predicted_series["dates"][0]).astype(int)
 
     rows = []
-    for var_name in config.target_vars:
+    for var_name in _plot_variables(config):
         observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
         mask = ~np.isnan(observed_values)
         row: dict[str, Any] = {
             "plot": Path(file_path).stem,
             "variable": var_name,
+            "target": var_name in config.target_vars,
             "n_obs": int(mask.sum()),
         }
         for run in _run_labels(config):
@@ -420,6 +435,33 @@ def compute_rmse(
             )
         rows.append(row)
     return pl.DataFrame(rows)
+
+
+def summarize_rmse(rmse_table: pl.DataFrame) -> pl.DataFrame:
+    """Mean RMSE per split and variable with and without the modifier, and its improvement.
+
+    Parameters
+    ----------
+    rmse_table : pl.DataFrame
+        Concatenated `compute_rmse` tables with an added `split` column (e.g. "train",
+        "test").
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per split and variable: `plots`, mean `rmse_fitted` (with the modifier),
+        mean `rmse_phys` (without it) and `improvement %` (relative RMSE reduction by the
+        modifier; negative if it got worse).
+    """
+    return (
+        rmse_table.group_by("split", "variable", "target", maintain_order=True)
+        .agg(pl.len().alias("plots"), pl.col("rmse_fitted").mean(), pl.col("rmse_phys").mean())
+        .with_columns(
+            (100 * (pl.col("rmse_phys") - pl.col("rmse_fitted")) / pl.col("rmse_phys"))
+            .round(1)
+            .alias("improvement %")
+        )
+    )
 
 
 def _months_to_dates(start_year: int, start_month: int, n_months: int) -> np.ndarray:
@@ -835,11 +877,11 @@ def plot_observed_vs_predicted(
     """Plot every plot's observed data against its `build_predicted_series` in one figure.
 
     Rows are plots (`config.file_paths`, labelled by `plot_ids`), columns are
-    `config.target_vars`.
+    the plot variables (`config.plot_variables`, else `config.target_vars`).
     """
-    target_vars = config.target_vars
+    plot_variables = _plot_variables(config)
     run_labels = _run_labels(config)
-    n_rows, n_cols = len(plot_ids), len(target_vars)
+    n_rows, n_cols = len(plot_ids), len(plot_variables)
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
@@ -859,7 +901,7 @@ def plot_observed_vs_predicted(
             ]
         )
         dates = series["dates"]
-        for col, var_name in enumerate(target_vars):
+        for col, var_name in enumerate(plot_variables):
             ax = axes[row, col]
             for run, label in run_labels.items():
                 ax.plot(
@@ -873,11 +915,12 @@ def plot_observed_vs_predicted(
             if var_name in observed_data.columns:
                 observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
                 mask = ~np.isnan(observed_values)
+                is_target = var_name in config.target_vars
                 ax.scatter(
                     observed_dates[mask],
                     observed_values[mask],
-                    label="Observed",
-                    color="tab:red",
+                    label="Observed (target variable)" if is_target else "Observed (not fitted)",
+                    color="tab:red" if is_target else "tab:gray",
                     s=20,
                     zorder=5,
                 )
@@ -888,8 +931,18 @@ def plot_observed_vs_predicted(
             if col == 0:
                 ax.set_ylabel(plot_id)
 
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside upper center", ncols=len(labels))
+    # Target and non-target observations sit in different columns, so gather the
+    # legend entries of every column, keeping the first handle per label
+    legend_entries: dict[str, Any] = {}
+    for ax in axes[0]:
+        for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
+            legend_entries.setdefault(label, handle)
+    fig.legend(
+        list(legend_entries.values()),
+        list(legend_entries),
+        loc="outside upper center",
+        ncols=2,
+    )
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -899,10 +952,16 @@ def plot_observed_vs_predicted(
 
 
 if __name__ == "__main__":
-    plot_ids = species_plot_ids["Picea abies"]
+    # Train on these plots; the remaining plots of the species are held out for testing
+    plot_ids = ["04.1402", "04.1403", "14.0017", "59.0008"]
+    test_plot_ids = [p for p in species_plot_ids["Picea abies"] if p not in plot_ids]
     literature_source = "Trotsiuk"
     file_paths = [
         prepare_plot_input(plot_id, literature_source=literature_source) for plot_id in plot_ids
+    ]
+    test_file_paths = [
+        prepare_plot_input(plot_id, literature_source=literature_source)
+        for plot_id in test_plot_ids
     ]
 
     # Which of ("N", "S", "T_avg") to build the modifier over
@@ -921,7 +980,8 @@ if __name__ == "__main__":
 
     config = NutritionModifierConfig(
         file_paths=file_paths,
-        target_vars=["BA", "DBH", "Height", "WS", "WF", "WR"],
+        target_vars=["DBH"],
+        plot_variables=["BA", "DBH", "Height", "WS", "WF", "WR"],
         input_vars=input_vars,
         fit_phys_params=[],
         optimizer_name="adam",
@@ -945,23 +1005,31 @@ if __name__ == "__main__":
         save_path=str(image_dir / "param_history.png"),
         show=False,
     )
-    predicted_series = [
-        build_predicted_series(
-            config, file_path, fit_result.fitted_modifier_params, fit_result.fitted_phys_params
+    test_config = replace(config, file_paths=test_file_paths)
+    predicted_series, rmse_tables = [], []
+    for split, split_config, split_ids in (
+        ("train", config, plot_ids),
+        ("test", test_config, test_plot_ids),
+    ):
+        split_series = [
+            build_predicted_series(
+                config, file_path, fit_result.fitted_modifier_params, fit_result.fitted_phys_params
+            )
+            for file_path in split_config.file_paths
+        ]
+        rmse_tables += [
+            compute_rmse(config, file_path, series).with_columns(pl.lit(split).alias("split"))
+            for file_path, series in zip(split_config.file_paths, split_series, strict=True)
+        ]
+        plot_observed_vs_predicted(
+            split_config,
+            split_ids,
+            split_series,
+            save_path=str(image_dir / f"observed_vs_predicted_{split}.png"),
+            show=False,
         )
-        for file_path in file_paths
-    ]
-    rmse_tables = [
-        compute_rmse(config, file_path, series)
-        for file_path, series in zip(file_paths, predicted_series, strict=True)
-    ]
-    plot_observed_vs_predicted(
-        config,
-        plot_ids,
-        predicted_series,
-        save_path=str(image_dir / "observed_vs_predicted.png"),
-        show=False,
-    )
+        if split == "train":
+            predicted_series = split_series
     for var_name in ("alpha_c", "f_nutri_classic_learnable"):
         plot_modifier_effect_over_time(
             config,
@@ -1001,7 +1069,9 @@ if __name__ == "__main__":
         show=False,
     )
 
-    with pl.Config(tbl_rows=-1, float_precision=3):
-        print(pl.concat(rmse_tables))
+    rmse_table = pl.concat(rmse_tables)
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3):
+        print(rmse_table)
+        print(summarize_rmse(rmse_table))
 
     plt.show()
