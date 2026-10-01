@@ -196,12 +196,9 @@ def _plot_gpp(
     ).select(pl.col(name).cast(dtype) for name, dtype in schema.items())
 
 
-def _observed_sheet(surveys: pl.DataFrame, gpp: pl.DataFrame) -> pl.DataFrame:
-    """Build the observed sheet, one row per survey or GPP month and species.
-
-    Stand-level GPP is repeated for every species; missing values stay null.
-    """
-    survey_obs = surveys.select(
+def _observed_sheet(surveys: pl.DataFrame) -> pl.DataFrame:
+    """Build the observed sheet, one row per survey and species; missing values stay null."""
+    return surveys.select(
         "specie",
         "month",
         "year",
@@ -215,9 +212,16 @@ def _observed_sheet(surveys: pl.DataFrame, gpp: pl.DataFrame) -> pl.DataFrame:
         pl.col("n_stems").alias("N"),
         pl.col("lai").alias("LAI"),
     )
-    gpp_obs = surveys.select("specie").unique().join(gpp, how="cross")
+
+
+def _all_observed_sheet(observed: pl.DataFrame, gpp: pl.DataFrame) -> pl.DataFrame:
+    """Add monthly GPP rows to the observed sheet, one row per survey or GPP month and species.
+
+    Stand-level GPP is repeated for every species; missing values stay null.
+    """
+    gpp_obs = observed.select("specie").unique().join(gpp, how="cross")
     return (
-        survey_obs.join(gpp_obs, on=["specie", "year", "month"], how="full", coalesce=True)
+        observed.join(gpp_obs, on=["specie", "year", "month"], how="full", coalesce=True)
         .with_columns(pl.date(pl.col("year"), pl.col("month"), 1).dt.month_end().alias("date"))
         .sort("date", "specie")
     )
@@ -356,8 +360,9 @@ def build_plot_input_sheets(
     deposition : pl.DataFrame | None
         Pre-loaded monthly ICP deposition; loaded from disk when None.
     gpp : pl.DataFrame | None
-        Pre-loaded monthly GOSIF GPP of ICP plots, added to the `observed` sheet;
-        loaded from disk when None.
+        Pre-loaded monthly GOSIF GPP of ICP plots, added to the `all_observed` sheet
+        (the `observed` sheet used for calibration has survey rows only); loaded from
+        disk when None.
 
     Returns
     -------
@@ -430,6 +435,10 @@ def build_plot_input_sheets(
     error_param = pd.read_excel(
         os.path.join(threepg_data_folder, "solling_data.xlsx"), sheet_name="error_param"
     )
+    observed_df = _observed_sheet(surveys)
+    all_observed_df = _all_observed_sheet(
+        observed_df, _plot_gpp(plot_id, source, gpp, first_survey, last_survey)
+    )
 
     return {
         "climate": climate_df.to_pandas(),
@@ -438,9 +447,8 @@ def build_plot_input_sheets(
         "site": site_df.to_pandas(),
         "thinning": pd.DataFrame(),
         "sizeDist": pd.DataFrame(),
-        "observed": _observed_sheet(
-            surveys, _plot_gpp(plot_id, source, gpp, first_survey, last_survey)
-        ).to_pandas(),
+        "observed": observed_df.to_pandas(),
+        "all_observed": all_observed_df.to_pandas(),
         "param_bound": param_bound,
         "error_param": error_param,
     }

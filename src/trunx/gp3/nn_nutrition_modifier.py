@@ -159,14 +159,22 @@ def build_observation_data(
     target_vars: list[str],
     standardize_targets: bool = True,
 ):
-    """Build observed values and scales for the target variables."""
+    """Build observed values and scales for the target variables.
+
+    Only the target columns are kept, and rows without any target observation (e.g.
+    GPP-only months) are dropped.
+    """
     observed_data = pl.read_excel(file_path, sheet_name="observed")
+    missing = [var for var in target_vars if var not in observed_data.columns]
+    if missing:
+        raise KeyError(f"Target variables {missing} are not in observed data sheet")
+    observed_data = observed_data.select("year", "month", *target_vars).filter(
+        pl.any_horizontal(pl.col(target_vars).is_not_null())
+    )
     obs_indices = build_observation_indices(observed_data, site_data)
     obs_values: dict[str, jnp.ndarray] = {}
     obs_scales: dict[str, jnp.ndarray] = {}
     for var_name in target_vars:
-        if var_name not in observed_data.columns:
-            raise KeyError(f"Target variable '{var_name}' is not in observed data sheet")
         observed_np = observed_data[var_name].cast(pl.Float64).to_numpy()
         obs_values[var_name] = jnp.asarray(observed_np, dtype=jnp.float32)
 
@@ -277,6 +285,26 @@ def train_nutrition_modifier(
     )
 
 
+def _run_labels(config: NutritionModifierConfig) -> dict[str, str]:
+    """Legend label of each distinct run of `build_predicted_series`, keyed by run name.
+
+    Without `config.fit_phys_params` the `"phys"` run uses the default parameters, so it
+    is the same as `"default"`, which is then left out.
+    """
+    phys = "Fitted phys params" if config.fit_phys_params else "Default phys params"
+    labels = {"fitted": f"{phys} + nutrition modifier", "phys": f"{phys}, no modifier"}
+    if config.fit_phys_params:
+        labels["default"] = "Default phys params, no modifier"
+    return labels
+
+
+_RUN_STYLES: dict[str, dict[str, str]] = {
+    "fitted": {"color": "tab:blue", "linestyle": "-"},
+    "phys": {"color": "tab:orange", "linestyle": "-."},
+    "default": {"color": "tab:green", "linestyle": "--"},
+}
+
+
 def build_predicted_series(
     config: NutritionModifierConfig,
     file_path: str,
@@ -363,9 +391,9 @@ def compute_rmse(
     Returns
     -------
     pl.DataFrame
-        One row per target variable: `plot`, `variable`, `n_obs`, `rmse_phys_nm`
-        (fitted phys params + modifier), `rmse_phys` (fitted phys params only) and
-        `rmse_default` (default params).
+        One row per target variable: `plot`, `variable`, `n_obs`, and `rmse_<run>` for
+        each distinct run of `_run_labels`: `rmse_fitted` (with the modifier),
+        `rmse_phys` (without it) and, when phys params are fitted, `rmse_default`.
     """
     observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
     observed_dates = np.array(
@@ -385,9 +413,9 @@ def compute_rmse(
             "variable": var_name,
             "n_obs": int(mask.sum()),
         }
-        for label, column in (("phys_nm", "fitted"), ("phys", "phys"), ("default", "default")):
-            predictions = predicted_series[f"pred_{column}_{var_name}"][obs_indices[mask]]
-            row[f"rmse_{label}"] = float(
+        for run in _run_labels(config):
+            predictions = predicted_series[f"pred_{run}_{var_name}"][obs_indices[mask]]
+            row[f"rmse_{run}"] = float(
                 np.sqrt(np.mean((predictions - observed_values[mask]) ** 2))
             )
         rows.append(row)
@@ -691,8 +719,9 @@ def plot_modifier_effect_vs_deposition(
         2, 2, figsize=(13, 9), layout="constrained", sharex="col", sharey=True
     )
 
+    run_labels = _run_labels(config)
     for row, (run_label, key) in enumerate(
-        (("With nutrition modifier", "fitted"), ("Without nutrition modifier", "phys"))
+        ((run_labels["fitted"], "fitted"), (run_labels["phys"], "phys"))
     ):
         for col, (values, dep_label) in enumerate(
             (
@@ -733,6 +762,7 @@ def plot_modifier_effect_vs_deposition(
 
 
 def plot_modifier_effect_over_time(
+    config: NutritionModifierConfig,
     plot_ids: list[str],
     predicted_series: list[dict[str, np.ndarray]],
     var_name: str = "alpha_c",
@@ -745,6 +775,7 @@ def plot_modifier_effect_over_time(
     The ratio is fitted with / without modifier; it is undefined where the run without
     the modifier is 0.
     """
+    run_labels = _run_labels(config)
     n_block_rows = int(np.ceil(len(plot_ids) / n_cols))
     fig = plt.figure(figsize=(5 * n_cols, 4 * n_block_rows), layout="constrained")
     grid = fig.add_gridspec(2 * n_block_rows, n_cols, height_ratios=[3, 1] * n_block_rows)
@@ -757,11 +788,14 @@ def plot_modifier_effect_over_time(
         dates = series["dates"]
         fitted = series[f"pred_fitted_{var_name}"]
         phys = series[f"pred_phys_{var_name}"]
-        for values, label, color in (
-            (fitted, "Fitted phys params + nutrition modifier", "tab:blue"),
-            (phys, "Fitted phys params only", "tab:orange"),
-        ):
-            ax.plot(dates, values, color=color, linewidth=1.0, label=label)
+        for values, run in ((fitted, "fitted"), (phys, "phys")):
+            ax.plot(
+                dates,
+                values,
+                color=_RUN_STYLES[run]["color"],
+                linewidth=1.0,
+                label=run_labels[run],
+            )
 
         ratio = np.divide(fitted, phys, out=np.full_like(fitted, np.nan), where=phys > 0)
         ratio_ax.plot(dates, ratio, color="black", linewidth=1.0, label="Ratio (modifier effect)")
@@ -804,6 +838,7 @@ def plot_observed_vs_predicted(
     `config.target_vars`.
     """
     target_vars = config.target_vars
+    run_labels = _run_labels(config)
     n_rows, n_cols = len(plot_ids), len(target_vars)
     fig, axes = plt.subplots(
         n_rows,
@@ -826,29 +861,14 @@ def plot_observed_vs_predicted(
         dates = series["dates"]
         for col, var_name in enumerate(target_vars):
             ax = axes[row, col]
-            ax.plot(
-                dates,
-                series[f"pred_fitted_{var_name}"],
-                label="Fitted phys params + nutrition modifier",
-                color="tab:blue",
-                linewidth=1.5,
-            )
-            ax.plot(
-                dates,
-                series[f"pred_phys_{var_name}"],
-                label="Fitted phys params only",
-                color="tab:orange",
-                linewidth=1.5,
-                linestyle="-.",
-            )
-            ax.plot(
-                dates,
-                series[f"pred_default_{var_name}"],
-                label="Default params",
-                color="tab:green",
-                linewidth=1.5,
-                linestyle="--",
-            )
+            for run, label in run_labels.items():
+                ax.plot(
+                    dates,
+                    series[f"pred_{run}_{var_name}"],
+                    label=label,
+                    linewidth=1.5,
+                    **_RUN_STYLES[run],
+                )
 
             if var_name in observed_data.columns:
                 observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
@@ -906,7 +926,7 @@ if __name__ == "__main__":
         fit_phys_params=[],
         optimizer_name="adam",
         learning_rate=1e-3,
-        num_epochs=5000,
+        num_epochs=2000,
         modifier_fn=modifier_fn,
     )
 
@@ -944,6 +964,7 @@ if __name__ == "__main__":
     )
     for var_name in ("alpha_c", "f_nutri_classic_learnable"):
         plot_modifier_effect_over_time(
+            config,
             plot_ids,
             predicted_series,
             var_name=var_name,

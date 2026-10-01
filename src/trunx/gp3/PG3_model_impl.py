@@ -57,8 +57,11 @@ def run_threepg_main(
     else:
         fig_name = "ICP"
 
+    # Plot from `all_observed` (surveys + monthly GPP) when the file has it
     try:
-        observed_data = pd.read_excel(file_path, sheet_name="observed")
+        sheet_names = pd.ExcelFile(file_path).sheet_names
+        observed_sheet = "all_observed" if "all_observed" in sheet_names else "observed"
+        observed_data = pd.read_excel(file_path, sheet_name=observed_sheet)
     except Exception as e:
         print(f"Could not read observed data from {file_path}: {e}")
         observed_data = None
@@ -116,7 +119,7 @@ def run_threepg_main(
             fig_name=fig_name,
             plot_id=plot_id,
             show=show_plots,
-            plot_metrics=["BA", "DBH", "Height", "WF", "WS", "WR"],
+            plot_metrics=["BA", "DBH", "Height", "WF", "WS", "WR", "GPP"],
             per_species=False,
         )
     elif r_comparison:
@@ -136,7 +139,11 @@ def run_threepg_main(
 
 
 def run_threepg_for_plot(
-    plot_id: str, source: str = "ICP", plot_output: bool = True, r_comparison: bool = True
+    plot_id: str,
+    source: str = "ICP",
+    literature_source: str = "Trotsiuk",
+    plot_output: bool = True,
+    r_comparison: bool = True,
 ):
     """Run 3PG model on one plot, built from the combined plot and weather tables.
 
@@ -146,13 +153,21 @@ def run_threepg_for_plot(
         Plot identifier within `source`.
     source : str
         Dataset of the plot: "NFI", "EFM", "LWF" or "ICP".
+    literature_source : str
+        Literature table the parameter sheets are built from.
     plot_output : bool
         Whether to plot the model outputs.
     r_comparison : bool
         Whether to also run r3PG and compare.
     """
     file_path = os.path.join(threepg_data_folder, "S_weather_data.xlsx")
-    create_plot_input_file(plot_id, source, file_path, *load_plot_tables(plot_id, source))
+    create_plot_input_file(
+        plot_id,
+        source,
+        file_path,
+        *load_plot_tables(plot_id, source),
+        literature_source=literature_source,
+    )
     return run_threepg_main(
         file_path, plot_output=plot_output, r_comparison=r_comparison, plot_id=plot_id
     )
@@ -214,7 +229,7 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    plot_ids = ["21308001"]
+    plot_ids = ["50.0018"]
     for plot_id in plot_ids:
         # plot_dbh_distribution(
         #     plot_id=plot_id,
@@ -224,5 +239,5 @@ if __name__ == "__main__":
         #     show=True,
         # )
         fig, outputs = run_threepg_for_plot(
-            plot_id=plot_id, source="EFM", plot_output=True, r_comparison=True
+            plot_id=plot_id, source="ICP", plot_output=True, r_comparison=True
         )
