@@ -51,7 +51,7 @@ echo "== Syncing literature supplements =="
 uv run scripts/pull_data.py literature --dest "$PROJECT_DIR"
 echo
 
-# See _DEFAULT_XLSX in src/trunx/gp3/allometrics.py; create_data_inputs reads it at
+# See _DEFAULT_XLSX in src/trunx/gp3/allometrics.py; icp_level2_data reads it at
 # import time, so a missing file otherwise surfaces as a bare traceback mid-run.
 FORRESTER_XLSX="$PROJECT_DIR/literature/1-s2.0-S0378112717301238-mmc1.xlsx"
 if [[ ! -f "$FORRESTER_XLSX" ]]; then

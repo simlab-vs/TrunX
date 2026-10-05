@@ -8,7 +8,7 @@ from matplotlib.figure import Figure
 
 from trunx.config import SPECIES_INDICES, clean_data_folder, raw_data_folder
 
-MAX_RELATIVE_CHANGE = 0.40
+MAX_RELATIVE_CHANGE = 0.50
 
 
 def _single_species_plot_ids(df: pl.DataFrame, specie_col: str = "specie") -> pl.DataFrame:

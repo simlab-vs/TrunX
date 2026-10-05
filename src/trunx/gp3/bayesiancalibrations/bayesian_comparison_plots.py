@@ -8,6 +8,7 @@ site, with per-variable RMSE/MAE printed for comparison.
 import gc
 import os
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, cast
 
 import arviz as az
@@ -20,8 +21,7 @@ import polars as pl
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from sklearn.metrics import mean_absolute_error as mae
-from sklearn.metrics import root_mean_squared_error as rmse
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
@@ -55,6 +55,114 @@ LABEL_MAP = {
     "WR": "Root biomass",
     "WF": "Foliage biomass",
 }
+
+
+def sweep_dir(include_process_error: bool) -> str:
+    """Return the calibration sweep results folder.
+
+    Parameters
+    ----------
+    include_process_error : bool
+        Whether to use the latent (process-error) sweep.
+
+    Returns
+    -------
+    str
+        `results/latent_calibration_sweep` or `results/calibration_sweep`.
+    """
+    return os.path.join(
+        results_data_folder,
+        "latent_calibration_sweep" if include_process_error else "calibration_sweep",
+    )
+
+
+def run_dir(
+    plot_id: str, literature_source: str, error_terms: str, include_process_error: bool
+) -> str:
+    """Return the saved-run folder of one plot/literature source/error terms combination.
+
+    Solling's data is hand-curated and never varies by literature source (see
+    `resolve_source_file_path`), so its results aren't nested under one.
+
+    Parameters
+    ----------
+    plot_id : str
+        ICP plot identifier (or "solling").
+    literature_source : str
+        Literature source of the priors, ignored for Solling.
+    error_terms : str
+        Calibration scenario name (a key of `bayesian_config.ERROR_MODES`).
+    include_process_error : bool
+        Whether to use the latent (process-error) sweep.
+
+    Returns
+    -------
+    str
+        Folder holding the per-method folders and the `plots` folder.
+    """
+    site_dir = os.path.join(sweep_dir(include_process_error), plot_id)
+    if plot_id != "solling":
+        site_dir = os.path.join(site_dir, literature_source)
+    return os.path.join(site_dir, error_terms)
+
+
+def literature_plot_ids(literature_source: str) -> list[str]:
+    """Return the plot ids calibrated with a literature source's priors.
+
+    Parameters
+    ----------
+    literature_source : str
+        "Forrester" or "Trotsiuk".
+
+    Returns
+    -------
+    list[str]
+        ICP plot identifiers.
+    """
+    if literature_source == "Forrester":
+        species = ["Picea abies", "Fagus sylvatica", "Pinus sylvestris"]
+    elif literature_source == "Trotsiuk":
+        species = ["Picea abies", "Fagus sylvatica"]
+    else:
+        raise ValueError("Invalid literature source")
+    return [plot_id for name in species for plot_id in species_plot_ids[name]]
+
+
+def pull_missing_from_s3(local_dir: str) -> None:
+    """Download the files of the S3 prefix matching `local_dir` that are missing locally.
+
+    Bucket keys mirror the local layout below the project base directory (see
+    `scripts/pull_data.py`), so `local_dir` must be below it. Existing local files are
+    kept as they are.
+    """
+    # Imported here so plotting from `results_data_folder` needs no S3 setup
+    from simlab_tools.storage import download_file, get_s3_client, list_bucket_contents
+
+    from trunx.config import base_dir, s3_bucket, s3_endpoint_url, s3_profile
+
+    base = Path(base_dir).resolve()
+    prefix = f"{Path(local_dir).resolve().relative_to(base).as_posix()}/"
+    client = get_s3_client(s3_endpoint_url, profile=s3_profile)
+    missing = [
+        obj["Key"]
+        for obj in list_bucket_contents(client, s3_bucket, prefix=prefix)
+        if not obj["Key"].endswith("/") and not (base / obj["Key"]).exists()
+    ]
+    for key in missing:
+        download_file(client, s3_bucket, key, base / key)
+    print(f"s3://{s3_bucket}/{prefix}: downloaded {len(missing)} missing file(s)")
+
+
+def rmse(observed: np.ndarray, predicted: np.ndarray) -> float:
+    """Root mean squared error over the observed (non-NaN) entries."""
+    valid = ~np.isnan(observed)
+    return float(root_mean_squared_error(observed[valid], predicted[valid]))
+
+
+def mae(observed: np.ndarray, predicted: np.ndarray) -> float:
+    """Mean absolute error over the observed (non-NaN) entries."""
+    valid = ~np.isnan(observed)
+    return float(mean_absolute_error(observed[valid], predicted[valid]))
 
 
 def build_time_index(climate, site_data) -> pd.DatetimeIndex:
@@ -316,7 +424,10 @@ def plot_comparison(
     input_data = prepare_data(file_path)
     time_months = build_time_index(input_data.climate, input_data.site)
 
-    observations = pl.read_excel(file_path, sheet_name="observed")
+    # Rows without any plotted variable (e.g. GPP-only months) have nothing to show.
+    observations = pl.read_excel(file_path, sheet_name="observed").filter(
+        pl.any_horizontal(pl.col(plot_variables).is_not_null())
+    )
     obs_time = pd.to_datetime(
         pd.Series(observations["year"].to_numpy()).astype(str)
         + "-"
@@ -500,7 +611,7 @@ def plot_comparison(
         title = site_name
         if calibrated_metrics:
             mean_rmse = np.mean([row["bayesian_rmse"] for row in calibrated_metrics])
-            calibrated_names = "/".join(row["variable"] for row in calibrated_metrics)
+            calibrated_names = "/".join(str(row["variable"]) for row in calibrated_metrics)
             title += f" — mean RMSE ({calibrated_names}): {mean_rmse:.2f}"
         map_estimate_dir = map_output_dir if map_output_dir is not None else bayesian_output_dir
         if map_estimate_dir is not None:
@@ -886,19 +997,13 @@ def plot_posterior_across_plots(
     Figure
         The comparison figure.
     """
-    output_dir = os.path.join(
-        results_data_folder,
-        "latent_calibration_sweep" if include_process_error else "calibration_sweep",
-    )
     resolved_paths: dict[str, str] = {}
     for plot_id in plot_ids:
-        if plot_id == "solling":
-            path = os.path.join(output_dir, f"{plot_id}/{error_terms}/{method}/inference_data.nc")
-        else:
-            path = os.path.join(
-                output_dir,
-                f"{plot_id}/{literature_source}/{error_terms}/{method}/inference_data.nc",
-            )
+        path = os.path.join(
+            run_dir(plot_id, literature_source, error_terms, include_process_error),
+            method,
+            "inference_data.nc",
+        )
         if not os.path.exists(path):
             print(f"Note: no saved run at {path} — skipping plot_id {plot_id!r}")
             continue
@@ -991,7 +1096,7 @@ def plot_convergence_comparison(
     pymc_inference_path: str | None = None,
     hmc_inference_path: str | None = None,
     param_names: list[str] | None = None,
-    excluded_error_names: frozenset[str] = DIAGNOSTIC_ONLY_ERROR_NAMES,
+    fitted_error_names: frozenset[str] = ERROR_MODES["biomass_only"],
     include_bayesian: bool = True,
     include_hmc: bool = True,
     method_colors: dict[str, str] | None = None,
@@ -1006,14 +1111,12 @@ def plot_convergence_comparison(
         Path to the saved HMC (NumPyro) `numpyro_inference_data.nc`. Required if `include_hmc`.
     param_names : list[str] | None
         Parameters to compare. Defaults to `fit_params` plus one `err_{var}` per
-        variable in `PLOT_VARIABLES` that isn't in `excluded_error_names`.
-    excluded_error_names : frozenset[str]
-        `err_*` names to leave out of the default `param_names` — the ones with no
-        sigma prior (and so no posterior) in the run being plotted. Defaults to
-        `DIAGNOSTIC_ONLY_ERROR_NAMES`; pass the scenario's own entry from
-        `bayesian_config.ERROR_MODES` instead when plotting a specific named
-        calibration scenario (e.g. `"all_error_terms"` fits every `err_*`, so its
-        exclusion set is empty). Ignored if `param_names` is given explicitly.
+        variable in `PLOT_VARIABLES` that is in `fitted_error_names`.
+    fitted_error_names : frozenset[str]
+        `err_*` names fitted (and so with a posterior) in the run being plotted.
+        Defaults to the `"biomass_only"` entry of `bayesian_config.ERROR_MODES`; pass
+        the scenario's own entry instead when plotting another named calibration
+        scenario. Ignored if `param_names` is given explicitly.
     include_bayesian, include_hmc : bool
         Whether to include each method. Tuning/warmup draws are read back
         from `posterior.attrs["tuning_steps"]` in the saved file itself
@@ -1037,7 +1140,7 @@ def plot_convergence_comparison(
 
     if param_names is None:
         param_names = fit_params + [
-            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" not in excluded_error_names
+            f"err_{var}" for var in PLOT_VARIABLES if f"err_{var}" in fitted_error_names
         ]
     # A name listed twice (e.g. an `err_*` already in `fit_params`) would get two bars.
     param_names = list(dict.fromkeys(param_names))
@@ -1280,19 +1383,8 @@ def plot_and_save(
         `results/calibration_sweep` (False). In both cases the calibrated
         parameters are read from the included methods' saved `inference_data.nc`.
     """
-    output_dir = os.path.join(
-        results_data_folder,
-        "latent_calibration_sweep" if include_process_error else "calibration_sweep",
-    )
-
-    # Solling's data is hand-curated and never varies by literature_source (see
-    # resolve_source_file_path), so its results aren't nested under one.
-    if plot_id == "solling":
-        _site_dir = os.path.join(output_dir, plot_id)
-    else:
-        _site_dir = os.path.join(output_dir, plot_id, literature_source)
-    _file_path = os.path.join(_site_dir, f"{plot_id}_data.xlsx")
-    _combo_dir = os.path.join(_site_dir, error_terms)
+    _combo_dir = run_dir(plot_id, literature_source, error_terms, include_process_error)
+    _file_path = os.path.join(os.path.dirname(_combo_dir), f"{plot_id}_data.xlsx")
     _bayesian_output_dir = os.path.join(_combo_dir, "demetropolisz")
     _hmc_output_dir = os.path.join(_combo_dir, "nuts")
     _gradient_descent_dir = os.path.join(_combo_dir, "gradient_descent")
@@ -1434,50 +1526,105 @@ def plot_and_save(
 
 
 if __name__ == "__main__":
-    # plot_ids = ["solling"]
-    plot_ids = species_plot_ids["Picea abies"]
+    import argparse
+
+    _parser = argparse.ArgumentParser(description=__doc__)
+    _parser.add_argument(
+        "--task-index",
+        type=int,
+        default=None,
+        help=(
+            "Run only this one job (see the printed total count) instead of the "
+            "full sweep, for splitting the sweep across parallel cluster tasks."
+        ),
+    )
+    _args = _parser.parse_args()
 
     _include_bayesian = True
     _include_hmc = True
     _include_gradient_descent = True
     _include_map = False
     _include_process_error = False
+    # False: plot from results_data_folder; True: first download missing results from S3
+    _from_s3 = False
     _literature_sources = ["Forrester", "Trotsiuk"]
 
+    if _from_s3:
+        pull_missing_from_s3(sweep_dir(_include_process_error))
+
+    # Flattened in the same nested order the sweep used to run in, so a given
+    # --task-index always refers to the same job no matter how many tasks a
+    # cluster array submission splits the sweep into.
+    _jobs: list[tuple[str, dict[str, Any]]] = []
     for literature_source in _literature_sources:
-        if literature_source == "Forrester":
-            plot_ids = (
-                species_plot_ids["Pices abies"]
-                + species_plot_ids["Fagus sylvatica"]
-                + species_plot_ids["Pinus sylvestris"]
-            )
-        elif literature_source == "Trotsiuk":
-            plot_ids = species_plot_ids["Pices abies"] + species_plot_ids["Fagus sylvatica"]
-        else:
-            raise ValueError("Invalid literature source")
-
+        plot_ids = literature_plot_ids(literature_source)
         for error_terms in ERROR_MODES:
-            print(f"Processing error_terms={error_terms}...")
             for plot_id in plot_ids:
-                print(f"Processing plot_id={plot_id}...")
-                try:
-                    plot_and_save(
-                        plot_id=plot_id,
-                        error_terms=error_terms,
-                        literature_source="Forrester",
-                        include_process_error=_include_process_error,
-                        include_bayesian=_include_bayesian,
-                        include_hmc=_include_hmc,
-                        include_gradient_descent=_include_gradient_descent,
-                        include_map=_include_map,
+                _jobs.append(
+                    (
+                        "plot_and_save",
+                        {
+                            "plot_id": plot_id,
+                            "error_terms": error_terms,
+                            "literature_source": literature_source,
+                            "include_process_error": _include_process_error,
+                            "include_bayesian": _include_bayesian,
+                            "include_hmc": _include_hmc,
+                            "include_gradient_descent": _include_gradient_descent,
+                            "include_map": _include_map,
+                        },
                     )
-                except Exception as e:
-                    print(f"Error processing plot_id={plot_id}: {e}")
+                )
 
-            plot_posterior_across_plots(
-                plot_ids=plot_ids,
-                literature_source="Forrester",
-                error_terms=error_terms,
-                method="demetropolisz",
-                include_process_error=_include_process_error,
+            for method in ["nuts", "demetropolisz"]:
+                _jobs.append(
+                    (
+                        "plot_posterior_across_plots",
+                        {
+                            "plot_ids": plot_ids,
+                            "literature_source": literature_source,
+                            "error_terms": error_terms,
+                            "method": method,
+                            "include_process_error": _include_process_error,
+                        },
+                    )
+                )
+
+    # Solling is hand-curated and not literature-source-specific (see
+    # `literature_plot_ids`/`run_dir`), so it's swept separately, appended after
+    # the Forrester/Trotsiuk jobs so existing --task-index values keep meaning
+    # the same job regardless of this addition.
+    for error_terms in ERROR_MODES:
+        _jobs.append(
+            (
+                "plot_and_save",
+                {
+                    "plot_id": "solling",
+                    "error_terms": error_terms,
+                    "literature_source": "Forrester",  # ignored for solling
+                    "include_process_error": _include_process_error,
+                    "include_bayesian": _include_bayesian,
+                    "include_hmc": _include_hmc,
+                    "include_gradient_descent": _include_gradient_descent,
+                    "include_map": _include_map,
+                },
             )
+        )
+
+    def _run_job(kind: str, kwargs: dict[str, Any]) -> None:
+        try:
+            if kind == "plot_and_save":
+                plot_and_save(**kwargs)
+            else:
+                plot_posterior_across_plots(**kwargs)
+        except Exception as e:
+            print(f"Error processing {kind}({kwargs}): {e}")
+
+    print(f"Total jobs: {len(_jobs)}")
+    if _args.task_index is not None:
+        _kind, _kwargs = _jobs[_args.task_index]
+        print(f"Running task {_args.task_index}/{len(_jobs) - 1}: {_kind}({_kwargs})")
+        _run_job(_kind, _kwargs)
+    else:
+        for _kind, _kwargs in _jobs:
+            _run_job(_kind, _kwargs)

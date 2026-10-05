@@ -47,7 +47,7 @@ def prepare_site(site: pl.DataFrame) -> tuple[SiteData, np.datetime64, np.dateti
         raise ValueError("The simulation dates (from/to) are in the wrong format") from err
 
     if from_date >= to_date:
-        raise ValueError("The start date is later than the end date")
+        raise ValueError(f"The start date {from_date} is later than the end date {to_date}")
 
     # Extract scalar values (single row)
     latitude = site["latitude"].item()

@@ -239,6 +239,10 @@ class ExtendedParams(NamedTuple):
     # Parameters for whichever nutrition modifier is passed as `run_3pg`'s
     # `modifier_fn`
     modifier_params: Any
+    # Mean and standard deviation of each modifier input (in `input_vars` order),
+    # used to standardise the inputs before `modifier_fn`
+    input_mean: Array | float = 0.0
+    input_std: Array | float = 1.0
 
 
 class InputData(BaseModel):
