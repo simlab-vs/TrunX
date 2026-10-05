@@ -3,8 +3,9 @@
 For every month of a plot's simulated period, the deposition is classified as measured,
 filled while building the monthly deposition table (rolling mean or same month in
 adjacent years), filled with the same-calendar-month mean of the nearest 5 years of the
-plot's record (`create_combined_inputs.add_deposition_to_weather`), or set to zero
-(plots without any deposition record). The shares are given in % of the months.
+plot's record (`create_combined_inputs.add_deposition_to_weather`), or left missing
+(plots without any deposition record, or months the 5-year fill can't reach), where the
+nutrition modifier is neutral. The shares are given in % of the months.
 """
 
 import os
@@ -23,7 +24,7 @@ SHARE_COLUMNS = [
     "% missing",
     "% filled in monthly file",
     "% filled 5-yr calendar mean",
-    "% set to zero",
+    "% left missing (neutral modifier)",
 ]
 
 
@@ -78,10 +79,11 @@ def plot_deposition_coverage(
     )
     is_measured = months["measured"].is_not_null()
     in_file = months["in_file"].is_not_null()
-    has_record = plot_id in set(monthly["plot_id"])
-    # Months outside the monthly file get the 5-year calendar mean, or zero without a record
-    five_year = ~in_file & has_record
-    zero = ~in_file & ~five_year
+    # Months outside the monthly file get the 5-year calendar mean where it reaches them,
+    # and stay missing otherwise
+    in_input = months["input"].is_not_null()
+    five_year = ~in_file & in_input
+    left_missing = ~in_input
 
     def share(mask: pl.Series) -> float:
         """Percentage of the plot's months where `mask` is true."""
@@ -94,7 +96,7 @@ def plot_deposition_coverage(
         "% missing": share(~is_measured),
         "% filled in monthly file": share(in_file & ~is_measured),
         "% filled 5-yr calendar mean": share(five_year),
-        "% set to zero": share(zero),
+        "% left missing (neutral modifier)": share(left_missing),
     }
 
 
@@ -154,16 +156,37 @@ def summarize_by_species(coverage: pl.DataFrame) -> pl.DataFrame:
 
 
 if __name__ == "__main__":
-    variable = "dep_s_so4"
+    variable = "dep_n_tot"
+
+    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
+    from trunx.datasets.icp_plot_selection import select_icp_plots
+
+    selected_plots = select_icp_plots(icp_df)
+
+    species_plot_ids = {}
+    plot_ids = (
+        selected_plots.group_by("specie")
+        .agg(
+            n_plots=pl.col("plot_id").n_unique(),
+            plot_ids=pl.col("plot_id").unique(),
+        )
+        .filter(pl.col("specie").is_in(["Picea abies"]))
+    )
+    for idx in range(plot_ids.height):
+        species_plot_ids[plot_ids["specie"][idx]] = list(plot_ids["plot_ids"][idx])
+
+    print(species_plot_ids)
+
     coverage = deposition_coverage(species_plot_ids, variable=variable)
-    summary = summarize_by_species(coverage)
+    # summary = summarize_by_species(coverage)
 
-    output_dir = os.path.join(results_data_folder, "deposition_coverage")
-    os.makedirs(output_dir, exist_ok=True)
-    coverage.write_csv(os.path.join(output_dir, f"{variable}_by_plot.csv"))
-    summary.write_csv(os.path.join(output_dir, f"{variable}_by_species.csv"))
+    # # output_dir = os.path.join(results_data_folder, "deposition_coverage")
+    # # os.makedirs(output_dir, exist_ok=True)
+    # # coverage.write_csv(os.path.join(output_dir, f"{variable}_by_plot.csv"))
+    # # summary.write_csv(os.path.join(output_dir, f"{variable}_by_species.csv"))
 
+    coverage = coverage.filter(pl.col("% measured") >= 70)
     with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=200):
         print(coverage)
-        print(summary)
-    print(f"Saved to {output_dir}")
+    #     print(summary)
+    # print(f"Saved to {output_dir}")

@@ -1,12 +1,84 @@
 """Extended helper functions for 3PG model to have learnable componenets."""
 
 import string
-from typing import NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 INPUT_VARIABLES = ("N", "S", "T_avg")
+# Range (kg ha⁻¹ month⁻¹) each deposition input is clipped to before entering the modifier,
+# so rare extreme months (e.g. canopy or pollen events) don't drive the fit. Upper limits
+# are the 99th percentile of all ICP plot-months in `icp_monthly_deposition.parquet`
+DEPOSITION_LIMITS = {"N": (0.0, 4.6), "S": (0.0, 3.4)}
+
+
+def prepare_modifier_inputs(
+    channels: dict[str, jnp.ndarray],
+    input_vars: tuple[str, ...],
+    input_mean: jnp.ndarray | float = 0.0,
+    input_std: jnp.ndarray | float = 1.0,
+) -> jnp.ndarray:
+    """Stack the modifier inputs, clip each deposition to its `DEPOSITION_LIMITS` and standardise.
+
+    Parameters
+    ----------
+    channels : dict[str, jnp.ndarray]
+        Monthly values of each input, keyed by name (`"N"`, `"S"`, `"T_avg"`).
+    input_vars : tuple[str, ...]
+        Inputs to stack, in this order.
+    input_mean, input_std : jnp.ndarray | float
+        Mean and standard deviation of each input, one per `input_vars` item; the
+        defaults leave the inputs unstandardised.
+
+    Returns
+    -------
+    jnp.ndarray
+        Prepared inputs, with `input_vars` along the last axis.
+    """
+    inputs = jnp.stack(
+        [
+            jnp.clip(channels[name], *DEPOSITION_LIMITS[name])
+            if name in DEPOSITION_LIMITS
+            else jnp.asarray(channels[name])
+            for name in input_vars
+        ],
+        axis=-1,
+    )
+    return (inputs - input_mean) / input_std
+
+
+def evaluate_modifier(
+    modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray],
+    modifier_params: Any,
+    inputs: jnp.ndarray,
+    input_vars: tuple[str, ...],
+) -> jnp.ndarray:
+    """Evaluate the nutrition modifier, neutral (1) in months with a missing input.
+
+    Missing (NaN) inputs are replaced by 0 before `modifier_fn` runs, so no NaN reaches
+    the modifier or its gradients; their months' result is then set to 1.
+
+    Parameters
+    ----------
+    modifier_fn : Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray]
+        Nutrition modifier, e.g. `poly_nm` or `mlp_nm`.
+    modifier_params : Any
+        Parameters of `modifier_fn`.
+    inputs : jnp.ndarray
+        Prepared inputs, see `prepare_modifier_inputs`.
+    input_vars : tuple[str, ...]
+        Inputs along the last axis of `inputs`, in order.
+
+    Returns
+    -------
+    jnp.ndarray
+        Modifier value of each month.
+    """
+    missing = jnp.isnan(inputs)
+    modifier = modifier_fn(modifier_params, jnp.where(missing, 0.0, inputs), input_vars)
+    return jnp.where(missing.any(axis=-1), 1.0, modifier)
 
 
 def _squash(poly: jnp.ndarray) -> jnp.ndarray:

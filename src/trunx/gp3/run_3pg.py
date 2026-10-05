@@ -7,7 +7,12 @@ import jax
 import jax.numpy as jnp
 from jax import debug, lax
 
-from trunx.gp3.extended_helper import INPUT_VARIABLES, poly_nm
+from trunx.gp3.extended_helper import (
+    INPUT_VARIABLES,
+    evaluate_modifier,
+    poly_nm,
+    prepare_modifier_inputs,
+)
 from trunx.gp3.helper_function import (
     apply_self_thinning_with_mortality_factors,
     apply_stress_mortality,
@@ -303,17 +308,22 @@ def run_3pg(
             if dep_n_tot is None or dep_s_so4 is None:
                 warnings.warn(
                     "Missing deposition fields (dep_n_tot and/or dep_s_so4); "
-                    "running 3PG without deposition effects using zeros.",
+                    "running 3PG with a neutral nutrition modifier.",
                     UserWarning,
                     stacklevel=2,
                 )
-                dep_n_tot = jnp.zeros_like(climate.T_avg, dtype=float)
-                dep_s_so4 = jnp.zeros_like(climate.T_avg, dtype=float)
+                dep_n_tot = jnp.full_like(climate.T_avg, jnp.nan, dtype=float)
+                dep_s_so4 = jnp.full_like(climate.T_avg, jnp.nan, dtype=float)
             channels["N"] = dep_n_tot
             channels["S"] = dep_s_so4
 
-        inputs = jnp.stack([channels[name] for name in input_vars], axis=-1)
-        fpoly_nn = modifier_fn(extended_params.modifier_params, inputs, input_vars)
+        inputs = prepare_modifier_inputs(
+            channels, input_vars, extended_params.input_mean, extended_params.input_std
+        )
+        # Months with missing deposition get a neutral modifier (1)
+        fpoly_nn = evaluate_modifier(
+            modifier_fn, extended_params.modifier_params, inputs, input_vars
+        )
 
     climate_stack = jnp.stack(
         [

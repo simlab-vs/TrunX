@@ -54,28 +54,22 @@ def dep_range(deposition: pl.DataFrame) -> None:
 
 
 def _ensure_deposition_columns(deposition: pl.DataFrame) -> pl.DataFrame:
-    """Ensure deposition columns exist and fill missing values with zeros."""
+    """Ensure deposition columns exist, adding absent ones as missing (null) values.
+
+    Missing values are kept: months without deposition get a neutral nutrition modifier
+    (see `extended_helper.evaluate_modifier`).
+    """
     missing = [col for col in ("dep_n_tot", "dep_s_so4") if col not in deposition.columns]
     if missing:
         warnings.warn(
             "Deposition columns missing for 3PG: "
-            f"{missing}; running without deposition effects using zero values.",
+            f"{missing}; running without deposition effects (missing values).",
             UserWarning,
             stacklevel=2,
         )
-
-    for column in ("dep_n_tot", "dep_s_so4"):
-        if column not in deposition.columns:
-            deposition = deposition.with_columns(pl.lit(0.0).alias(column))
-        else:
-            deposition = deposition.with_columns(
-                pl.when(pl.col(column).is_null())
-                .then(pl.lit(0.0))
-                .otherwise(pl.col(column))
-                .alias(column)
-            )
-
-    return deposition
+    return deposition.with_columns(
+        [pl.lit(None, dtype=pl.Float64).alias(column) for column in missing]
+    )
 
 
 def prepare_deposition(
@@ -89,8 +83,8 @@ def prepare_deposition(
     ----------
     deposition : pl.DataFrame
         Monthly deposition table with at least ``year`` and ``month``
-        columns; ``dep_n_tot`` and ``dep_s_so4`` are optional and will be
-        zero-filled when missing.
+        columns; ``dep_n_tot`` and ``dep_s_so4`` are optional, and missing values
+        become NaN.
     from_ : str
         Simulation start month formatted as ``YYYY-MM``.
     to : str
@@ -132,8 +126,8 @@ def prepare_deposition(
     dep_range(plot_df)
 
     return DepositionData(
-        dep_n_tot=jnp.asarray(plot_df["dep_n_tot"].to_numpy(), dtype=float),
-        dep_s_so4=jnp.asarray(plot_df["dep_s_so4"].to_numpy(), dtype=float),
+        dep_n_tot=jnp.asarray(plot_df["dep_n_tot"].cast(pl.Float64).to_numpy(), dtype=float),
+        dep_s_so4=jnp.asarray(plot_df["dep_s_so4"].cast(pl.Float64).to_numpy(), dtype=float),
     )
 
 

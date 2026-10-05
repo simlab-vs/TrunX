@@ -3,7 +3,7 @@
 This is the single builder of 3PG plot inputs for the project. Works for any plot
 in `trunx_plot_level_data.parquet` (NFI, EFM, LWF, ICP), using its monthly weather
 from `trunx_plot_weather.parquet`. Deposition is only available for ICP plots;
-other sources get zero deposition.
+other sources get missing (null) deposition.
 """
 
 import logging
@@ -23,6 +23,8 @@ _CLIMATE_COLUMNS = ["year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_day
 # Needed at the first survey: the initial state, plus mean DBH to estimate the stand age
 _FIRST_SURVEY_COLUMNS = ["n_stems", "biom_stem", "biom_root", "biom_foliage", "dbh_mean"]
 _DEP_COLUMNS = ["dep_n_tot", "dep_s_so4"]
+# Deposition columns of a plot or month without deposition data
+_MISSING_DEPOSITION = [pl.lit(None, dtype=pl.Float64).alias(c) for c in _DEP_COLUMNS]
 # Years of a plot's deposition record averaged to fill months it does not cover
 _DEP_FILL_YEARS = 5
 
@@ -260,8 +262,8 @@ def add_deposition_to_weather(
     """Join an ICP plot's monthly deposition onto its weather.
 
     Months without deposition, e.g. before or after monitoring, get the same-calendar-month
-    mean of the `_DEP_FILL_YEARS` nearest years of the plot's record. Plots without any
-    deposition get zeros.
+    mean of the `_DEP_FILL_YEARS` nearest years of the plot's record. Months this can't
+    fill, and every month of plots without any deposition, stay missing (null).
 
     Parameters
     ----------
@@ -283,8 +285,8 @@ def add_deposition_to_weather(
         pl.col("year").cast(pl.Int64), pl.col("month").cast(pl.Int64), *_DEP_COLUMNS
     )
     if record.is_empty():
-        logger.warning("No deposition for plot_id %s — filling with zeros", plot_id)
-        return weather_df.with_columns([pl.lit(0.0).alias(c) for c in _DEP_COLUMNS])
+        logger.warning("No deposition for plot_id %s — leaving it missing", plot_id)
+        return weather_df.with_columns(_MISSING_DEPOSITION)
 
     months = weather_df.select(pl.col("year", "month").cast(pl.Int64))
     dep = months.join(record, on=["year", "month"], how="full", coalesce=True)
@@ -301,9 +303,7 @@ def add_deposition_to_weather(
             _DEP_FILL_YEARS,
         )
 
-    return weather_df.join(dep, on=["year", "month"], how="left").with_columns(
-        pl.col(_DEP_COLUMNS).fill_null(0.0)
-    )
+    return weather_df.join(dep, on=["year", "month"], how="left")
 
 
 def load_plot_tables(plot_id: str, source: str) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -414,9 +414,7 @@ def build_plot_input_sheets(
     if source == "ICP":
         climate_df = add_deposition_to_weather(climate_df, plot_id, deposition=deposition)
     else:
-        climate_df = climate_df.with_columns(
-            pl.lit(0.0).alias("dep_n_tot"), pl.lit(0.0).alias("dep_s_so4")
-        )
+        climate_df = climate_df.with_columns(_MISSING_DEPOSITION)
 
     param_bounds = {
         name: _load_species_param_bound(name, literature_source=literature_source)
