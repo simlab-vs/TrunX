@@ -17,27 +17,37 @@ TODO:
 """
 
 import os
-from typing import NamedTuple
+import pickle
+from typing import Any, NamedTuple, cast
 
+import arviz as az
 import jax
 import jax.numpy as jnp
 import jax.random as random
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from numpyro.infer import MCMC, NUTS
+from numpyro.infer import MCMC, NUTS, init_to_value
 
-from trunx.config import threepg_data_folder
+from trunx.config import SPECIES_INDICES, results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
     species_plot_ids,
 )
+from trunx.gp3.bayesiancalibrations.calibration_utils import clip_defaults_to_priors
 from trunx.gp3.bayesiancalibrations.load_files import (
     PlotData,
     fit_params_for_mode,
+    literature_bounds_for_species,
+    load_param_defaults_from_file,
     load_plot_data,
     load_plot_ids_from_file,
     load_priors_from_file,
     scored_variables_for_mode,
+)
+from trunx.gp3.bayesiancalibrations.save_load_results import (
+    load_checkpoint,
+    save_checkpoint,
+    save_results,
 )
 from trunx.gp3.model_inputs import ClimateData, Params, SiteData, SpeciesData, State
 from trunx.gp3.run_3pg import run_3pg
@@ -46,6 +56,8 @@ cpu_count = os.cpu_count() or 1
 numpyro.set_host_device_count(max(1, cpu_count))
 
 _DUMMY_MONTH = np.datetime64("2000-01")
+# Sampler state saved next to `save_checkpoint`'s files, to resume NUTS without re-tuning
+_SAMPLER_STATE_FILE = "checkpoint_numpyro_state.pkl"
 
 
 class PackedClimateData(NamedTuple):
@@ -339,7 +351,12 @@ def multi_plot_model(
     fixed_params: Params,
     priors: dict[str, tuple[float, float]] | None = None,
 ) -> None:
-    """Bayesian model with shared parameters and plot-level JAX parallelism."""
+    """Bayesian model with shared parameters and plot-level JAX parallelism.
+
+    Every `priors` entry gets a Uniform prior. An `err_{var}` entry is the observation-noise
+    scale of `var`, shared across plots as in `pymc_param_est_multiplots.py`; only observed
+    variables with one enter the likelihood.
+    """
     if priors is None:
         raise ValueError("Priors must be provided for plot analysis")
 
@@ -347,13 +364,16 @@ def multi_plot_model(
         name: jnp.asarray(numpyro.sample(name, dist.Uniform(lo, hi)))
         for name, (lo, hi) in priors.items()
     }
-    params = fixed_params._replace(**sampled_params)
+    params = fixed_params._replace(
+        **{name: value for name, value in sampled_params.items() if not name.startswith("err_")}
+    )
 
     # Pack plots and run model in parallel across plots using JAX vmap.
     outputs = run_packed_plots_forward(packed_plots, params)
 
     for var_name, obs in packed_plots.observations.items():
-        if var_name not in outputs:
+        sigma_name = f"err_{var_name}"
+        if sigma_name not in sampled_params or var_name not in outputs:
             continue
 
         pred_values = jnp.take_along_axis(
@@ -362,21 +382,20 @@ def multi_plot_model(
             axis=1,
         )
 
-        sigma = jnp.asarray(
-            numpyro.sample(
-                f"sigma_{var_name}",
-                dist.HalfNormal(jnp.ones((packed_plots.n_plots,), dtype=jnp.float32)),
-            ),
-            dtype=jnp.float32,
-        )
-
         numpyro.sample(
             f"obs_{var_name}",
-            dist.StudentT(df=3.0, loc=pred_values, scale=sigma[:, None, None]).mask(
+            dist.StudentT(df=3.0, loc=pred_values, scale=sampled_params[sigma_name]).mask(
                 obs.mask[..., None]
             ),
             obs=obs.values,
         )
+
+
+def _species_names_in_batch(packed_plots: PackedPlotBatch) -> list[str]:
+    """Species names in a packed batch (identical across plots, see `load_and_pack_plots`)."""
+    index_to_species = {value: key for key, value in SPECIES_INDICES.items()}
+    species_indices = np.asarray(packed_plots.species.specie[0]).astype(int).tolist()
+    return [index_to_species[idx] for idx in species_indices]
 
 
 def load_and_pack_plots(
@@ -441,6 +460,135 @@ def load_and_pack_plots(
     return packed_plots, fixed_params
 
 
+def _save_sampler_state(state: Any, draws_done: int, checkpoint_dir: str) -> None:
+    """Pickle the sampler's last state, including its adapted step size and mass matrix.
+
+    Parameters
+    ----------
+    state : Any
+        `MCMC.last_state` after the latest sampling chunk.
+    draws_done : int
+        Post-warmup draws per chain completed so far.
+    checkpoint_dir : str
+        Directory of the checkpoint.
+    """
+    path = os.path.join(checkpoint_dir, _SAMPLER_STATE_FILE)
+    # Write to a temp file and rename, so a crash mid-write never corrupts the last good one
+    with open(path + ".tmp", "wb") as f:
+        pickle.dump({"draws_done": draws_done, "state": jax.device_get(state)}, f)
+    os.replace(path + ".tmp", path)
+
+
+def _load_sampler_state(checkpoint_dir: str) -> tuple[int, Any]:
+    """Load the sampler state saved by `_save_sampler_state`.
+
+    Parameters
+    ----------
+    checkpoint_dir : str
+        Directory of the checkpoint.
+
+    Returns
+    -------
+    tuple[int, Any]
+        Post-warmup draws per chain completed, and the sampler state to resume from.
+    """
+    with open(os.path.join(checkpoint_dir, _SAMPLER_STATE_FILE), "rb") as f:
+        saved = pickle.load(f)
+    return saved["draws_done"], saved["state"]
+
+
+def run_numpyro_multi_plot_inference(
+    packed_plots: PackedPlotBatch,
+    fixed_params: Params,
+    priors: dict[str, tuple[float, float]],
+    num_warmup: int = 1000,
+    num_samples: int = 1000,
+    num_chains: int = 4,
+    seed: int = 42,
+    param_defaults: dict[str, float] | None = None,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 500,
+) -> az.InferenceData:
+    """Sample `multi_plot_model` with NUTS, in checkpointed chunks.
+
+    Warmup runs once. Each later chunk continues from the previous chunk's sampler state,
+    so a resumed run keeps the adapted step size and mass matrix and needs no re-tuning.
+
+    Parameters
+    ----------
+    packed_plots : PackedPlotBatch
+        Plots to calibrate, see `load_and_pack_plots`.
+    fixed_params : Params
+        Parameters not in `priors`.
+    priors : dict[str, tuple[float, float]]
+        (min, max) Uniform prior bounds of the physiology and `err_*` parameters.
+    num_warmup, num_samples, num_chains, seed
+        MCMC settings; `num_samples` is per chain.
+    param_defaults : dict[str, float] | None
+        Starting value of each parameter, strictly inside its prior bounds (see
+        `clip_defaults_to_priors`), shared by every chain as in
+        `pymc_param_est_multiplots.py`. Parameters without one, or all of them if None,
+        start from NumPyro's default random initialisation.
+    checkpoint_dir : str | None
+        Directory to save checkpoints to and resume from. If it holds a checkpoint from a
+        previous (possibly interrupted) run, sampling resumes from it. If None, sampling
+        runs in a single pass without checkpoints.
+    checkpoint_every : int
+        Post-warmup draws per chain between checkpoints.
+
+    Returns
+    -------
+    az.InferenceData
+        Posterior draws and sampler statistics of all chunks.
+    """
+    kernel = NUTS(
+        multi_plot_model,
+        target_accept_prob=0.9,
+        max_tree_depth=10,
+        init_strategy=init_to_value(values=param_defaults or {}),
+    )
+    mcmc = MCMC(
+        kernel,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains,
+        chain_method="parallel",
+        progress_bar=True,
+    )
+    chunk_size = checkpoint_every if checkpoint_dir is not None else num_samples
+    rng_key = random.split(random.PRNGKey(seed))[1]
+    idata: az.InferenceData | None = None
+    draws_done = 0
+
+    checkpoint = load_checkpoint(checkpoint_dir) if checkpoint_dir is not None else None
+    if checkpoint is not None:
+        assert checkpoint_dir is not None
+        idata = checkpoint[0]
+        # The sampler state is written last, so it marks the last complete chunk
+        draws_done, mcmc.post_warmup_state = _load_sampler_state(checkpoint_dir)
+        idata = idata.isel(draw=slice(None, draws_done))
+        rng_key = mcmc.post_warmup_state.rng_key
+        print(f"Resuming from checkpoint: {draws_done}/{num_samples} draws already completed")
+
+    while draws_done < num_samples:
+        mcmc.num_samples = min(chunk_size, num_samples - draws_done)
+        mcmc.run(rng_key, packed_plots, fixed_params, priors)
+        chunk = az.from_numpyro(mcmc, log_likelihood=False)
+        chunk = az.InferenceData(posterior=chunk.posterior, sample_stats=chunk.sample_stats)
+        idata = chunk if idata is None else az.concat(idata, chunk, dim="draw", inplace=False)
+        draws_done += mcmc.num_samples
+        mcmc.post_warmup_state = mcmc.last_state
+        rng_key = mcmc.post_warmup_state.rng_key
+
+        if checkpoint_dir is not None:
+            # NumPyro resumes from the pickled sampler state, so no per-chain initvals
+            save_checkpoint(idata, draws_done, [], checkpoint_dir)
+            _save_sampler_state(mcmc.last_state, draws_done, checkpoint_dir)
+            print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
+
+    return cast(az.InferenceData, idata)
+
+
 def run_multi_plot_analysis(
     params_file: str,
     plot_files: list[tuple[str, str]],
@@ -450,7 +598,9 @@ def run_multi_plot_analysis(
     num_samples: int = 1000,
     num_chains: int = 4,
     seed: int = 42,
-) -> tuple[MCMC, dict]:
+    output_dir: str | None = None,
+    checkpoint_every: int = 500,
+) -> az.InferenceData:
     """Run shared-parameter HMC inference across many plots.
 
     Parameters
@@ -466,20 +616,32 @@ def run_multi_plot_analysis(
         Key into `ERROR_MODES` selecting which outputs are scored, as in
         `pymc_param_est_multiplots.run_pymc_multi_plot_analysis`. Only observed
         variables with a fitted `err_{var}` prior in `params_file` enter the
-        likelihood, each with its own per-plot noise scale.
+        likelihood, each with one noise scale shared across plots.
     num_warmup, num_samples, num_chains, seed
         MCMC settings.
+    output_dir : str | None
+        Directory for checkpoints and the final `inference_data.nc`. Re-running with the
+        same `output_dir` resumes an interrupted run. If None, nothing is saved.
+    checkpoint_every : int
+        Post-warmup draws per chain between checkpoints.
 
     Returns
     -------
-    tuple[MCMC, dict]
-        The fitted MCMC object and its posterior samples.
+    az.InferenceData
+        Posterior draws and sampler statistics.
     """
     scored = scored_variables_for_mode(params_file, error_mode)
     if param_names is None:
         param_names = fit_params_for_mode(params_file, error_mode)
-    priors = load_priors_from_file(params_file, param_names)
     packed_plots, fixed_params = load_and_pack_plots(params_file, plot_files)
+    priors = load_priors_from_file(
+        params_file,
+        [*param_names, *(f"err_{v}" for v in scored)],
+        bound_overrides=literature_bounds_for_species(_species_names_in_batch(packed_plots)),
+    )
+    param_defaults = clip_defaults_to_priors(
+        load_param_defaults_from_file(params_file, list(priors)), priors
+    )
 
     skipped = sorted(set(packed_plots.observations) - set(scored))
     packed_plots = packed_plots._replace(
@@ -491,29 +653,22 @@ def run_multi_plot_analysis(
         raise ValueError(f"No observations are scored under error_mode {error_mode!r}")
     print(f"Scoring {sorted(packed_plots.observations)}; skipping {skipped} ({error_mode})")
 
-    rng_key = random.PRNGKey(seed)
-    _, subkey = random.split(rng_key)
-
-    kernel = NUTS(
-        multi_plot_model,
-        target_accept_prob=0.9,
-        max_tree_depth=10,
-    )
-    mcmc = MCMC(
-        kernel,
+    idata = run_numpyro_multi_plot_inference(
+        packed_plots,
+        fixed_params,
+        priors,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
-        chain_method="parallel",
-        progress_bar=True,
+        seed=seed,
+        param_defaults=param_defaults,
+        checkpoint_dir=output_dir,
+        checkpoint_every=checkpoint_every,
     )
-    mcmc.run(subkey, packed_plots, fixed_params, priors)
-
-    samples = mcmc.get_samples()
-
-    mcmc.print_summary()
-
-    return mcmc, samples
+    print(az.summary(idata))
+    if output_dir is not None:
+        save_results(mcmc=idata, output_dir=output_dir)
+    return idata
 
 
 def run_multi_plot_analysis_for_file(
@@ -527,10 +682,12 @@ def run_multi_plot_analysis_for_file(
     seed: int = 42,
     plot_ids: list[str] | None = None,
     max_plots: int | None = None,
-) -> tuple[MCMC, dict]:
+    output_dir: str | None = None,
+    checkpoint_every: int = 500,
+) -> az.InferenceData:
     """Run shared-parameter inference across all plots in one parquet file.
 
-    See `run_multi_plot_analysis` for `param_names` and `error_mode`.
+    See `run_multi_plot_analysis` for the other arguments.
     """
     if plot_ids is None:
         plot_ids = load_plot_ids_from_file(plot_file)
@@ -549,6 +706,8 @@ def run_multi_plot_analysis_for_file(
         num_samples=num_samples,
         num_chains=num_chains,
         seed=seed,
+        output_dir=output_dir,
+        checkpoint_every=checkpoint_every,
     )
 
 
@@ -568,4 +727,6 @@ if __name__ == "__main__":
         num_samples=20,
         num_chains=4,
         plot_ids=plot_ids,
+        output_dir=os.path.join(results_data_folder, "numpyro_multiplot_results"),
+        checkpoint_every=10,
     )

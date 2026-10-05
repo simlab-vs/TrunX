@@ -33,6 +33,7 @@ from trunx.gp3.bayesiancalibrations.bayesian_config import (
 from trunx.gp3.bayesiancalibrations.calibration_utils import clip_defaults_to_priors
 from trunx.gp3.bayesiancalibrations.jax_bayesian_param_est_multiplots import (
     PackedPlotBatch,
+    _species_names_in_batch,
     load_and_pack_plots,
     run_packed_plots_forward,
 )
@@ -375,13 +376,6 @@ def run_pymc_multi_plot_inference(
                 print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
 
     return cast(az.InferenceData, idata), model
-
-
-def _species_names_in_batch(packed_plots: PackedPlotBatch) -> list[str]:
-    """Species names in a packed batch (identical across plots, see `load_and_pack_plots`)."""
-    index_to_species = {value: key for key, value in SPECIES_INDICES.items()}
-    species_indices = np.asarray(packed_plots.species.specie[0]).astype(int).tolist()
-    return [index_to_species[idx] for idx in species_indices]
 
 
 def run_pymc_multi_plot_analysis(
