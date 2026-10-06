@@ -18,6 +18,7 @@ TODO:
 
 import os
 import pickle
+from collections.abc import Callable
 from typing import Any, NamedTuple, cast
 
 import arviz as az
@@ -497,34 +498,31 @@ def _load_sampler_state(checkpoint_dir: str) -> tuple[int, Any]:
     return saved["draws_done"], saved["state"]
 
 
-def run_numpyro_multi_plot_inference(
-    packed_plots: PackedPlotBatch,
-    fixed_params: Params,
-    priors: dict[str, tuple[float, float]],
+def run_nuts_with_checkpoints(
+    model: Callable[..., None],
+    model_args: tuple[Any, ...],
     num_warmup: int = 1000,
     num_samples: int = 1000,
     num_chains: int = 4,
     seed: int = 42,
-    param_defaults: dict[str, float] | None = None,
+    param_defaults: dict[str, Any] | None = None,
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 500,
 ) -> az.InferenceData:
-    """Sample `multi_plot_model` with NUTS, in checkpointed chunks.
+    """Sample a NumPyro `model` with NUTS, in checkpointed chunks.
 
     Warmup runs once. Each later chunk continues from the previous chunk's sampler state,
     so a resumed run keeps the adapted step size and mass matrix and needs no re-tuning.
 
     Parameters
     ----------
-    packed_plots : PackedPlotBatch
-        Plots to calibrate, see `load_and_pack_plots`.
-    fixed_params : Params
-        Parameters not in `priors`.
-    priors : dict[str, tuple[float, float]]
-        (min, max) Uniform prior bounds of the physiology and `err_*` parameters.
+    model : Callable[..., None]
+        NumPyro model, e.g. `multi_plot_model`.
+    model_args : tuple[Any, ...]
+        Positional arguments of `model`.
     num_warmup, num_samples, num_chains, seed
         MCMC settings; `num_samples` is per chain.
-    param_defaults : dict[str, float] | None
+    param_defaults : dict[str, Any] | None
         Starting value of each parameter, strictly inside its prior bounds (see
         `clip_defaults_to_priors`), shared by every chain as in
         `pymc_param_est_multiplots.py`. Parameters without one, or all of them if None,
@@ -542,7 +540,7 @@ def run_numpyro_multi_plot_inference(
         Posterior draws and sampler statistics of all chunks.
     """
     kernel = NUTS(
-        multi_plot_model,
+        model,
         target_accept_prob=0.9,
         max_tree_depth=10,
         init_strategy=init_to_value(values=param_defaults or {}),
@@ -572,7 +570,7 @@ def run_numpyro_multi_plot_inference(
 
     while draws_done < num_samples:
         mcmc.num_samples = min(chunk_size, num_samples - draws_done)
-        mcmc.run(rng_key, packed_plots, fixed_params, priors)
+        mcmc.run(rng_key, *model_args)
         chunk = az.from_numpyro(mcmc, log_likelihood=False)
         chunk = az.InferenceData(posterior=chunk.posterior, sample_stats=chunk.sample_stats)
         idata = chunk if idata is None else az.concat(idata, chunk, dim="draw", inplace=False)
@@ -653,10 +651,9 @@ def run_multi_plot_analysis(
         raise ValueError(f"No observations are scored under error_mode {error_mode!r}")
     print(f"Scoring {sorted(packed_plots.observations)}; skipping {skipped} ({error_mode})")
 
-    idata = run_numpyro_multi_plot_inference(
-        packed_plots,
-        fixed_params,
-        priors,
+    idata = run_nuts_with_checkpoints(
+        multi_plot_model,
+        (packed_plots, fixed_params, priors),
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,

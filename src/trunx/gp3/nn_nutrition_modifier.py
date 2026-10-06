@@ -211,6 +211,75 @@ def build_observation_data(
     return obs_indices, obs_values, obs_scales
 
 
+def input_scaling(config: NutritionModifierConfig) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Mean and standard deviation the modifier inputs are standardised with.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        With `config.standardize_inputs`, the statistics are those of the plots in
+        `config.file_paths` (see `input_statistics`); otherwise 0 and 1 (no scaling).
+
+    Returns
+    -------
+    tuple[jnp.ndarray, jnp.ndarray]
+        Mean and standard deviation, one entry per `config.input_vars` item.
+    """
+    if config.standardize_inputs:
+        return input_statistics(config.file_paths, config.input_vars)
+    return jnp.zeros(len(config.input_vars)), jnp.ones(len(config.input_vars))
+
+
+def phys_param_bounds(config: NutritionModifierConfig) -> dict[str, tuple[float, float]]:
+    """(min, max) bounds of the physiological parameters to fit, from the first plot.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        `config.fit_phys_params` names the parameters; None means every parameter with a
+        min and max in the `config.param_bounds_sheet` sheet.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Bounds of each parameter to fit.
+    """
+    sheet_bounds = {
+        name: (float(bounds[0]), float(bounds[1]))
+        for name, bounds in load_param_bounds(
+            config.file_paths[0], config.param_bounds_sheet
+        ).items()
+        if not np.isnan(bounds).any()
+    }
+    names = list(sheet_bounds) if config.fit_phys_params is None else config.fit_phys_params
+    missing = [name for name in names if name not in sheet_bounds]
+    if missing:
+        raise ValueError(f"No min/max in '{config.param_bounds_sheet}' for: {missing}")
+    return {name: sheet_bounds[name] for name in names}
+
+
+def phys_param_defaults(config: NutritionModifierConfig, names: list[str]) -> dict[str, Any]:
+    """Values of the physiological parameters `names` in the first plot's input file.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Gives the first plot (`config.file_paths[0]`) and `config.species_index`.
+    names : list[str]
+        Physiological parameter names.
+
+    Returns
+    -------
+    dict[str, Any]
+        Value of each parameter for the species.
+    """
+    params = prepare_data(config.file_paths[0]).params
+    return {
+        name: jnp.atleast_1d(jnp.asarray(getattr(params, name)))[config.species_index]
+        for name in names
+    }
+
+
 def train_nutrition_modifier(
     config: NutritionModifierConfig,
     initial_modifier_params: Any,
@@ -225,11 +294,7 @@ def train_nutrition_modifier(
     e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params` for `mlp_nm` —
     since they aren't interchangeable.
     """
-    if config.standardize_inputs:
-        input_mean, input_std = input_statistics(config.file_paths, config.input_vars)
-    else:
-        input_mean = jnp.zeros(len(config.input_vars))
-        input_std = jnp.ones(len(config.input_vars))
+    input_mean, input_std = input_scaling(config)
     plot_losses = []
     for file_path in config.file_paths:
         input_data = prepare_data(file_path)
@@ -258,32 +323,13 @@ def train_nutrition_modifier(
         """Mean of the per-plot losses."""
         return jnp.mean(jnp.stack([plot_loss(trainable) for plot_loss in plot_losses]))
 
-    first_file_path = config.file_paths[0]
-    first_params = prepare_data(first_file_path).params
-    sheet_bounds = {
-        name: bounds
-        for name, bounds in load_param_bounds(first_file_path, config.param_bounds_sheet).items()
-        if not np.isnan(bounds).any()
-    }
-    fit_phys_params = (
-        list(sheet_bounds) if config.fit_phys_params is None else config.fit_phys_params
-    )
-    missing = [name for name in fit_phys_params if name not in sheet_bounds]
-    if missing:
-        raise ValueError(f"No min/max in '{config.param_bounds_sheet}' for: {missing}")
-    lower = {name: sheet_bounds[name][0] for name in fit_phys_params}
-    upper = {name: sheet_bounds[name][1] for name in fit_phys_params}
+    bounds = phys_param_bounds(config)
 
     def clip_to_bounds(phys_params: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         """Clip each physiological parameter to its [min, max] bounds."""
-        return {
-            name: jnp.clip(value, lower[name], upper[name]) for name, value in phys_params.items()
-        }
+        return {name: jnp.clip(value, *bounds[name]) for name, value in phys_params.items()}
 
-    phys_params = {
-        name: jnp.atleast_1d(jnp.asarray(getattr(first_params, name)))[config.species_index]
-        for name in fit_phys_params
-    }
+    phys_params = phys_param_defaults(config, list(bounds))
     trainable = jax.tree_util.tree_map(
         lambda leaf: jnp.asarray(leaf, dtype=jnp.float32),
         {"phys_params": clip_to_bounds(phys_params), "modifier_params": initial_modifier_params},
