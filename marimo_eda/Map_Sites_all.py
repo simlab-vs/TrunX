@@ -1,15 +1,14 @@
-"""Interactive map comparing LWF, ICOS, ICP Forests, and FLUXNET sites."""
-
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    This notebook compares LWF, ICOS, ICP, and FLUXNET sites on a world map.
+    This notebook compares LWF, ICOS, ICP, and FLUXNET sites
+    on a world map.
     """)
     return
 
@@ -124,7 +123,7 @@ def _(fluxnet_raw, pl):
 
 @app.cell
 def _(fluxnet_sites):
-    fluxnet_sites  # noqa: B018
+    fluxnet_sites
     return
 
 
@@ -229,7 +228,71 @@ def _(icos_raw, pl):
 
 @app.cell
 def _(icos_sites):
-    icos_sites  # noqa: B018
+    icos_sites
+    return
+
+
+@app.cell
+def _(icos_sites, pl):
+    from urllib.parse import unquote
+
+
+    icos_sites_normalized = (
+
+        icos_sites
+
+        .with_columns(
+
+            pl.col("site_id")
+
+            .str.extract(r"/stations/(.+)$", 1)
+
+            .fill_null(pl.col("site_id"))
+
+            .map_elements(unquote, return_dtype=pl.String)
+
+            .alias("_site_id_raw"),
+
+
+            pl.col("country")
+
+            .str.extract(r"\(([A-Z]{2})\)$", 1)
+
+            .alias("_country_code"),
+
+        )
+
+        .with_columns(
+
+            pl.concat_str(
+
+                [
+
+                    pl.col("_country_code"),
+
+                    pl.lit("-"),
+
+                    pl.col("_site_id_raw")
+
+                    .str.replace(r"^(?:ES|AS|OS)_", "")
+
+                    .str.replace(r"^[A-Z]{2}-", ""),
+
+                ]
+
+            ).alias("site_id")
+
+        )
+
+        .drop("_site_id_raw", "_country_code")
+
+    )
+    return (icos_sites_normalized,)
+
+
+@app.cell
+def _(icos_sites_normalized):
+    icos_sites_normalized
     return
 
 
@@ -307,7 +370,7 @@ def _(icp_raw, pl):
 
 @app.cell
 def _(icp_sites):
-    icp_sites  # noqa: B018
+    icp_sites
     return
 
 
@@ -372,19 +435,19 @@ def _(lwf_raw, pl):
 
 @app.cell
 def _(lwf_sites):
-    lwf_sites  # noqa: B018
+    lwf_sites
     return
 
 
 @app.cell
-def _(fluxnet_sites, icos_sites, icp_sites, lwf_sites, pl):
+def _(fluxnet_sites, icos_sites_normalized, icp_sites, lwf_sites, pl):
     network_sites = pl.concat(
 
         [
 
             fluxnet_sites,
 
-            icos_sites,
+            icos_sites_normalized,
 
             icp_sites,
 
@@ -396,6 +459,26 @@ def _(fluxnet_sites, icos_sites, icp_sites, lwf_sites, pl):
 
     )
     return (network_sites,)
+
+
+@app.cell
+def _():
+    _ = """network_sites = pl.concat(
+
+        [
+
+            fluxnet_sites,
+
+
+            lwf_sites,
+
+        ],
+
+        how="vertical_relaxed",
+
+    )
+    """
+    return
 
 
 @app.cell
@@ -421,7 +504,7 @@ def _(network_sites, pl):
     )
 
 
-    sites_by_network  # noqa: B018
+    sites_by_network
     return
 
 
@@ -444,7 +527,7 @@ def _(network_sites, pl):
     )
 
 
-    coordinate_check  # noqa: B018
+    coordinate_check
     return
 
 
@@ -489,7 +572,7 @@ def _(network_sites, pl):
     )
 
 
-    duplicate_network_sites  # noqa: B018
+    duplicate_network_sites
     return
 
 
@@ -499,7 +582,7 @@ def _(mapped_sites, pl):
 
     from sklearn.metrics.pairwise import haversine_distances
 
-    MATCH_THRESHOLD_KM = 25.0
+    MATCH_THRESHOLD_KM = 5.0
 
     network_a_sites = mapped_sites.filter(
         pl.col("network").is_in(
@@ -568,9 +651,15 @@ def _(mapped_sites, pl):
 
 @app.cell
 def _(candidate_matches):
-    candidate_matches.sort("distance_km").unique(subset="site_name_b").sort(
-        "distance_km"
+    candidate_matches.sort("distance_km").unique(subset="site_id_b").sort(
+        "network_b"
     )
+    return
+
+
+@app.cell
+def _(candidate_matches, pl):
+    candidate_matches.filter(pl.col("network_b") == "ICOS")
     return
 
 
@@ -639,7 +728,7 @@ def _(MAP_CENTER, MAP_ZOOM, px, selected_sites):
     )
 
 
-    fig  # noqa: B018
+    fig
     return
 
 
