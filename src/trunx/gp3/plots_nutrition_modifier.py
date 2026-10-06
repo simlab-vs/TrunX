@@ -548,12 +548,6 @@ def plot_observed_vs_predicted(
         zip(plot_ids, config.file_paths, predicted_series, strict=True)
     ):
         observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
-        observed_dates = np.array(
-            [
-                np.datetime64(f"{year}-{month:02d}", "M")
-                for year, month in zip(observed_data["year"], observed_data["month"], strict=True)
-            ]
-        )
         dates = series["dates"]
         for col, var_name in enumerate(plot_variables):
             ax = axes[row, col]
@@ -565,28 +559,53 @@ def plot_observed_vs_predicted(
                     linewidth=1.5,
                     **_RUN_STYLES[run],
                 )
-
-            if var_name in observed_data.columns:
-                observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
-                mask = ~np.isnan(observed_values)
-                is_target = var_name in config.target_vars
-                ax.scatter(
-                    observed_dates[mask],
-                    observed_values[mask],
-                    label="Observed (target variable)" if is_target else "Observed (not fitted)",
-                    color="tab:red" if is_target else "tab:gray",
-                    s=20,
-                    zorder=5,
-                )
-
+            _scatter_observed(ax, config, observed_data, var_name)
             _format_date_axis(ax)
             if row == 0:
                 ax.set_title(_METRIC_LABELS.get(var_name, var_name))
             if col == 0:
                 ax.set_ylabel(plot_id)
 
-    # Target and non-target observations sit in different columns, so gather the
-    # legend entries of every column, keeping the first handle per label
+    _figure_legend(fig, axes)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def _scatter_observed(
+    ax: Any, config: NutritionModifierConfig, observed_data: pl.DataFrame, var_name: str
+) -> None:
+    """Scatter a plot's observations of `var_name`, red for targets and gray otherwise."""
+    if var_name not in observed_data.columns:
+        return
+    observed_dates = np.array(
+        [
+            np.datetime64(f"{year}-{month:02d}", "M")
+            for year, month in zip(observed_data["year"], observed_data["month"], strict=True)
+        ]
+    )
+    observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
+    mask = ~np.isnan(observed_values)
+    is_target = var_name in config.target_vars
+    ax.scatter(
+        observed_dates[mask],
+        observed_values[mask],
+        label="Observed (target variable)" if is_target else "Observed (not fitted)",
+        color="tab:red" if is_target else "tab:gray",
+        s=20,
+        zorder=5,
+    )
+
+
+def _figure_legend(fig: Any, axes: np.ndarray) -> None:
+    """Add one legend above the figure with the entries of every column of the first row.
+
+    Target and non-target observations sit in different columns, so every column is
+    gathered, keeping the first handle per label.
+    """
     legend_entries: dict[str, Any] = {}
     for ax in axes[0]:
         for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
@@ -597,6 +616,82 @@ def plot_observed_vs_predicted(
         loc="outside upper center",
         ncols=2,
     )
+
+
+def plot_posterior_predictions(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    posterior_series: list[dict[str, np.ndarray]],
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot every plot's posterior prediction interval, default run and observations.
+
+    Rows are plots (`config.file_paths`, labelled by `plot_ids`), columns are the plot
+    variables (`config.plot_variables`, else `config.target_vars`). Each panel shows the
+    posterior mean and 95% interval, the run with default parameters and no nutrition
+    modifier, and the observations.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Plots and variables.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    posterior_series : list[dict[str, np.ndarray]]
+        One `pymc_nutrition_modifier.predict_posterior_bands` result per plot.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    plot_variables = _plot_variables(config)
+    n_rows, n_cols = len(plot_ids), len(plot_variables)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(3.5 * n_cols, 2.5 * n_rows),
+        layout="constrained",
+        squeeze=False,
+    )
+
+    for row, (plot_id, file_path, series) in enumerate(
+        zip(plot_ids, config.file_paths, posterior_series, strict=True)
+    ):
+        observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
+        dates = series["dates"]
+        for col, var_name in enumerate(plot_variables):
+            ax = axes[row, col]
+            ax.fill_between(
+                dates,
+                series[f"lower_{var_name}"],
+                series[f"upper_{var_name}"],
+                color="tab:blue",
+                alpha=0.3,
+                label="95% interval (posterior)",
+            )
+            ax.plot(
+                dates,
+                series[f"mean_{var_name}"],
+                color="tab:blue",
+                linewidth=1.5,
+                label="Posterior mean",
+            )
+            ax.plot(
+                dates,
+                series[f"default_{var_name}"],
+                label="Default physiological parameters, without nutrition modifier",
+                linewidth=1.5,
+                **_RUN_STYLES["default"],
+            )
+            _scatter_observed(ax, config, observed_data, var_name)
+            _format_date_axis(ax)
+            if row == 0:
+                ax.set_title(_METRIC_LABELS.get(var_name, var_name))
+            if col == 0:
+                ax.set_ylabel(plot_id)
+
+    _figure_legend(fig, axes)
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
