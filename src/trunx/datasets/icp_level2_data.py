@@ -193,6 +193,43 @@ def _load_plots() -> pl.DataFrame:
     return df_plots_raw
 
 
+def _load_growth_plot_size() -> pl.DataFrame:
+    """Load the size of each growth (sub)plot of each plot survey from ``gr_pli.csv``.
+
+    A plot can have several growth subplots (`gr_plot_id`, -9999 in older submissions),
+    e.g. nested ones for different tree sizes. The size is `total_plot_size` when all
+    trees of the growth plot are measured (`all_trees` "Y"), otherwise the legacy
+    `sample_plot_size`: older submissions report the measured sample there and the whole
+    plot in `total_plot_size`.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per (plot_id, survey_year, gr_plot_id) with `growth_plot_size_ha`, null
+        where not reported.
+    """
+    path = _find_csv(os.path.join(_ICP_FOLDER, "595_gr_*/gr_pli.csv"))
+    value_cols = ["total_plot_size", "sample_plot_size"]
+    all_trees = pl.col("all_trees") == "Y"
+    return (
+        pl.read_csv(path, separator=";", infer_schema_length=0)
+        .pipe(_make_plot_id)
+        .with_columns(
+            pl.col("survey_year", "gr_plot_id").cast(pl.Int64),
+            pl.col(value_cols).cast(pl.Float64, strict=False),
+        )
+        # Missing values are coded as -9999 or 0
+        .with_columns(pl.when(pl.col(col) > 0).then(pl.col(col)).alias(col) for col in value_cols)
+        .group_by("plot_id", "survey_year", "gr_plot_id")
+        .agg(
+            pl.coalesce(
+                pl.col("total_plot_size").filter(all_trees).first(),
+                pl.col("sample_plot_size").drop_nulls().first(),
+            ).alias("growth_plot_size_ha")
+        )
+    )
+
+
 def _load_trees(
     species_df: pl.DataFrame,
     country_df: pl.DataFrame,
@@ -243,6 +280,7 @@ def _load_trees(
             "code_tree_species",
             "specie",
             "code_plot",
+            "gr_plot_id",
             "tree_number",
             "dbh_cm",
             "height",
@@ -251,6 +289,45 @@ def _load_trees(
 
     df = df.with_columns(ba_tree=math.pi * (pl.col("dbh_cm") / 200.0) ** 2)
     return df
+
+
+def _drop_duplicated_surveys(trees: pl.DataFrame) -> pl.DataFrame:
+    """Drop surveys that copy the previous survey of their plot.
+
+    A survey (one `survey_year` campaign of a plot) with the same tree count and DBH sum
+    as the plot's previous survey is a resubmitted copy rather than a new measurement.
+
+    Parameters
+    ----------
+    trees : pl.DataFrame
+        Tree-level data with `plot_id`, `survey_year`, `date` and `dbh_cm` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        `trees` without the rows of duplicated surveys.
+    """
+    surveys = (
+        trees.group_by("plot_id", "survey_year")
+        .agg(
+            pl.len().alias("n_trees"),
+            pl.col("dbh_cm").sum().round(1).alias("dbh_sum"),
+            pl.col("date").min().alias("survey_date"),
+        )
+        .sort("plot_id", "survey_date")
+    )
+    duplicated = surveys.filter(
+        (pl.col("n_trees") == pl.col("n_trees").shift(1).over("plot_id"))
+        & (pl.col("dbh_sum") == pl.col("dbh_sum").shift(1).over("plot_id"))
+    )
+    logger.info(
+        "Dropping %d duplicated surveys: %s",
+        duplicated.height,
+        ", ".join(
+            f"{plot} {year}" for plot, year in duplicated.select("plot_id", "survey_year").rows()
+        ),
+    )
+    return trees.join(duplicated, on=["plot_id", "survey_year"], how="anti")
 
 
 def _filter_single_species(trees: pl.DataFrame) -> pl.DataFrame:
@@ -275,15 +352,32 @@ def _altitude_m() -> pl.Expr:
 
 
 def _aggregate_per_plot(trees: pl.DataFrame, plots: pl.DataFrame) -> pl.DataFrame:
-    """Aggregate tree-level data to plot-level per-ha values."""
+    """Aggregate tree-level data to plot-level per-ha values.
+
+    Each tree stands for 1 / (its growth subplot size) trees per ha (see
+    `prepare_icp_tree_data`), so plots with several, e.g. nested, subplots are scaled
+    correctly. `plot_size_ha` is the total size of the survey's growth subplots.
+    """
     per_plot = aggregate_per_plot(
-        trees.sort("date"),
+        trees.sort("date").with_columns((1.0 / pl.col("plot_size_ha")).alias("stems_per_ha")),
         group_by=["plot_id", "specie", "date"],
-        extra_aggs=[pl.col("height").mean(), pl.col("soph_avg_age").mean().alias("stand_age")],
+        weight_col="stems_per_ha",
+        extra_aggs=[
+            pl.col("height").mean(),
+            pl.col("soph_avg_age").mean().alias("stand_age"),
+            pl.struct("gr_plot_id", "plot_size_ha")
+            .unique()
+            .struct.field("plot_size_ha")
+            .sum()
+            .alias("plot_size_ha"),
+        ],
     )
 
     return (
-        scale_to_hectare(per_plot.join(plots, on="plot_id", how="inner"), pl.col("plot_size_ha"))
+        # The weighted sums are already per ha, so only their units are converted
+        scale_to_hectare(
+            per_plot.join(plots.drop("plot_size_ha"), on="plot_id", how="inner"), pl.lit(1.0)
+        )
         .rename({"n_trees": "n_stems"})
         .with_columns(
             pl.col("plot_latitude")
@@ -619,7 +713,10 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
     `plot_latitude`/`plot_longitude`), `year`/`month` (from `date`, which
     falls back to 1 July of `survey_year` for assessments missing a
     recorded date), `n_stems` (always 1, one physical tree per row),
-    `area_m2` (`plot_size_ha * 10000`), `altitude` (same value as
+    `gr_plot_id` (growth subplot), `plot_size_ha` (the size of the tree's growth subplot
+    in its survey from ``gr_pli``, else the subplot's median size, else the plot's
+    median growth plot size; plots without any are dropped, see
+    `_load_growth_plot_size`), `area_m2` (`plot_size_ha * 10000`), `altitude` (same value as
     `altitude_m`, in metres — not `plot_altitude`, which is a coded
     altitude class) and per-tree `biom_stem`, `biom_foliage`, `biom_root`
     (kg tree⁻¹), `la_m2` (leaf area, m² tree⁻¹) and `basal_area` (m²
@@ -634,13 +731,27 @@ def prepare_icp_tree_data(output_path: str | None = None) -> pl.DataFrame:
     plots = _load_plots()
     logger.info("Loaded %d plots", plots.height)
 
-    trees = _load_trees(species_df, country_df)
+    trees = _drop_duplicated_surveys(_load_trees(species_df, country_df))
     logger.info("Loaded %d tree records", trees.height)
     trees = trees.join(plots, on="plot_id", how="left")
     logger.info("Joined tree records with plot metadata: %d rows", trees.height)
-    # Missing plot sizes are null or coded as -1 in si_plt.
-    trees = trees.filter(pl.col("plot_size_ha").gt(0))
-    logger.info("After dropping trees without plot size: %d rows", trees.height)
+    # si_plt gives the whole plot, which can be larger than the measured growth plot, so
+    # plots without any growth plot size are dropped rather than scaled by it
+    trees = (
+        trees.join(
+            _load_growth_plot_size(), on=["plot_id", "survey_year", "gr_plot_id"], how="left"
+        )
+        .with_columns(
+            pl.coalesce(
+                "growth_plot_size_ha",
+                pl.col("growth_plot_size_ha").median().over("plot_id", "gr_plot_id"),
+                pl.col("growth_plot_size_ha").median().over("plot_id"),
+            ).alias("plot_size_ha"),
+        )
+        .drop("growth_plot_size_ha")
+        .filter(pl.col("plot_size_ha").is_not_null())
+    )
+    logger.info("After dropping trees without growth plot size: %d rows", trees.height)
 
     crown = _load_crown(trees)
     logger.info("Loaded crown conditions: %d tree×census rows", crown.height)
@@ -789,7 +900,8 @@ def prepare_icp_inventory_data(output_path: str | None = None) -> pl.DataFrame:
 
     ``trees_remain`` is reported per plot by some countries and per hectare
     by others, so stem density is instead counted from the ``gr_ipm`` trees
-    in ``icp_tree_data.parquet`` (divided by the ``si_plt`` plot size).
+    in ``icp_tree_data.parquet``, each standing for 1 / (its growth subplot size)
+    trees per ha.
     ``trees_remain`` is only used as a relative weight to combine several
     growth subplots of one plot. Because ``diameter_basal_area_tree`` is the
     quadratic mean diameter, basal area is ``n_stems * pi * (d / 200)**2``.
@@ -818,7 +930,7 @@ def prepare_icp_inventory_data(output_path: str | None = None) -> pl.DataFrame:
         .filter(pl.col("plot_size_ha").gt(0))
         .with_columns(pl.col("date").cast(pl.Date))
         .group_by(keys)
-        .agg((pl.len() / pl.col("plot_size_ha").first()).alias("n_stems"))
+        .agg((1.0 / pl.col("plot_size_ha")).sum().alias("n_stems"))
     )
 
     weight = pl.col("trees_remain")

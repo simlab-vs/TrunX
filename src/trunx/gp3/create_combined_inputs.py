@@ -27,6 +27,7 @@ _DEP_COLUMNS = ["dep_n_tot", "dep_s_so4"]
 _MISSING_DEPOSITION = [pl.lit(None, dtype=pl.Float64).alias(c) for c in _DEP_COLUMNS]
 # Years of a plot's deposition record averaged to fill months it does not cover
 _DEP_FILL_YEARS = 5
+MIN_SPECIES_SHARE = 0.10  # Species with a smaller share of a plot's stems are dropped
 
 
 _LITERATURE_SOURCES = {
@@ -214,6 +215,27 @@ def _observed_sheet(surveys: pl.DataFrame) -> pl.DataFrame:
         pl.col("n_stems").alias("N"),
         pl.col("lai").alias("LAI"),
     )
+
+
+def _observed_initial_stems_sheet(observed: pl.DataFrame) -> pl.DataFrame:
+    """Build the observed sheet with the biomass of the stand had it kept its initial stems.
+
+    3-PG is not given the thinning, so it keeps the stems of the first survey: each survey's
+    `WS`, `WF` and `WR` are scaled from its stems `N` to the first survey's, i.e. its mean
+    tree biomass times the initial stems.
+
+    Parameters
+    ----------
+    observed : pl.DataFrame
+        Observed sheet, see `_observed_sheet`.
+
+    Returns
+    -------
+    pl.DataFrame
+        `observed` with `WS`, `WF` and `WR` scaled to the initial stems of each species.
+    """
+    initial_stems = pl.col("N").sort_by("date").first().over("specie")
+    return observed.with_columns(pl.col("WS", "WF", "WR") * initial_stems / pl.col("N"))
 
 
 def _all_observed_sheet(observed: pl.DataFrame, gpp: pl.DataFrame) -> pl.DataFrame:
@@ -446,10 +468,34 @@ def build_plot_input_sheets(
         "thinning": pd.DataFrame(),
         "sizeDist": pd.DataFrame(),
         "observed": observed_df.to_pandas(),
+        "observed_initial_stems": _observed_initial_stems_sheet(observed_df).to_pandas(),
         "all_observed": all_observed_df.to_pandas(),
         "param_bound": param_bound,
         "error_param": error_param,
     }
+
+
+def _drop_minor_species(
+    plot_data: pl.DataFrame, min_share: float = MIN_SPECIES_SHARE
+) -> pl.DataFrame:
+    """Drop the species making up less than `min_share` of a plot's stems.
+
+    The share is the species' stems summed over all surveys over the plot's.
+
+    Parameters
+    ----------
+    plot_data : pl.DataFrame
+        One plot's plot-level data, with `specie` and `n_stems` columns.
+    min_share : float
+        Minimum share of the plot's stems a species needs to be kept, e.g. 0.10 for 10%.
+
+    Returns
+    -------
+    pl.DataFrame
+        `plot_data` without the rows of minor species.
+    """
+    share = pl.col("n_stems").sum().over("specie") / pl.col("n_stems").sum()
+    return plot_data.filter(share >= min_share)
 
 
 def create_plot_input_file(
@@ -465,7 +511,9 @@ def create_plot_input_file(
 ) -> str:
     """Create a 3PG input Excel file for one plot of the combined datasets.
 
-    The sheets are built by `build_plot_input_sheets`, see there for the parameters.
+    Species with less than `MIN_SPECIES_SHARE` of the plot's stems are left out (see
+    `_drop_minor_species`), so a plot dominated by one species is simulated as pure. The
+    sheets are built by `build_plot_input_sheets`, see there for the parameters.
 
     Parameters
     ----------
@@ -480,7 +528,7 @@ def create_plot_input_file(
     sheets = build_plot_input_sheets(
         plot_id,
         source,
-        plot_data,
+        _drop_minor_species(plot_data),
         weather_data,
         literature_source=literature_source,
         age_models=age_models,

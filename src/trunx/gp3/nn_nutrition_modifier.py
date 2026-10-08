@@ -54,6 +54,10 @@ class NutritionModifierConfig:
     learning_rate: float = 1e-3  # Learning rate for the optimizer
     global_clip_norm: float = 1.0  # Global norm for gradient clipping
     num_epochs: int = 1000  # Number of training epochs
+    modifier_l2: float = 0.0  # L2 penalty on the modifier weights (0: none)
+    # Stop early when the loss improves by less than `loss_tol` over `loss_window` epochs
+    loss_tol: float = 0.0  # 0: never stop early
+    loss_window: int = 1000
     standardize_targets: bool = True  # Whether to standardize target variables
     standardize_inputs: bool = True  # Whether to standardize the modifier inputs
     image_dir: str = field(default_factory=lambda: str(images_folder / "nn_nutrition_modifier"))
@@ -286,7 +290,8 @@ def train_nutrition_modifier(
 ) -> NutritionModifierFitResult:
     """Jointly train `config.fit_phys_params` and the nutrition modifier over all plots.
 
-    The loss is the mean of the per-plot losses, so every plot weighs equally; the
+    The loss is the mean of the per-plot losses, so every plot weighs equally, plus
+    `config.modifier_l2` times the sum of the squared modifier weights; the
     physiological parameters start from the first plot's values. With
     `config.standardize_inputs`, the modifier inputs are standardised with their mean
     and standard deviation over these plots.
@@ -320,8 +325,12 @@ def train_nutrition_modifier(
         )
 
     def loss_function(trainable: dict[str, Any]) -> jnp.ndarray:
-        """Mean of the per-plot losses."""
-        return jnp.mean(jnp.stack([plot_loss(trainable) for plot_loss in plot_losses]))
+        """Mean of the per-plot losses plus the L2 penalty on the modifier weights."""
+        data_loss = jnp.mean(jnp.stack([plot_loss(trainable) for plot_loss in plot_losses]))
+        penalty = sum(
+            jnp.sum(leaf**2) for leaf in jax.tree_util.tree_leaves(trainable["modifier_params"])
+        )
+        return data_loss + config.modifier_l2 * penalty
 
     bounds = phys_param_bounds(config)
 
@@ -356,9 +365,23 @@ def train_nutrition_modifier(
         param_history.append(jax.tree_util.tree_map(np.asarray, trainable))
         if epoch % 1000 == 0:
             print(f"Epoch {epoch}, Loss: {loss}")
+        if (
+            config.loss_tol > 0
+            and epoch >= config.loss_window
+            and loss_history[-config.loss_window - 1] - loss_history[-1] < config.loss_tol
+        ):
+            print(
+                f"Stopped at epoch {epoch}: loss improved < {config.loss_tol} "
+                f"over {config.loss_window} epochs"
+            )
+            break
 
     fitted_phys_params = {name: float(v) for name, v in trainable["phys_params"].items()}
     print(f"Final Loss: {loss_history[-1]}", f"Final phys params: {fitted_phys_params}")
+    print(
+        "Fitted modifier weights:",
+        jax.tree_util.tree_map(np.asarray, trainable["modifier_params"]),
+    )
     return NutritionModifierFitResult(
         fitted_modifier_params=trainable["modifier_params"],
         fitted_phys_params=fitted_phys_params,
@@ -568,8 +591,28 @@ if __name__ == "__main__":
     )
 
     # Train on these plots; the remaining plots of the species are held out for testing
-    plot_ids = ["04.1402", "04.1403", "14.0017", "59.0008"]
-    test_plot_ids = [p for p in species_plot_ids["Picea abies"] if p not in plot_ids]
+    # plot_ids = ["04.1402", "04.1403", "14.0017", "59.0008"]
+    # test_plot_ids = [p for p in species_plot_ids["Picea abies"] if p not in plot_ids]
+
+    plot_ids = [
+        "15.0005",
+        "15.0017",
+        "59.0008",
+        "14.0019",  # N <= 0.5
+        "14.0017",
+        "52.0010",
+        "14.0008",  # N 0.5-1.0
+        "58.2161",
+        "55.0014",  # N 1.0-1.5
+        "04.0302",
+        "04.0303",
+        "04.1401",
+        "04.1403",  # N 1.5-2.0
+        "04.1402",
+        "04.1404",  # N > 2.0
+    ]
+    test_plot_ids = ["14.0016", "14.0015", "54.0203", "08.0011", "04.1605"]
+
     literature_source = "Trotsiuk"
     file_paths = [
         prepare_plot_input(plot_id, literature_source=literature_source) for plot_id in plot_ids
@@ -596,13 +639,16 @@ if __name__ == "__main__":
     config = NutritionModifierConfig(
         file_paths=file_paths,
         target_vars=["DBH"],
-        plot_variables=["BA", "DBH", "Height", "WS", "WF", "WR"],
+        plot_variables=["BA", "DBH", "WS", "WF", "WR"],
         input_vars=input_vars,
+        observed_sheet="observed",
         standardize_inputs=True,
         fit_phys_params=[],
         optimizer_name="adam",
         learning_rate=1e-3,
-        num_epochs=2000,
+        num_epochs=5000,
+        modifier_l2=0.05,
+        loss_tol=1e-4,
         modifier_fn=modifier_fn,
     )
 
@@ -684,7 +730,7 @@ if __name__ == "__main__":
     plot_modifier_response_surface(
         config,
         plot_ids,
-        fit_result,
+        [fit_result],
         save_path=str(image_dir / "modifier_response_surface.png"),
         show=False,
     )

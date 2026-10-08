@@ -1,9 +1,9 @@
 """ICP plot selection criteria.
 
-1. Single species plot.
+1. One species makes up at least 90% of the trees.
 2. QMD and arthimetic mean should be silmilar (within 10% of each other), substitute of even aged.
-3. Plots with at least 5 distinct observation years.
-4. No sudden increase or decrease in tree count (change between consecutive years should be
+3. Plots with at least 4 surveys.
+4. No sudden increase or decrease in tree count (change between consecutive surveys should be
    less than 40%) over time.
 """
 
@@ -15,10 +15,10 @@ import polars as pl
 from trunx.config import SPECIES_INDICES, clean_data_folder
 from trunx.gp3.allometrics import dms_to_decimal
 
-DOMINANT_SPECIES_THRESHOLD = 1
+DOMINANT_SPECIES_THRESHOLD = 0.9
 MAX_QMD_MEAN_RELATIVE_DIFF = 0.10
-MIN_OBSERVATION_YEARS = 3
-MAX_YEARLY_TREE_COUNT_CHANGE = 0.40
+MIN_OBSERVATION_YEARS = 4
+MAX_YEARLY_TREE_COUNT_CHANGE = 0.5
 
 
 def _dominant_species_plots(
@@ -104,41 +104,43 @@ def _similar_qmd_and_mean_dbh_plots(
 
 def _stable_tree_count_plots(
     df: pl.DataFrame,
-    date_col: str = "date",
     min_years: int = MIN_OBSERVATION_YEARS,
     max_relative_change: float = MAX_YEARLY_TREE_COUNT_CHANGE,
 ) -> pl.DataFrame:
-    """Find plots surveyed in enough years whose tree count never jumps between years.
+    """Find plots with enough surveys whose tree count never jumps between surveys.
 
-    Tree count is compared year-over-year: every pair of consecutive
-    surveyed calendar years must stay within `max_relative_change` of each
-    other, rather than just the overall min/max across the full history.
+    Tree count is compared survey-over-survey: every pair of consecutive
+    surveys must stay within `max_relative_change` of each other, rather than
+    just the overall min/max across the full history. A survey is one
+    `survey_year` campaign, as its trees can be measured on several dates and
+    two surveys can fall in the same calendar year.
 
     Parameters
     ----------
     df : pl.DataFrame
-        Tree-level data with `plot_id`, `date`, `tree_id` columns.
-    date_col : str
-        Name of the date column in `df`.
+        Tree-level data with `plot_id`, `survey_year`, `date`, `tree_id` columns.
     min_years : int
-        Minimum number of distinct calendar years required.
+        Minimum number of surveys required.
     max_relative_change : float
         Maximum allowed `abs(count - prev_count) / prev_count` between any
-        two consecutive surveyed years, e.g. 0.40 for 40%.
+        two consecutive surveys, e.g. 0.40 for 40%.
 
     Returns
     -------
     pl.DataFrame
-        One row per qualifying plot, with its number of observation years
-        and the largest year-over-year relative change observed.
+        One row per qualifying plot, with its number of surveys and the
+        largest survey-over-survey relative change observed.
     """
-    counts_by_year = (
-        df.group_by("plot_id", pl.col(date_col).dt.year().alias("year"))
-        .agg(pl.col("tree_id").n_unique().cast(pl.Int64).alias("n_trees"))
-        .sort("plot_id", "year")
+    counts_by_survey = (
+        df.group_by("plot_id", "survey_year")
+        .agg(
+            pl.col("tree_id").n_unique().cast(pl.Int64).alias("n_trees"),
+            pl.col("date").min().alias("survey_date"),
+        )
+        .sort("plot_id", "survey_date")
     )
 
-    changes = counts_by_year.with_columns(
+    changes = counts_by_survey.with_columns(
         pl.col("n_trees").shift(1).over("plot_id").alias("prev_n_trees")
     ).with_columns(
         ((pl.col("n_trees") - pl.col("prev_n_trees")).abs() / pl.col("prev_n_trees")).alias(
@@ -149,7 +151,7 @@ def _stable_tree_count_plots(
     return (
         changes.group_by("plot_id")
         .agg(
-            pl.col("year").n_unique().alias("n_observations"),
+            pl.col("survey_year").n_unique().alias("n_observations"),
             pl.col("relative_change").drop_nulls().max().alias("max_relative_change"),
         )
         .filter(pl.col("max_relative_change") <= max_relative_change)

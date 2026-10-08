@@ -5,7 +5,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, NamedTuple, cast
 
@@ -260,7 +260,7 @@ def _child_pids(parent_pid: int) -> list[int]:
 
 
 @contextmanager
-def _pin_sample_workers_to_distinct_cores() -> Iterator[None]:
+def _pin_sample_workers_to_distinct_cores() -> Generator[None]:
     """Pin each of `pm.sample`'s chain-worker processes to one core apiece.
 
     `pm.sample(cores=N, mp_ctx="spawn")` spawns one process per chain; every one
