@@ -26,6 +26,9 @@ SHARE_COLUMNS = [
     "% filled 5-yr calendar mean",
     "% left missing (neutral modifier)",
 ]
+MIN_MEASURED_SHARE = 50.0  # % of the simulated months with measured deposition
+# Mean N deposition (kg ha⁻¹ month⁻¹) bounds of the ranges each needing training plots
+DEPOSITION_RANGE_EDGES = (0.5, 1.0, 1.5, 2.0)
 
 
 def plot_deposition_coverage(
@@ -33,9 +36,12 @@ def plot_deposition_coverage(
     monthly: pl.DataFrame,
     measured: pl.DataFrame,
     age_models: dict[str, tuple[float, float]],
-    variable: str = "dep_n_tot",
+    variables: tuple[str, ...] = ("dep_n_tot",),
 ) -> dict[str, str | int | float]:
     """Share of each deposition origin over one ICP plot's simulated months.
+
+    With several `variables`, a month counts as measured, in the monthly file or in the
+    input only when all of them are.
 
     Parameters
     ----------
@@ -45,16 +51,17 @@ def plot_deposition_coverage(
         Monthly deposition table (`icp_monthly_deposition.parquet`).
     measured : pl.DataFrame
         Monthly deposition before any filling, with `plot_id`, `year`, `month` and
-        `variable` columns.
+        `variables` columns.
     age_models : dict[str, tuple[float, float]]
         Per-species age-vs-DBH models, see `create_combined_inputs.build_plot_input_sheets`.
-    variable : str
-        Deposition variable, `"dep_n_tot"` or `"dep_s_so4"`.
+    variables : tuple[str, ...]
+        Deposition variables, among `"dep_n_tot"` and `"dep_s_so4"`.
 
     Returns
     -------
     dict[str, str | int | float]
-        `plot_id`, `months` and one entry per `SHARE_COLUMNS` item, in %.
+        `plot_id`, `months`, one entry per `SHARE_COLUMNS` item, in %, and `mean <var>`,
+        the mean measured monthly deposition of each of `variables`.
     """
     climate = pl.from_pandas(
         build_plot_input_sheets(
@@ -66,22 +73,34 @@ def plot_deposition_coverage(
         )["climate"]
     ).with_columns(pl.col("year", "month").cast(pl.Int64))
 
-    def plot_rows(df: pl.DataFrame, name: str) -> pl.DataFrame:
-        """Select the plot's `variable` from `df` as `name`, keyed by year and month."""
-        return df.filter(pl.col("plot_id") == plot_id).select(
-            pl.col("year", "month").cast(pl.Int64), pl.col(variable).alias(name)
+    def select_variables(df: pl.DataFrame, name: str) -> pl.DataFrame:
+        """Select `variables` from `df` suffixed with `name`, keyed by year and month."""
+        return df.select(
+            pl.col("year", "month").cast(pl.Int64),
+            *[pl.col(var).alias(f"{var}_{name}") for var in variables],
         )
 
+    def plot_rows(df: pl.DataFrame, name: str) -> pl.DataFrame:
+        """Select the plot's `variables` from `df` suffixed with `name`."""
+        return select_variables(df.filter(pl.col("plot_id") == plot_id), name)
+
     months = (
-        climate.select("year", "month", pl.col(variable).alias("input"))
+        select_variables(climate, "input")
         .join(plot_rows(monthly, "in_file"), on=["year", "month"], how="left")
         .join(plot_rows(measured, "measured"), on=["year", "month"], how="left")
     )
-    is_measured = months["measured"].is_not_null()
-    in_file = months["in_file"].is_not_null()
+
+    def all_present(name: str) -> pl.Series:
+        """Whether all `variables` suffixed with `name` are present in each month."""
+        return months.select(
+            pl.all_horizontal(pl.col(f"{var}_{name}").is_not_null() for var in variables)
+        ).to_series()
+
+    is_measured = all_present("measured")
+    in_file = all_present("in_file")
     # Months outside the monthly file get the 5-year calendar mean where it reaches them,
     # and stay missing otherwise
-    in_input = months["input"].is_not_null()
+    in_input = all_present("input")
     five_year = ~in_file & in_input
     left_missing = ~in_input
 
@@ -97,11 +116,12 @@ def plot_deposition_coverage(
         "% filled in monthly file": share(in_file & ~is_measured),
         "% filled 5-yr calendar mean": share(five_year),
         "% left missing (neutral modifier)": share(left_missing),
+        **{f"mean {var}": months.select(pl.mean(f"{var}_measured")).item() for var in variables},
     }
 
 
 def deposition_coverage(
-    plot_ids_by_species: dict[str, list[str]], variable: str = "dep_n_tot"
+    plot_ids_by_species: dict[str, list[str]], variables: tuple[str, ...] = ("dep_n_tot",)
 ) -> pl.DataFrame:
     """Tabulate the deposition origin shares of every plot.
 
@@ -109,8 +129,9 @@ def deposition_coverage(
     ----------
     plot_ids_by_species : dict[str, list[str]]
         ICP plot identifiers per species, e.g. `bayesian_config.species_plot_ids`.
-    variable : str
-        Deposition variable, `"dep_n_tot"` or `"dep_s_so4"`.
+    variables : tuple[str, ...]
+        Deposition variables, among `"dep_n_tot"` and `"dep_s_so4"`; see
+        `plot_deposition_coverage`.
 
     Returns
     -------
@@ -124,7 +145,7 @@ def deposition_coverage(
         [
             {
                 "species": species,
-                **plot_deposition_coverage(plot_id, monthly, measured, age_models, variable),
+                **plot_deposition_coverage(plot_id, monthly, measured, age_models, variables),
             }
             for species, plot_ids in plot_ids_by_species.items()
             for plot_id in plot_ids
@@ -155,8 +176,37 @@ def summarize_by_species(coverage: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def plots_per_deposition_range(
+    coverage: pl.DataFrame,
+    variable: str = "dep_n_tot",
+    edges: tuple[float, ...] = DEPOSITION_RANGE_EDGES,
+) -> pl.DataFrame:
+    """Count the plots in each range of mean measured deposition.
+
+    Parameters
+    ----------
+    coverage : pl.DataFrame
+        Output of `deposition_coverage`, with a `mean <variable>` column.
+    variable : str
+        Deposition variable whose mean defines the ranges.
+    edges : tuple[float, ...]
+        Bounds between the ranges, in kg ha⁻¹ month⁻¹.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per species and range: `species`, `range`, `plots` and `plot_ids`.
+    """
+    return (
+        coverage.with_columns(pl.col(f"mean {variable}").cut(list(edges)).alias("range"))
+        .group_by("species", "range")
+        .agg(pl.len().alias("plots"), pl.col("plot_id").sort().alias("plot_ids"))
+        .sort("species", "range")
+    )
+
+
 if __name__ == "__main__":
-    variable = "dep_n_tot"
+    variables = ("dep_n_tot", "dep_s_so4")
 
     icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
     from trunx.datasets.icp_plot_selection import select_icp_plots
@@ -177,7 +227,7 @@ if __name__ == "__main__":
 
     print(species_plot_ids)
 
-    coverage = deposition_coverage(species_plot_ids, variable=variable)
+    coverage = deposition_coverage(species_plot_ids, variables=variables)
     # summary = summarize_by_species(coverage)
 
     # # output_dir = os.path.join(results_data_folder, "deposition_coverage")
@@ -185,8 +235,16 @@ if __name__ == "__main__":
     # # coverage.write_csv(os.path.join(output_dir, f"{variable}_by_plot.csv"))
     # # summary.write_csv(os.path.join(output_dir, f"{variable}_by_species.csv"))
 
-    coverage = coverage.filter(pl.col("% measured") >= 70)
-    with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=200):
+    coverage = coverage.filter(pl.col("% measured") >= MIN_MEASURED_SHARE)
+    with pl.Config(
+        tbl_rows=-1,
+        tbl_cols=-1,
+        tbl_width_chars=200,
+        fmt_table_cell_list_len=-1,
+        fmt_str_lengths=200,
+    ):
         print(coverage)
+        print(plots_per_deposition_range(coverage))
     #     print(summary)
     # print(f"Saved to {output_dir}")
+    print(list(coverage["plot_id"]))

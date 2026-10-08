@@ -228,7 +228,7 @@ def plot_deposition_density(
 def plot_modifier_response_surface(
     config: NutritionModifierConfig,
     plot_ids: list[str],
-    fit_result: NutritionModifierFitResult,
+    fit_results: list[NutritionModifierFitResult],
     n_grid: int = 100,
     save_path: str | None = None,
     show: bool = True,
@@ -237,7 +237,8 @@ def plot_modifier_response_surface(
 
     The grid covers the 1st-99th percentile of the pooled deposition values, padded
     by 20% to show how the modifier behaves just beyond the data; the few extreme
-    months outside it are not drawn.
+    months outside it are not drawn. With several `fit_results` (e.g. cross-validation
+    folds), their mean modifier is drawn, next to its standard deviation across fits.
     """
     if set(config.input_vars) != {"N", "S"}:
         raise ValueError(f"Needs a modifier over exactly N and S, got {config.input_vars}")
@@ -248,16 +249,27 @@ def plot_modifier_response_surface(
         np.linspace(*_deposition_range(s_values), n_grid),
     )
     channels = {"N": jnp.asarray(n_grid_values), "S": jnp.asarray(s_grid_values)}
-    inputs = prepare_modifier_inputs(
-        channels, config.input_vars, fit_result.input_mean, fit_result.input_std
+    modifiers = np.stack(
+        [
+            np.asarray(
+                config.modifier_fn(
+                    fit_result.fitted_modifier_params,
+                    prepare_modifier_inputs(
+                        channels, config.input_vars, fit_result.input_mean, fit_result.input_std
+                    ),
+                    config.input_vars,
+                )
+            )
+            for fit_result in fit_results
+        ]
     )
-    modifier = np.asarray(
-        config.modifier_fn(fit_result.fitted_modifier_params, inputs, config.input_vars)
-    )
+    modifier = modifiers.mean(axis=0)
 
     # Diverging colors centered on 1 (no effect), symmetric around it
     spread = max(float(np.abs(modifier - 1.0).max()), 1e-6)
-    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    n_panels = 1 if len(fit_results) == 1 else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(8 * n_panels, 6), layout="constrained")
+    ax = axes if n_panels == 1 else axes[0]
     surface = ax.contourf(
         n_grid_values,
         s_grid_values,
@@ -295,6 +307,17 @@ def plot_modifier_response_surface(
     ax.set_ylabel("S deposition (kg ha⁻¹ month⁻¹)")
     ax.set_title("Fitted nutrition modifier response surface")
     fig.legend(loc="outside right upper", fontsize=7, title="Plot")
+
+    if n_panels == 2:
+        std_ax = axes[1]
+        std_surface = std_ax.contourf(
+            n_grid_values, s_grid_values, modifiers.std(axis=0), levels=20, cmap="Greys"
+        )
+        fig.colorbar(std_surface, ax=std_ax, label="Standard deviation across fits")
+        std_ax.set_xlabel("N deposition (kg ha⁻¹ month⁻¹)")
+        std_ax.set_ylabel("S deposition (kg ha⁻¹ month⁻¹)")
+        std_ax.set_title(f"Spread of the modifier across {len(fit_results)} fits")
+        ax.set_title(f"Mean nutrition modifier response surface ({len(fit_results)} fits)")
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)

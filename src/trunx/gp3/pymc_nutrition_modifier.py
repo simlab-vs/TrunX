@@ -434,7 +434,7 @@ def evaluate_posterior_mean(
     plot_modifier_response_surface(
         config,
         plot_ids,
-        fit_result,
+        [fit_result],
         save_path=str(image_dir / "modifier_response_surface.png"),
         show=False,
     )
@@ -606,7 +606,7 @@ if __name__ == "__main__":
     config = NutritionModifierConfig(
         file_paths=file_paths,
         target_vars=["DBH"],
-        plot_variables=["BA", "DBH", "Height", "WS", "WF", "WR"],
+        plot_variables=["BA", "DBH", "WS", "WF", "WR"],
         input_vars=("N", "S"),
         standardize_inputs=True,
         fit_phys_params=[],
