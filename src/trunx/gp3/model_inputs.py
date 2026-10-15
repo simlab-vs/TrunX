@@ -42,6 +42,10 @@ class DepositionData(NamedTuple):
 
     dep_n_tot: jnp.ndarray  # Total nitrogen deposition (kg/ha/month)
     dep_s_so4: jnp.ndarray  # Sulfate deposition (kg/ha/month)
+    avg_dep_n_tot: jnp.ndarray  # dep_n_tot averaged over the last 12 months (kg/ha/month)
+    avg_dep_s_so4: jnp.ndarray  # dep_s_so4 averaged over the last 12 months (kg/ha/month)
+    sum_dep_n_tot: jnp.ndarray  # dep_n_tot summed over the last 12 months (kg/ha)
+    sum_dep_s_so4: jnp.ndarray  # dep_s_so4 summed over the last 12 months (kg/ha)
 
 
 class MonthlyData(NamedTuple):

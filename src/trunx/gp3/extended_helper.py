@@ -8,10 +8,28 @@ import jax
 import jax.numpy as jnp
 
 INPUT_VARIABLES = ("N", "S", "T_avg")
-# Range (kg ha⁻¹ month⁻¹) each deposition input is clipped to before entering the modifier,
-# so rare extreme months (e.g. canopy or pollen events) don't drive the fit. Upper limits
-# are the 99th percentile of all ICP plot-months in `icp_monthly_deposition.parquet`
-DEPOSITION_LIMITS = {"N": (0.0, 4.6), "S": (0.0, 3.4)}
+# Deposition modifier inputs and their `DepositionData` field: monthly N and S deposition,
+# and their means and sums over the last 12 months
+DEPOSITION_CHANNELS = {
+    "N": "dep_n_tot",
+    "S": "dep_s_so4",
+    "N_avg": "avg_dep_n_tot",
+    "S_avg": "avg_dep_s_so4",
+    "N_sum": "sum_dep_n_tot",
+    "S_sum": "sum_dep_s_so4",
+}
+# Range each deposition input is clipped to before entering the modifier, so rare extreme
+# months (e.g. canopy or pollen events) don't drive the fit: kg ha⁻¹ month⁻¹ for the monthly
+# values and means, kg ha⁻¹ per 12 months for the sums. Upper limits are the 99th percentile
+# of all ICP plot-months in `icp_monthly_deposition.parquet`
+DEPOSITION_LIMITS = {
+    "N": (0.0, 5.0),
+    "S": (0.0, 3.4),
+    "N_avg": (0.0, 3.6),
+    "S_avg": (0.0, 2.8),
+    "N_sum": (0.0, 41.7),
+    "S_sum": (0.0, 30.8),
+}
 
 
 def prepare_modifier_inputs(
@@ -25,7 +43,8 @@ def prepare_modifier_inputs(
     Parameters
     ----------
     channels : dict[str, jnp.ndarray]
-        Monthly values of each input, keyed by name (`"N"`, `"S"`, `"T_avg"`).
+        Monthly values of each input, keyed by name (`"T_avg"` or a `DEPOSITION_CHANNELS`
+        key).
     input_vars : tuple[str, ...]
         Inputs to stack, in this order.
     input_mean, input_std : jnp.ndarray | float
@@ -127,14 +146,24 @@ def poly_nm(
     return _squash(poly)
 
 
+def constant_nm(
+    params: jnp.ndarray, inputs: jnp.ndarray, input_vars: tuple[str, ...] = INPUT_VARIABLES
+) -> jnp.ndarray:
+    """Constant nutrition modifier, `1 + tanh(w)` in every month, ignoring the inputs.
+
+    Baseline for `poly_nm`: its single weight plays the role of `poly_nm`'s `w00`.
+    """
+    return _squash(jnp.broadcast_to(params[0], inputs.shape[:-1]))
+
+
 def init_modifier_params(input_vars: tuple[str, ...] = INPUT_VARIABLES) -> jnp.ndarray:
     """Build a neutral (all-zero) starting point for `poly_nm`.
 
     Parameters
     ----------
     input_vars : tuple[str, ...]
-        Which of `("N", "S", "T_avg")` the modifier is built over, and in what
-        order — must match what's passed to `run_3pg`.
+        Which of `"T_avg"` and the `DEPOSITION_CHANNELS` keys the modifier is built
+        over, and in what order — must match what's passed to `run_3pg`.
     """
     return jnp.zeros(tuple(2 for _ in input_vars))
 

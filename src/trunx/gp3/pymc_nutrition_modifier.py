@@ -56,6 +56,7 @@ from trunx.gp3.nn_nutrition_modifier import (
     input_scaling,
     phys_param_bounds,
     phys_param_defaults,
+    poorly_fitted_without_modifier,
     summarize_rmse,
 )
 from trunx.gp3.plots_nutrition_modifier import (
@@ -64,6 +65,7 @@ from trunx.gp3.plots_nutrition_modifier import (
     plot_learned_modifier_vs_deposition,
     plot_modifier_effect_over_time,
     plot_modifier_effect_vs_deposition,
+    plot_modifier_posterior_curves,
     plot_modifier_response_surface,
     plot_observed_vs_predicted,
     plot_posterior_predictions,
@@ -92,7 +94,11 @@ def load_plot_observations(config: NutritionModifierConfig) -> list[PlotObservat
     for file_path in config.file_paths:
         input_data = prepare_data(file_path)
         obs_indices, obs_values, _ = build_observation_data(
-            file_path, input_data.site, config.target_vars, standardize_targets=False
+            file_path,
+            input_data.site,
+            config.target_vars,
+            standardize_targets=False,
+            observed_sheet=config.observed_sheet,
         )
         plots.append((input_data, obs_indices, obs_values))
     return plots
@@ -223,6 +229,34 @@ def calibration_setup(
     return input_preparation, priors, param_defaults
 
 
+def pick_posterior_draws(
+    idata: az.InferenceData, num_draws: int, seed: int = 42
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pick random posterior draws without replacement, across all chains.
+
+    Parameters
+    ----------
+    idata : az.InferenceData
+        Posterior draws.
+    num_draws : int
+        Number of draws to pick, capped at the number available.
+    seed : int
+        Seed of the draw selection.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Chain and draw index of each picked draw.
+    """
+    posterior = cast(Any, idata).posterior
+    n_draws = posterior.sizes["draw"]
+    n_total = posterior.sizes["chain"] * n_draws
+    picked = np.random.default_rng(seed).choice(
+        n_total, size=min(num_draws, n_total), replace=False
+    )
+    return np.divmod(picked, n_draws)
+
+
 def predict_posterior_bands(
     config: NutritionModifierConfig,
     idata: az.InferenceData,
@@ -262,13 +296,7 @@ def predict_posterior_bands(
         `"default_<var>"` (default physiological parameters, no nutrition modifier).
     """
     posterior = cast(Any, idata).posterior
-    n_draws = posterior.sizes["draw"]
-    picked = np.random.default_rng(seed).choice(
-        posterior.sizes["chain"] * n_draws,
-        size=min(num_predictions, posterior.sizes["chain"] * n_draws),
-        replace=False,
-    )
-    chains, draws = np.divmod(picked, n_draws)
+    chains, draws = pick_posterior_draws(idata, num_predictions, seed)
     weights = jnp.asarray(posterior["modifier_params"].values[chains, draws])
     phys_draws = {
         name: jnp.asarray(posterior[name].values[chains, draws])
@@ -346,7 +374,8 @@ def evaluate_posterior_mean(
     means and the deposition density for the training (`config.file_paths`) and test
     plots; and, on the training plots, the modifier's effect on `alpha_c` and
     `f_nutri_classic_learnable` over time and against deposition, the deposition over
-    time and the modifier's response surface.
+    time, the modifier's response surface, and f_learned against each input with its 95%
+    interval over 500 posterior weight draws.
 
     Parameters
     ----------
@@ -436,6 +465,16 @@ def evaluate_posterior_mean(
         plot_ids,
         [fit_result],
         save_path=str(image_dir / "modifier_response_surface.png"),
+        show=False,
+    )
+    chains, draws = pick_posterior_draws(idata, num_draws=500)
+    plot_modifier_posterior_curves(
+        config,
+        plot_ids,
+        jnp.asarray(cast(Any, idata).posterior["modifier_params"].values[chains, draws]),
+        fit_result.input_mean,
+        fit_result.input_std,
+        save_path=str(image_dir / "f_learned_posterior_interval.png"),
         show=False,
     )
     return summarize_rmse(pl.concat(rmse_tables))
@@ -595,24 +634,39 @@ def calibrate_nutrition_modifier_pymc(
 
 if __name__ == "__main__":
     # Calibrate on these plots; the remaining plots of the species are held out for testing
-    plot_ids = ["04.1402", "04.1403", "14.0017", "59.0008"]
-    test_plot_ids = [p for p in species_plot_ids["Picea abies"] if p not in plot_ids]
+    # plot_ids = ["04.1402", "04.1403", "14.0017", "59.0008"]
+    # test_plot_ids = [p for p in species_plot_ids["Picea abies"] if p not in plot_ids]
+    from trunx.gp3.deposition_coverage import selected_plot_ids
+    from trunx.gp3.nn_nutrition_modifier import split_plot_ids
+
+    species = "Picea abies"
     literature_source = "Trotsiuk"
-    file_paths = [prepare_plot_input(p, literature_source=literature_source) for p in plot_ids]
-    test_file_paths = [
-        prepare_plot_input(p, literature_source=literature_source) for p in test_plot_ids
+    all_plot_ids = selected_plot_ids()[species]
+    all_file_paths = [
+        prepare_plot_input(p, literature_source=literature_source) for p in all_plot_ids
     ]
 
     config = NutritionModifierConfig(
-        file_paths=file_paths,
+        file_paths=all_file_paths,
         target_vars=["DBH"],
         plot_variables=["BA", "DBH", "WS", "WF", "WR"],
         input_vars=("N", "S"),
+        matched_start=True,
         standardize_inputs=True,
         fit_phys_params=[],
         modifier_fn=poly_nm,
         image_dir=str(images_folder / "pymc_nutrition_modifier"),
     )
+    # Leave out plots the run without the modifier already fits well, before splitting
+    # into train and test
+    all_plot_ids, all_file_paths = poorly_fitted_without_modifier(
+        config, all_plot_ids, all_file_paths, criterion="rmse"
+    )
+    plot_ids, test_plot_ids = split_plot_ids(species, all_plot_ids)
+    file_path_of = dict(zip(all_plot_ids, all_file_paths, strict=True))
+    file_paths = [file_path_of[plot_id] for plot_id in plot_ids]
+    test_file_paths = [file_path_of[plot_id] for plot_id in test_plot_ids]
+    config = replace(config, file_paths=file_paths)
     output_dir = os.path.join(results_data_folder, "pymc_nutrition_modifier")
 
     idata, fit_result = calibrate_nutrition_modifier_pymc(
