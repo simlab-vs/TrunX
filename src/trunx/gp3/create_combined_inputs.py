@@ -14,6 +14,10 @@ import pandas as pd
 import polars as pl
 
 from trunx.config import SPECIES_INDICES, clean_data_folder, threepg_data_folder
+from trunx.datasets.icp_process_monthly_depositions import (
+    ROLLING_COLUMNS,
+    add_12_month_aggregates,
+)
 from trunx.gp3.age_regression import fit_models, predict_age_from_dbh
 from trunx.gp3.prepare_deposition import load_monthly_deposition
 
@@ -22,7 +26,15 @@ logger = logging.getLogger(__name__)
 _CLIMATE_COLUMNS = ["year", "month", "tmp_ave", "tmp_min", "tmp_max", "frost_days", "prcp", "srad"]
 # Needed at the first survey: the initial state, plus mean DBH to estimate the stand age
 _FIRST_SURVEY_COLUMNS = ["n_stems", "biom_stem", "biom_root", "biom_foliage", "dbh_mean"]
-_DEP_COLUMNS = ["dep_n_tot", "dep_s_so4"]
+# Monthly deposition and its mean and sum over the last 12 months
+_DEP_COLUMNS = [
+    "dep_n_tot",
+    "dep_s_so4",
+    "avg_dep_n_tot",
+    "avg_dep_s_so4",
+    "sum_dep_n_tot",
+    "sum_dep_s_so4",
+]
 # Deposition columns of a plot or month without deposition data
 _MISSING_DEPOSITION = [pl.lit(None, dtype=pl.Float64).alias(c) for c in _DEP_COLUMNS]
 # Years of a plot's deposition record averaged to fill months it does not cover
@@ -285,7 +297,9 @@ def add_deposition_to_weather(
 
     Months without deposition, e.g. before or after monitoring, get the same-calendar-month
     mean of the `_DEP_FILL_YEARS` nearest years of the plot's record. Months this can't
-    fill, and every month of plots without any deposition, stay missing (null).
+    fill, and every month of plots without any deposition, stay missing (null). The
+    12-month means and sums are computed from the filled monthly values, including the
+    11 months before the weather starts, so they agree with them.
 
     Parameters
     ----------
@@ -299,23 +313,34 @@ def add_deposition_to_weather(
     Returns
     -------
     pl.DataFrame
-        ``weather_df`` with ``dep_n_tot`` and ``dep_s_so4`` columns.
+        ``weather_df`` with the `_DEP_COLUMNS` columns.
     """
     if deposition is None:
         deposition = load_monthly_deposition()
     record = deposition.filter(pl.col("plot_id") == plot_id).select(
-        pl.col("year").cast(pl.Int64), pl.col("month").cast(pl.Int64), *_DEP_COLUMNS
+        pl.col("year").cast(pl.Int64), pl.col("month").cast(pl.Int64), *ROLLING_COLUMNS
     )
     if record.is_empty():
         logger.warning("No deposition for plot_id %s — leaving it missing", plot_id)
         return weather_df.with_columns(_MISSING_DEPOSITION)
 
     months = weather_df.select(pl.col("year", "month").cast(pl.Int64))
-    dep = months.join(record, on=["year", "month"], how="full", coalesce=True)
-    n_missing = months.join(dep, on=["year", "month"]).select(
-        pl.any_horizontal(pl.col(_DEP_COLUMNS).is_null()).sum()
+    start = pl.lit(months.select(pl.date("year", "month", 1).min()).item())
+    lead_months = pl.select(
+        pl.date_range(start.dt.offset_by("-11mo"), start, "1mo").alias("date")
+    ).select(
+        pl.col("date").dt.year().cast(pl.Int64).alias("year"),
+        pl.col("date").dt.month().cast(pl.Int64).alias("month"),
     )
-    for col in _DEP_COLUMNS:
+    dep = (
+        pl.concat([lead_months, months])
+        .unique()
+        .join(record, on=["year", "month"], how="full", coalesce=True)
+    )
+    n_missing = months.join(dep, on=["year", "month"]).select(
+        pl.any_horizontal(pl.col(ROLLING_COLUMNS).is_null()).sum()
+    )
+    for col in ROLLING_COLUMNS:
         dep = _fill_from_nearest_years(dep, col)
     if n_missing.item():
         logger.info(
@@ -324,6 +349,10 @@ def add_deposition_to_weather(
             plot_id,
             _DEP_FILL_YEARS,
         )
+    dep = add_12_month_aggregates(
+        dep.with_columns(plot_id=pl.lit(plot_id), date=pl.date("year", "month", 1)),
+        ROLLING_COLUMNS,
+    ).select("year", "month", *_DEP_COLUMNS)
 
     return weather_df.join(dep, on=["year", "month"], how="left")
 
@@ -485,7 +514,7 @@ def _drop_minor_species(
     Parameters
     ----------
     plot_data : pl.DataFrame
-        One plot's plot-level data, with `specie` and `n_stems` columns.
+        Plot-level data, with `plot_id`, `specie` and `n_stems` columns.
     min_share : float
         Minimum share of the plot's stems a species needs to be kept, e.g. 0.10 for 10%.
 
@@ -494,7 +523,9 @@ def _drop_minor_species(
     pl.DataFrame
         `plot_data` without the rows of minor species.
     """
-    share = pl.col("n_stems").sum().over("specie") / pl.col("n_stems").sum()
+    share = pl.col("n_stems").sum().over("plot_id", "specie") / pl.col("n_stems").sum().over(
+        "plot_id"
+    )
     return plot_data.filter(share >= min_share)
 
 

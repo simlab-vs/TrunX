@@ -400,10 +400,15 @@ def build_tree_plot_weather(
     else:
         icp_weather = era5_weather.clear()
 
-    weather = pl.concat(
-        [_standardize_weather(icp_weather), _standardize_weather(era5_weather)],
-        how="vertical",
-    ).sort(["source", "plot_id", "year", "month"])
+    weather = (
+        pl.concat(
+            [_standardize_weather(icp_weather), _standardize_weather(era5_weather)],
+            how="vertical",
+        )
+        # Solar radiation can't be negative (e.g. station sensor offsets in winter months)
+        .with_columns(pl.col("srad").clip(lower_bound=0.0))
+        .sort(["source", "plot_id", "year", "month"])
+    )
 
     weather.write_parquet(output_path)
     logger.info(

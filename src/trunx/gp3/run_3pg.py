@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jax import debug, lax
 
 from trunx.gp3.extended_helper import (
+    DEPOSITION_CHANNELS,
     INPUT_VARIABLES,
     evaluate_modifier,
     poly_nm,
@@ -95,12 +96,12 @@ def model_step(
     fA = f_age(params, age_months)
     fcalpha = f_calpha(params, co2)
 
-    # phi = fA * jnp.minimum(fD, fSW)
-    phi = fA * fD * fSW
+    phi = fA * jnp.minimum(fD, fSW)
+    # phi = fA * fD * fSW
 
     gC = calculate_base_conductance(params, lai_total)
-    ftmp_gc = f_temperature_gc(params, T_avg, T_max)
-    # ftmp_gc = 1.0
+    # ftmp_gc = f_temperature_gc(params, T_avg, T_max)
+    ftmp_gc = 1.0
     fcg = f_cg(params, co2)
     conduct_canopy = gC * LAI_per * phi * ftmp_gc * fcg
     f_nutri_classic_learnable = fN * fpoly_nn
@@ -293,8 +294,10 @@ def run_3pg(
         `poly_nm`, or `mlp_nm` from `extended_helper.py`.
         Ignored when `extended_params` is None.
     input_vars : tuple[str, ...]
-        Which of `("N", "S", "T_avg")` (nitrogen deposition, sulphur deposition,
-        temperature) `modifier_fn` was built over, and in what order — must
+        Which of `"T_avg"` (temperature) and the `DEPOSITION_CHANNELS` keys (`"N"`,
+        `"S"`: monthly deposition; `"N_avg"`, `"S_avg"`: its 12-month mean; `"N_sum"`,
+        `"S_sum"`: its 12-month sum)
+        `modifier_fn` was built over, and in what order — must
         match `extended_params.modifier_params`'s axes/fields. Ignored when
         `extended_params` is None.
     """
@@ -302,20 +305,19 @@ def run_3pg(
         fpoly_nn = jnp.ones_like(climate.T_avg, dtype=float)
     else:
         channels = {"T_avg": climate.T_avg}
-        if "N" in input_vars or "S" in input_vars:
-            dep_n_tot = getattr(deposition, "dep_n_tot", None)
-            dep_s_so4 = getattr(deposition, "dep_s_so4", None)
-            if dep_n_tot is None or dep_s_so4 is None:
+        for name in input_vars:
+            if name not in DEPOSITION_CHANNELS:
+                continue
+            values = getattr(deposition, DEPOSITION_CHANNELS[name], None)
+            if values is None:
                 warnings.warn(
-                    "Missing deposition fields (dep_n_tot and/or dep_s_so4); "
+                    f"Missing deposition field {DEPOSITION_CHANNELS[name]}; "
                     "running 3PG with a neutral nutrition modifier.",
                     UserWarning,
                     stacklevel=2,
                 )
-                dep_n_tot = jnp.full_like(climate.T_avg, jnp.nan, dtype=float)
-                dep_s_so4 = jnp.full_like(climate.T_avg, jnp.nan, dtype=float)
-            channels["N"] = dep_n_tot
-            channels["S"] = dep_s_so4
+                values = jnp.full_like(climate.T_avg, jnp.nan, dtype=float)
+            channels[name] = values
 
         inputs = prepare_modifier_inputs(
             channels, input_vars, extended_params.input_mean, extended_params.input_std

@@ -8,16 +8,20 @@ plot's record (`create_combined_inputs.add_deposition_to_weather`), or left miss
 nutrition modifier is neutral. The shares are given in % of the months.
 """
 
+import logging
 import os
 
 import polars as pl
 
 from trunx.config import clean_data_folder, results_data_folder
 from trunx.datasets.icp_level2_data import _load_deposition_periods
+from trunx.datasets.icp_plot_selection import plot_ids_by_species, select_icp_plots
 from trunx.datasets.icp_process_monthly_depositions import aggregate_monthly_deposition
 from trunx.gp3.age_regression import fit_models
 from trunx.gp3.bayesiancalibrations.bayesian_config import species_plot_ids
 from trunx.gp3.create_combined_inputs import build_plot_input_sheets, load_plot_tables
+
+logger = logging.getLogger(__name__)
 
 SHARE_COLUMNS = [
     "% measured",
@@ -26,7 +30,7 @@ SHARE_COLUMNS = [
     "% filled 5-yr calendar mean",
     "% left missing (neutral modifier)",
 ]
-MIN_MEASURED_SHARE = 50.0  # % of the simulated months with measured deposition
+MIN_MEASURED_SHARE = 70.0  # % of the simulated months with measured deposition
 # Mean N deposition (kg ha⁻¹ month⁻¹) bounds of the ranges each needing training plots
 DEPOSITION_RANGE_EDGES = (0.5, 1.0, 1.5, 2.0)
 
@@ -136,21 +140,24 @@ def deposition_coverage(
     Returns
     -------
     pl.DataFrame
-        One row per plot: `species`, `plot_id`, `months` and the `SHARE_COLUMNS`.
+        One row per plot: `species`, `plot_id`, `months` and the `SHARE_COLUMNS`. Plots
+        whose 3PG input can't be built (e.g. no survey inside the weather) are left out.
     """
     monthly = pl.read_parquet(os.path.join(clean_data_folder, "icp_monthly_deposition.parquet"))
     measured = aggregate_monthly_deposition(*_load_deposition_periods())
     age_models = fit_models()
-    return pl.DataFrame(
-        [
-            {
-                "species": species,
-                **plot_deposition_coverage(plot_id, monthly, measured, age_models, variables),
-            }
-            for species, plot_ids in plot_ids_by_species.items()
-            for plot_id in plot_ids
-        ]
-    )
+    rows = []
+    for species, plot_ids in plot_ids_by_species.items():
+        for plot_id in plot_ids:
+            try:
+                coverage = plot_deposition_coverage(
+                    plot_id, monthly, measured, age_models, variables
+                )
+            except ValueError as error:
+                logger.warning("Skipping plot %s: %s", plot_id, error)
+                continue
+            rows.append({"species": species, **coverage})
+    return pl.DataFrame(rows)
 
 
 def summarize_by_species(coverage: pl.DataFrame) -> pl.DataFrame:
@@ -205,13 +212,31 @@ def plots_per_deposition_range(
     )
 
 
+def selected_plot_ids(
+    variables: tuple[str, ...] = ("dep_n_tot", "dep_s_so4"),
+) -> dict[str, list[str]]:
+    """ICP plots of each dominant species passing `select_icp_plots` and `MIN_MEASURED_SHARE`.
+
+    Parameters
+    ----------
+    variables : tuple[str, ...]
+        Deposition variables that must all be measured, see `plot_deposition_coverage`.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Sorted plot ids per dominant species.
+    """
+    coverage = deposition_coverage(plot_ids_by_species(select_icp_plots()), variables=variables)
+    return plot_ids_by_species(
+        coverage.filter(pl.col("% measured") >= MIN_MEASURED_SHARE).rename({"species": "specie"})
+    )
+
+
 if __name__ == "__main__":
     variables = ("dep_n_tot", "dep_s_so4")
 
-    icp_df = pl.read_parquet(os.path.join(clean_data_folder, "icp_tree_data.parquet"))
-    from trunx.datasets.icp_plot_selection import select_icp_plots
-
-    selected_plots = select_icp_plots(icp_df)
+    selected_plots = select_icp_plots()
 
     species_plot_ids = {}
     plot_ids = (
