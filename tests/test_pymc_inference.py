@@ -39,7 +39,7 @@ def test_nuts_recovers_known_parameter_with_healthy_diagnostics() -> None:
         priors=PRIORS,
         param_defaults={"alphaCx": 0.02, "err_NPP": 0.5},
         num_warmup=500,
-        num_samples=500,
+        num_samples=1000,
         chains=2,
         cores=1,
         step_method="nuts",
