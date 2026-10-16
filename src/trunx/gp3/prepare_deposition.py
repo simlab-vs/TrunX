@@ -59,7 +59,7 @@ def _ensure_deposition_columns(deposition: pl.DataFrame) -> pl.DataFrame:
     Missing values are kept: months without deposition get a neutral nutrition modifier
     (see `extended_helper.evaluate_modifier`).
     """
-    missing = [col for col in ("dep_n_tot", "dep_s_so4") if col not in deposition.columns]
+    missing = [col for col in DepositionData._fields if col not in deposition.columns]
     if missing:
         warnings.warn(
             "Deposition columns missing for 3PG: "
@@ -83,8 +83,8 @@ def prepare_deposition(
     ----------
     deposition : pl.DataFrame
         Monthly deposition table with at least ``year`` and ``month``
-        columns; ``dep_n_tot`` and ``dep_s_so4`` are optional, and missing values
-        become NaN.
+        columns; the `DepositionData` columns (``dep_n_tot``, ``dep_s_so4`` and their
+        12-month means) are optional, and missing values become NaN.
     from_ : str
         Simulation start month formatted as ``YYYY-MM``.
     to : str
@@ -121,13 +121,15 @@ def prepare_deposition(
         raise ValueError("Requested time period is outside of provided dates in deposition table.")
 
     plot_df = _ensure_deposition_columns(plot_df)
-    plot_df = plot_df.select("year", "month", "dep_n_tot", "dep_s_so4")
+    plot_df = plot_df.select("year", "month", *DepositionData._fields)
 
     dep_range(plot_df)
 
     return DepositionData(
-        dep_n_tot=jnp.asarray(plot_df["dep_n_tot"].cast(pl.Float64).to_numpy(), dtype=float),
-        dep_s_so4=jnp.asarray(plot_df["dep_s_so4"].cast(pl.Float64).to_numpy(), dtype=float),
+        *(
+            jnp.asarray(plot_df[col].cast(pl.Float64).to_numpy(), dtype=float)
+            for col in DepositionData._fields
+        )
     )
 
 

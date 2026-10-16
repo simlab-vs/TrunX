@@ -31,6 +31,11 @@
 #   sbatch --array=0-15 --export=ALL,TRUNX_MULTIPLOT_SPECIES="Fagus sylvatica" ...
 #   sbatch --array=0-15 --export=ALL,TRUNX_PROJECT_DIR=/path/to/checkout ...
 #
+# Calibrate on given plots (space-separated, passed as --plot-ids) instead of the curated
+# list, into another results folder so it doesn't resume from other plots' checkpoints:
+#
+#   sbatch --array=0-15 --export=ALL,TRUNX_PLOT_IDS="04.1402 04.1403",TRUNX_RESULTS_DIR=data/results/... ...
+#
 # run_pymc_multi_plot_analysis checkpoints every --checkpoint-every draws (see
 # pymc_param_est_multiplots.py), so a preempted standby task resumes from its last
 # checkpoint on the next submission instead of restarting from scratch — as long as
@@ -69,6 +74,12 @@ PROJECT_DIR="${TRUNX_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 cd "$PROJECT_DIR"
 
 SPECIES="${TRUNX_MULTIPLOT_SPECIES:-Picea abies}"
+RESULTS_DIR="${TRUNX_RESULTS_DIR:-data/results/pymc_multiplot_results}"
+PLOT_ID_ARGS=()
+if [[ -n "${TRUNX_PLOT_IDS:-}" ]]; then
+    read -ra PLOT_IDS <<< "$TRUNX_PLOT_IDS"
+    PLOT_ID_ARGS=(--plot-ids "${PLOT_IDS[@]}")
+fi
 
 # Keep these lists in sync with pymc_param_est_multiplots.py's --literature-source/
 # --step-method choices and bayesian_config.ERROR_MODES's keys.
@@ -106,7 +117,7 @@ else
 fi
 
 SPECIES_SLUG="${SPECIES// /_}"
-OUTPUT_DIR="data/results/pymc_multiplot_results/${SPECIES_SLUG}/${LITERATURE_SOURCE}/${ERROR_MODE}/${STEP_METHOD}"
+OUTPUT_DIR="${RESULTS_DIR}/${SPECIES_SLUG}/${LITERATURE_SOURCE}/${ERROR_MODE}/${STEP_METHOD}"
 
 echo "Job:               ${SLURM_JOB_ID:-interactive}, array task ${JOB_INDEX}, on $(hostname)"
 echo "Project:           $PROJECT_DIR"
@@ -117,6 +128,7 @@ echo "Step method:       $STEP_METHOD"
 echo "Warmup/samples:    $NUM_WARMUP / $NUM_SAMPLES"
 echo "Checkpoint every:  $CHECKPOINT_EVERY"
 echo "Output dir:        $OUTPUT_DIR"
+echo "Plot IDs:          ${TRUNX_PLOT_IDS:-curated list}"
 echo
 
 # Run in the Apptainer container, binding the checkout and data directories into it
@@ -147,5 +159,6 @@ srun --cpus-per-task="$SLURM_CPUS_PER_TASK" \
         --num-warmup "$NUM_WARMUP" \
         --num-samples "$NUM_SAMPLES" \
         --checkpoint-every "$CHECKPOINT_EVERY" \
+        "${PLOT_ID_ARGS[@]}" \
         --chains 4 \
         --cores 4

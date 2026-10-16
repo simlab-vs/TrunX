@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-from trunx.gp3.extended_helper import prepare_modifier_inputs
+from trunx.gp3.extended_helper import DEPOSITION_CHANNELS, prepare_modifier_inputs
 from trunx.gp3.nn_nutrition_modifier import (
     NutritionModifierConfig,
     NutritionModifierFitResult,
@@ -29,6 +29,7 @@ _METRIC_LABELS = {
     "BA": "Basal Area (m² ha⁻¹)",
     "alpha_c": "alpha_c (mol C mol⁻¹ PAR)",
     "f_nutri_classic_learnable": "fN × learned modifier (–)",
+    "NPP": "NPP (t DM ha⁻¹ month⁻¹)",
 }
 # 40 per-plot colors (enough for the largest species group, 21 plots): tab20's dark
 # shades first, then its light ones, so neighbouring plots never get the same hue
@@ -42,10 +43,18 @@ _PLOT_COLORS = [
     for i in indices
 ]
 
+# (N, S) deposition input pairs: axis label suffix and unit of their channels
+_DEPOSITION_PAIRS: dict[tuple[str, str], tuple[str, str]] = {
+    ("N", "S"): ("", "kg ha⁻¹ month⁻¹"),
+    ("N_avg", "S_avg"): (", 12-month mean", "kg ha⁻¹ month⁻¹"),
+    ("N_sum", "S_sum"): (", 12-month sum", "kg ha⁻¹ per 12 months"),
+}
+
 _RUN_STYLES: dict[str, dict[str, str]] = {
     "fitted": {"color": "tab:blue", "linestyle": "-"},
     "phys": {"color": "tab:orange", "linestyle": "-."},
     "default": {"color": "tab:green", "linestyle": "--"},
+    "start_ref": {"color": "tab:purple", "linestyle": ":"},
 }
 
 
@@ -97,23 +106,58 @@ def _format_date_axis(ax: Any) -> None:
     ax.grid(alpha=0.3)
 
 
-def _load_deposition(file_paths: list[str]) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """Monthly N and S deposition of each plot, in `file_paths` order."""
-    n_values, s_values = [], []
+def _load_deposition(
+    file_paths: list[str], names: tuple[str, ...] = ("N", "S")
+) -> list[list[np.ndarray]]:
+    """Load the modifier inputs of each plot, in `file_paths` order, one list per name.
+
+    `names` are `"T_avg"` or `DEPOSITION_CHANNELS` keys to load, monthly ("N", "S") by
+    default.
+    """
+    values: list[list[np.ndarray]] = [[] for _ in names]
     for file_path in file_paths:
-        deposition = prepare_data(file_path).deposition
-        if deposition is None:
-            raise ValueError(f"No deposition data in {file_path}")
-        n_values.append(np.asarray(deposition.dep_n_tot))
-        s_values.append(np.asarray(deposition.dep_s_so4))
-    return n_values, s_values
+        input_data = prepare_data(file_path)
+        for name_values, name in zip(values, names, strict=True):
+            if name == "T_avg":
+                name_values.append(np.asarray(input_data.climate.T_avg))
+                continue
+            if input_data.deposition is None:
+                raise ValueError(f"No deposition data in {file_path}")
+            name_values.append(
+                np.asarray(getattr(input_data.deposition, DEPOSITION_CHANNELS[name]))
+            )
+    return values
 
 
-def _deposition_range(values: list[np.ndarray]) -> tuple[float, float]:
-    """1st-99th percentile of the pooled `values`, padded by 20% and floored at 0."""
+def _input_label(name: str) -> str:
+    """Axis label of a modifier input, `"T_avg"` or a `DEPOSITION_CHANNELS` key."""
+    if name == "T_avg":
+        return "Mean temperature (°C)"
+    label, unit = next(info for pair, info in _DEPOSITION_PAIRS.items() if name in pair)
+    return f"{name[0]} deposition{label} ({unit})"
+
+
+def _modifier_deposition(config: NutritionModifierConfig) -> list[tuple[list[np.ndarray], str]]:
+    """Deposition inputs of the modifier, each plot's values with an axis label.
+
+    One item per `DEPOSITION_CHANNELS` key in `config.input_vars` (e.g. only N for a
+    modifier over N alone); monthly N and S when the modifier has no deposition input.
+    """
+    names = tuple(name for name in config.input_vars if name in DEPOSITION_CHANNELS)
+    names = names or ("N", "S")
+    labels = [_input_label(name) for name in names]
+    return list(zip(_load_deposition(config.file_paths, names), labels, strict=True))
+
+
+def _deposition_range(values: list[np.ndarray], floor_at_zero: bool = True) -> tuple[float, float]:
+    """1st-99th percentile of the pooled `values`, padded by 20% and floored at 0.
+
+    `floor_at_zero=False` keeps negative values, e.g. for temperature.
+    """
     low, high = np.nanpercentile(np.concatenate(values), [1, 99])
     pad = 0.2 * (high - low)
-    return max(float(low - pad), 0.0), float(high + pad)
+    low = float(low - pad)
+    return max(low, 0.0) if floor_at_zero else low, float(high + pad)
 
 
 def plot_deposition_over_time(
@@ -228,73 +272,290 @@ def plot_deposition_density(
 def plot_modifier_response_surface(
     config: NutritionModifierConfig,
     plot_ids: list[str],
-    fit_result: NutritionModifierFitResult,
+    fit_results: list[NutritionModifierFitResult],
     n_grid: int = 100,
     save_path: str | None = None,
     show: bool = True,
+    pre_tanh: bool = False,
 ) -> None:
-    """Plot the fitted modifier over an (N, S) deposition grid, with each plot's monthly inputs.
+    """Plot the fitted modifier over a grid of its two inputs, with each plot's monthly inputs.
 
-    The grid covers the 1st-99th percentile of the pooled deposition values, padded
+    The axes are `config.input_vars` in order (e.g. N and S deposition, or N_avg and
+    T_avg). The grid covers the 1st-99th percentile of the pooled input values, padded
     by 20% to show how the modifier behaves just beyond the data; the few extreme
-    months outside it are not drawn.
+    months outside it are not drawn. With several `fit_results` (e.g. cross-validation
+    folds), their mean modifier is drawn, next to its standard deviation across fits.
+    With `pre_tanh`, the score before the tanh squash is drawn instead (for `poly_nm`,
+    its polynomial), centered on 0 (no effect).
     """
-    if set(config.input_vars) != {"N", "S"}:
-        raise ValueError(f"Needs a modifier over exactly N and S, got {config.input_vars}")
+    if len(config.input_vars) != 2:
+        raise ValueError(f"Needs a modifier over exactly two inputs, got {config.input_vars}")
+    x_name, y_name = config.input_vars
 
-    n_values, s_values = _load_deposition(config.file_paths)
-    n_grid_values, s_grid_values = np.meshgrid(
-        np.linspace(*_deposition_range(n_values), n_grid),
-        np.linspace(*_deposition_range(s_values), n_grid),
+    x_values, y_values = _load_deposition(config.file_paths, config.input_vars)
+    x_grid_values, y_grid_values = np.meshgrid(
+        np.linspace(
+            *_deposition_range(x_values, floor_at_zero=x_name in DEPOSITION_CHANNELS), n_grid
+        ),
+        np.linspace(
+            *_deposition_range(y_values, floor_at_zero=y_name in DEPOSITION_CHANNELS), n_grid
+        ),
     )
-    channels = {"N": jnp.asarray(n_grid_values), "S": jnp.asarray(s_grid_values)}
-    inputs = prepare_modifier_inputs(
-        channels, config.input_vars, fit_result.input_mean, fit_result.input_std
+    channels = {x_name: jnp.asarray(x_grid_values), y_name: jnp.asarray(y_grid_values)}
+    modifiers = np.stack(
+        [
+            np.asarray(
+                config.modifier_fn(
+                    fit_result.fitted_modifier_params,
+                    prepare_modifier_inputs(
+                        channels, config.input_vars, fit_result.input_mean, fit_result.input_std
+                    ),
+                    config.input_vars,
+                )
+            )
+            for fit_result in fit_results
+        ]
     )
-    modifier = np.asarray(
-        config.modifier_fn(fit_result.fitted_modifier_params, inputs, config.input_vars)
-    )
+    no_effect, value_label = 1.0, "Nutrition modifier (1 = no effect)"
+    title = "modifier response surface"
+    if pre_tanh:
+        # Every modifier is 1 + tanh(score) (see `extended_helper._squash`); invert it,
+        # clipped so a saturated modifier gives a large finite score
+        modifiers = np.arctanh(np.clip(modifiers - 1.0, -1.0 + 1e-6, 1.0 - 1e-6))
+        no_effect, value_label = 0.0, "Score before tanh (0 = no effect)"
+        title = "modifier score before tanh"
+    modifier = modifiers.mean(axis=0)
 
-    # Diverging colors centered on 1 (no effect), symmetric around it
-    spread = max(float(np.abs(modifier - 1.0).max()), 1e-6)
-    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    # Diverging colors centered on no effect, symmetric around it
+    spread = max(float(np.abs(modifier - no_effect).max()), 1e-6)
+    n_panels = 1 if len(fit_results) == 1 else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(8 * n_panels, 6), layout="constrained")
+    ax = axes if n_panels == 1 else axes[0]
     surface = ax.contourf(
-        n_grid_values,
-        s_grid_values,
+        x_grid_values,
+        y_grid_values,
         modifier,
         levels=20,
         cmap="PuOr",
-        vmin=1.0 - spread,
-        vmax=1.0 + spread,
+        vmin=no_effect - spread,
+        vmax=no_effect + spread,
     )
     contours = ax.contour(
-        n_grid_values, s_grid_values, modifier, levels=10, colors="black", linewidths=0.4
+        x_grid_values, y_grid_values, modifier, levels=10, colors="black", linewidths=0.4
     )
     ax.clabel(contours, fontsize=7)
-    # The "no effect" line only exists if the modifier crosses 1 on the grid
-    if modifier.min() < 1.0 < modifier.max():
+    # The "no effect" line only exists if the modifier crosses it on the grid
+    if modifier.min() < no_effect < modifier.max():
         ax.contour(
-            n_grid_values, s_grid_values, modifier, levels=[1.0], colors="black", linewidths=1.5
+            x_grid_values,
+            y_grid_values,
+            modifier,
+            levels=[no_effect],
+            colors="black",
+            linewidths=1.5,
         )
-    fig.colorbar(surface, ax=ax, label="Nutrition modifier (1 = no effect)")
+    fig.colorbar(surface, ax=ax, label=value_label)
 
-    for idx, (plot_id, n, s) in enumerate(zip(plot_ids, n_values, s_values, strict=True)):
+    for idx, (plot_id, x, y) in enumerate(zip(plot_ids, x_values, y_values, strict=True)):
         ax.scatter(
-            n,
-            s,
+            x,
+            y,
             s=12,
             color=_PLOT_COLORS[idx % len(_PLOT_COLORS)],
             edgecolor="black",
             linewidth=0.3,
             label=plot_id,
         )
-    ax.set_xlim(n_grid_values.min(), n_grid_values.max())
-    ax.set_ylim(s_grid_values.min(), s_grid_values.max())
+    ax.set_xlim(x_grid_values.min(), x_grid_values.max())
+    ax.set_ylim(y_grid_values.min(), y_grid_values.max())
 
-    ax.set_xlabel("N deposition (kg ha⁻¹ month⁻¹)")
-    ax.set_ylabel("S deposition (kg ha⁻¹ month⁻¹)")
-    ax.set_title("Fitted nutrition modifier response surface")
+    ax.set_xlabel(_input_label(x_name))
+    ax.set_ylabel(_input_label(y_name))
+    ax.set_title(f"Fitted nutrition {title}")
     fig.legend(loc="outside right upper", fontsize=7, title="Plot")
+
+    if n_panels == 2:
+        std_ax = axes[1]
+        std_surface = std_ax.contourf(
+            x_grid_values, y_grid_values, modifiers.std(axis=0), levels=20, cmap="Greys"
+        )
+        fig.colorbar(std_surface, ax=std_ax, label="Standard deviation across fits")
+        std_ax.set_xlabel(_input_label(x_name))
+        std_ax.set_ylabel(_input_label(y_name))
+        std_ax.set_title(f"Spread across {len(fit_results)} fits")
+        ax.set_title(f"Mean nutrition {title} ({len(fit_results)} fits)")
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def plot_modifier_response_curve(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    fit_results: list[NutritionModifierFitResult],
+    n_grid: int = 200,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot the fitted modifier of a single deposition input, with each plot's monthly inputs.
+
+    The curve covers the 1st-99th percentile of the pooled deposition values, padded by
+    20%. With several `fit_results` (e.g. cross-validation folds), their mean is drawn
+    with the min-max range across fits; each plot's monthly inputs are a rug below it.
+    """
+    (name,) = config.input_vars
+    values = []
+    for file_path in config.file_paths:
+        deposition = prepare_data(file_path).deposition
+        if deposition is None:
+            raise ValueError(f"No deposition data in {file_path}")
+        values.append(np.asarray(getattr(deposition, DEPOSITION_CHANNELS[name])))
+    grid = np.linspace(*_deposition_range(values), n_grid)
+    modifiers = np.stack(
+        [
+            np.asarray(
+                config.modifier_fn(
+                    fit_result.fitted_modifier_params,
+                    prepare_modifier_inputs(
+                        {name: jnp.asarray(grid)},
+                        config.input_vars,
+                        fit_result.input_mean,
+                        fit_result.input_std,
+                    ),
+                    config.input_vars,
+                )
+            )
+            for fit_result in fit_results
+        ]
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 6), layout="constrained")
+    if len(fit_results) > 1:
+        ax.fill_between(
+            grid,
+            modifiers.min(axis=0),
+            modifiers.max(axis=0),
+            color="tab:blue",
+            alpha=0.25,
+            label=f"Range across {len(fit_results)} fits",
+        )
+    ax.plot(grid, modifiers.mean(axis=0), color="tab:blue", linewidth=2.0, label="Mean modifier")
+    ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
+    # One rug row per plot, below the modifier's (0, 2) range
+    for idx, (plot_id, deposition) in enumerate(zip(plot_ids, values, strict=True)):
+        ax.scatter(
+            deposition,
+            np.full_like(deposition, -0.05 - 0.04 * idx),
+            s=6,
+            marker="|",
+            color=_PLOT_COLORS[idx % len(_PLOT_COLORS)],
+            label=plot_id,
+        )
+    ax.set_xlim(grid[0], grid[-1])
+    ax.set_ylim(-0.1 - 0.04 * len(plot_ids), 2.05)
+    ax.set_xlabel(f"{name} deposition (kg ha⁻¹ month⁻¹)")
+    ax.set_ylabel("Nutrition modifier (1 = no effect)")
+    ax.set_title("Fitted nutrition modifier response (rugs: monthly inputs per plot)")
+    ax.grid(alpha=0.3)
+    fig.legend(loc="outside right upper", fontsize=7)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def plot_modifier_posterior_curves(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    weight_draws: jnp.ndarray,
+    input_mean: jnp.ndarray,
+    input_std: jnp.ndarray,
+    n_grid: int = 200,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot f_learned against each modifier input, with its 95% interval over weight draws.
+
+    One panel per input in `config.input_vars`: that input spans the 1st-99th percentile
+    of the pooled monthly values, padded by 20%, while the others are held at their
+    pooled median. The band spans the 2.5th to 97.5th percentiles of f_learned over the
+    draws; each plot's monthly inputs are a rug below it.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Modifier function and inputs; its `file_paths` give the plotted inputs.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    weight_draws : jnp.ndarray
+        Posterior draws of the modifier weights, draws along the first axis.
+    input_mean, input_std : jnp.ndarray
+        Standardisation of the modifier inputs.
+    n_grid : int
+        Number of points along each input.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    names = config.input_vars
+    inputs = _load_deposition(config.file_paths, names)
+    medians = {
+        name: float(np.nanmedian(np.concatenate(v))) for name, v in zip(names, inputs, strict=True)
+    }
+    fig, axes = plt.subplots(
+        1, len(names), figsize=(4 + 4.5 * len(names), 5.5), layout="constrained", squeeze=False
+    )
+
+    for ax, values, name in zip(axes[0], inputs, names, strict=True):
+        grid = np.linspace(
+            *_deposition_range(values, floor_at_zero=name in DEPOSITION_CHANNELS), n_grid
+        )
+        channels = {other: jnp.full(n_grid, medians[other]) for other in names}
+        channels[name] = jnp.asarray(grid)
+        prepared = prepare_modifier_inputs(channels, names, input_mean, input_std)
+        modifiers = np.asarray(
+            jax.vmap(lambda weights, x: config.modifier_fn(weights, x, names), in_axes=(0, None))(
+                weight_draws, prepared
+            )
+        )
+
+        ax.fill_between(
+            grid,
+            np.percentile(modifiers, 2.5, axis=0),
+            np.percentile(modifiers, 97.5, axis=0),
+            color="tab:blue",
+            alpha=0.25,
+            label=f"95% interval ({len(weight_draws)} draws)",
+        )
+        ax.plot(grid, modifiers.mean(axis=0), color="tab:blue", linewidth=2.0, label="Mean")
+        ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
+        # One rug row per plot, below the modifier's (0, 2) range
+        for idx, (plot_id, plot_values) in enumerate(zip(plot_ids, values, strict=True)):
+            ax.scatter(
+                plot_values,
+                np.full_like(plot_values, -0.05 - 0.04 * idx),
+                s=6,
+                marker="|",
+                color=_PLOT_COLORS[idx % len(_PLOT_COLORS)],
+                label=plot_id,
+            )
+        ax.set_xlim(grid[0], grid[-1])
+        ax.set_ylim(-0.1 - 0.04 * len(plot_ids), 2.05)
+        ax.set_xlabel(_input_label(name))
+        others = ", ".join(f"{o} = {medians[o]:.2f}" for o in names if o != name)
+        ax.set_title(f"Other inputs at median: {others}" if others else name)
+        ax.grid(alpha=0.3)
+    axes[0, 0].set_ylabel("f_learned (1 = no effect)")
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside right upper", fontsize=7)
+    fig.suptitle("Posterior nutrition modifier response (rugs: monthly inputs per plot)")
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -340,22 +601,98 @@ def _scatter_by_plot(
     ax.grid(alpha=0.3)
 
 
+def plot_modifier_pass_through(
+    plot_ids: list[str],
+    predicted_series: list[dict[str, np.ndarray]],
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot alpha_c and NPP with and without the modifier against the learned modifier.
+
+    Each panel shows the monthly values of all plots pooled, one color per run, with a
+    line through their binned medians: the gap between the two lines is the modifier's
+    effect. Months without photosynthesis in the run without the modifier are left out.
+
+    Parameters
+    ----------
+    plot_ids : list[str]
+        Plot labels, in `predicted_series` order.
+    predicted_series : list[dict[str, np.ndarray]]
+        One `build_predicted_series` result per plot.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    var_names = ("alpha_c", "NPP")
+    runs = {"fitted": "With nutrition modifier", "phys": "Without nutrition modifier"}
+    fig, axes = plt.subplots(
+        1, len(var_names), figsize=(6 * len(var_names), 5.5), layout="constrained"
+    )
+    # Growing months of every plot, pooled
+    active = [series["pred_phys_alpha_c"] > 0 for series in predicted_series]
+    modifier = np.concatenate(
+        [
+            series["learned_modifier"][mask]
+            for series, mask in zip(predicted_series, active, strict=True)
+        ]
+    )
+    for ax, var_name in zip(axes, var_names, strict=True):
+        for run, label in runs.items():
+            values = np.concatenate(
+                [
+                    series[f"pred_{run}_{var_name}"][mask]
+                    for series, mask in zip(predicted_series, active, strict=True)
+                ]
+            )
+            color = _RUN_STYLES[run]["color"]
+            ax.scatter(modifier, values, s=6, alpha=0.2, color=color)
+            ax.plot(
+                *_binned_median(modifier, values, n_bins=20),
+                linewidth=2.0,
+                label=label,
+                **_RUN_STYLES[run],
+            )
+        ax.set_xlabel("Learned modifier (–)")
+        ax.set_ylabel(_METRIC_LABELS[var_name])
+        ax.set_title(f"{var_name} with and without the modifier ({len(plot_ids)} plots)")
+        ax.grid(alpha=0.3)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside upper center", ncols=2)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
 def plot_learned_modifier_vs_deposition(
     config: NutritionModifierConfig,
     predicted_series: list[dict[str, np.ndarray]],
     plot_ids: list[str],
     save_path: str | None = None,
     show: bool = True,
+    title_note: str = "",
 ) -> None:
-    """Plot each plot's monthly f_learned and f_nutri_classic_learnable against N and S.
+    """Plot each plot's monthly f_learned and f_nutri_classic_learnable against each input.
 
     Rows are the learned modifier (f_learned, 1 = no effect) and its product with the
-    classic fN (f_nutri_classic_learnable), columns the deposition variables. One color
-    per plot, with a per-plot line through binned medians.
+    classic fN (f_nutri_classic_learnable), columns the modifier inputs in
+    `config.input_vars`. One color per plot, with a per-plot line through binned medians.
+    `title_note`, if given, is added as a second line of the title.
     """
-    n_values, s_values = _load_deposition(config.file_paths)
+    names = config.input_vars
+    inputs = _load_deposition(config.file_paths, names)
     fig, axes = plt.subplots(
-        2, 2, figsize=(13, 9), layout="constrained", sharex="col", sharey=True
+        2,
+        len(names),
+        figsize=(4 + 4.5 * len(names), 9),
+        layout="constrained",
+        sharex="col",
+        sharey=True,
+        squeeze=False,
     )
 
     for row, (key, y_label) in enumerate(
@@ -365,28 +702,26 @@ def plot_learned_modifier_vs_deposition(
         )
     ):
         y_values = [series[key] for series in predicted_series]
-        for col, (values, dep_label) in enumerate(
-            (
-                (n_values, "N deposition (kg ha⁻¹ month⁻¹)"),
-                (s_values, "S deposition (kg ha⁻¹ month⁻¹)"),
-            )
-        ):
+        for col, (values, name) in enumerate(zip(inputs, names, strict=True)):
             ax = axes[row, col]
             _scatter_by_plot(ax, plot_ids, values, y_values)
             ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
-            ax.set_xlim(*_deposition_range(values))
+            ax.set_xlim(*_deposition_range(values, floor_at_zero=name in DEPOSITION_CHANNELS))
+            input_label = _input_label(name)
             if row == 0:
-                ax.set_title(dep_label.split(" (")[0])
+                ax.set_title(input_label.split(" (")[0])
             else:
-                ax.set_xlabel(dep_label)
+                ax.set_xlabel(input_label)
             if col == 0:
                 ax.set_ylabel(y_label)
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="outside right upper", fontsize=7, title="Plot")
-    fig.suptitle(
-        "Nutrition modifiers against deposition (solid: per-plot binned median, dashed: all plots)"
+    title = (
+        "Nutrition modifiers against modifier inputs "
+        "(solid: per-plot binned median, dashed: all plots)"
     )
+    fig.suptitle(f"{title}\n{title_note}" if title_note else title)
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -403,28 +738,29 @@ def plot_modifier_effect_vs_deposition(
     save_path: str | None = None,
     show: bool = True,
 ) -> None:
-    """Plot each plot's monthly `var_name`, with and without the modifier, against N and S.
+    """Plot each plot's monthly `var_name`, with and without the modifier, against deposition.
 
-    Rows are the runs with and without the modifier, columns the deposition variables,
-    all on a shared y-axis. One color per plot, with a per-plot line through binned
-    medians. Months with alpha_c = 0 without the modifier (no photosynthesis, e.g.
-    winter) are left out.
+    Rows are the runs with and without the modifier, columns the deposition inputs of the
+    modifier (see `_modifier_deposition`), all on a shared y-axis. One color per plot, with
+    a per-plot line through binned medians. Months with alpha_c = 0 without the modifier
+    (no photosynthesis, e.g. winter) are left out.
     """
-    n_values, s_values = _load_deposition(config.file_paths)
+    deposition = _modifier_deposition(config)
     fig, axes = plt.subplots(
-        2, 2, figsize=(13, 9), layout="constrained", sharex="col", sharey=True
+        2,
+        len(deposition),
+        figsize=(4 + 4.5 * len(deposition), 9),
+        layout="constrained",
+        sharex="col",
+        sharey=True,
+        squeeze=False,
     )
 
     run_labels = _run_labels(config)
     for row, (run_label, key) in enumerate(
         ((run_labels["fitted"], "fitted"), (run_labels["phys"], "phys"))
     ):
-        for col, (values, dep_label) in enumerate(
-            (
-                (n_values, "N deposition (kg ha⁻¹ month⁻¹)"),
-                (s_values, "S deposition (kg ha⁻¹ month⁻¹)"),
-            )
-        ):
+        for col, (values, dep_label) in enumerate(deposition):
             ax = axes[row, col]
             active = [series["pred_phys_alpha_c"] > 0 for series in predicted_series]
             _scatter_by_plot(
@@ -449,6 +785,62 @@ def plot_modifier_effect_vs_deposition(
     fig.suptitle(
         f"Monthly {var_name} against deposition (solid: per-plot binned median, dashed: all plots)"
     )
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def plot_modifier_residual_vs_deposition(
+    config: NutritionModifierConfig,
+    predicted_series: list[dict[str, np.ndarray]],
+    plot_ids: list[str],
+    var_name: str = "alpha_c",
+    save_path: str | None = None,
+    show: bool = True,
+    title_note: str = "",
+) -> None:
+    """Plot each plot's monthly `var_name` with minus without the modifier against deposition.
+
+    One column per deposition input of the modifier (see `_modifier_deposition`), on a
+    shared y-axis. One color per plot, with a per-plot line through binned medians. Months
+    with alpha_c = 0 without the modifier (no photosynthesis, e.g. winter) are left out.
+    `title_note`, if given, is added as a second line of the title.
+    """
+    deposition = _modifier_deposition(config)
+    fig, axes = plt.subplots(
+        1,
+        len(deposition),
+        figsize=(4 + 4.5 * len(deposition), 5),
+        layout="constrained",
+        sharey=True,
+        squeeze=False,
+    )
+
+    active = [series["pred_phys_alpha_c"] > 0 for series in predicted_series]
+    residuals = [
+        (series[f"pred_fitted_{var_name}"] - series[f"pred_phys_{var_name}"])[mask]
+        for series, mask in zip(predicted_series, active, strict=True)
+    ]
+    for col, (values, dep_label) in enumerate(deposition):
+        ax = axes[0, col]
+        _scatter_by_plot(
+            ax, plot_ids, [dep[mask] for dep, mask in zip(values, active, strict=True)], residuals
+        )
+        ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":")
+        ax.set_xlim(*_deposition_range(values))
+        ax.set_xlabel(dep_label)
+    axes[0, 0].set_ylabel(f"{_METRIC_LABELS[var_name]}\nwith − without modifier")
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside right upper", fontsize=7, title="Plot")
+    title = (
+        f"Monthly {var_name} with − without modifier against deposition "
+        "(solid: per-plot binned median, dashed: all plots)"
+    )
+    fig.suptitle(f"{title}\n{title_note}" if title_note else title)
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -548,12 +940,6 @@ def plot_observed_vs_predicted(
         zip(plot_ids, config.file_paths, predicted_series, strict=True)
     ):
         observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
-        observed_dates = np.array(
-            [
-                np.datetime64(f"{year}-{month:02d}", "M")
-                for year, month in zip(observed_data["year"], observed_data["month"], strict=True)
-            ]
-        )
         dates = series["dates"]
         for col, var_name in enumerate(plot_variables):
             ax = axes[row, col]
@@ -565,28 +951,63 @@ def plot_observed_vs_predicted(
                     linewidth=1.5,
                     **_RUN_STYLES[run],
                 )
-
-            if var_name in observed_data.columns:
-                observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
-                mask = ~np.isnan(observed_values)
-                is_target = var_name in config.target_vars
+            _scatter_observed(ax, config, observed_data, var_name)
+            if f"dbh_derived_{var_name}" in series:
                 ax.scatter(
-                    observed_dates[mask],
-                    observed_values[mask],
-                    label="Observed (target variable)" if is_target else "Observed (not fitted)",
-                    color="tab:red" if is_target else "tab:gray",
-                    s=20,
-                    zorder=5,
+                    series["dbh_derived_dates"],
+                    series[f"dbh_derived_{var_name}"],
+                    label="Derived from observed DBH (3-PG allometry)",
+                    color="black",
+                    marker="*",
+                    s=40,
+                    zorder=6,
                 )
-
             _format_date_axis(ax)
             if row == 0:
                 ax.set_title(_METRIC_LABELS.get(var_name, var_name))
             if col == 0:
                 ax.set_ylabel(plot_id)
 
-    # Target and non-target observations sit in different columns, so gather the
-    # legend entries of every column, keeping the first handle per label
+    _figure_legend(fig, axes)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def _scatter_observed(
+    ax: Any, config: NutritionModifierConfig, observed_data: pl.DataFrame, var_name: str
+) -> None:
+    """Scatter a plot's observations of `var_name`, red for targets and gray otherwise."""
+    if var_name not in observed_data.columns:
+        return
+    observed_dates = np.array(
+        [
+            np.datetime64(f"{year}-{month:02d}", "M")
+            for year, month in zip(observed_data["year"], observed_data["month"], strict=True)
+        ]
+    )
+    observed_values = observed_data[var_name].cast(pl.Float64).to_numpy()
+    mask = ~np.isnan(observed_values)
+    is_target = var_name in config.target_vars
+    ax.scatter(
+        observed_dates[mask],
+        observed_values[mask],
+        label="Observed (target variable)" if is_target else "Observed (not fitted)",
+        color="tab:red" if is_target else "tab:gray",
+        s=20,
+        zorder=5,
+    )
+
+
+def _figure_legend(fig: Any, axes: np.ndarray) -> None:
+    """Add one legend above the figure with the entries of every column of the first row.
+
+    Target and non-target observations sit in different columns, so every column is
+    gathered, keeping the first handle per label.
+    """
     legend_entries: dict[str, Any] = {}
     for ax in axes[0]:
         for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
@@ -597,6 +1018,82 @@ def plot_observed_vs_predicted(
         loc="outside upper center",
         ncols=2,
     )
+
+
+def plot_posterior_predictions(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    posterior_series: list[dict[str, np.ndarray]],
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot every plot's posterior prediction interval, default run and observations.
+
+    Rows are plots (`config.file_paths`, labelled by `plot_ids`), columns are the plot
+    variables (`config.plot_variables`, else `config.target_vars`). Each panel shows the
+    posterior mean and 95% interval, the run with default parameters and no nutrition
+    modifier, and the observations.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Plots and variables.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    posterior_series : list[dict[str, np.ndarray]]
+        One `pymc_nutrition_modifier.predict_posterior_bands` result per plot.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    plot_variables = _plot_variables(config)
+    n_rows, n_cols = len(plot_ids), len(plot_variables)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(3.5 * n_cols, 2.5 * n_rows),
+        layout="constrained",
+        squeeze=False,
+    )
+
+    for row, (plot_id, file_path, series) in enumerate(
+        zip(plot_ids, config.file_paths, posterior_series, strict=True)
+    ):
+        observed_data = pl.read_excel(file_path, sheet_name=config.observed_sheet)
+        dates = series["dates"]
+        for col, var_name in enumerate(plot_variables):
+            ax = axes[row, col]
+            ax.fill_between(
+                dates,
+                series[f"lower_{var_name}"],
+                series[f"upper_{var_name}"],
+                color="tab:blue",
+                alpha=0.3,
+                label="95% interval (posterior)",
+            )
+            ax.plot(
+                dates,
+                series[f"mean_{var_name}"],
+                color="tab:blue",
+                linewidth=1.5,
+                label="Posterior mean",
+            )
+            ax.plot(
+                dates,
+                series[f"default_{var_name}"],
+                label="Default physiological parameters, without nutrition modifier",
+                linewidth=1.5,
+                **_RUN_STYLES["default"],
+            )
+            _scatter_observed(ax, config, observed_data, var_name)
+            _format_date_axis(ax)
+            if row == 0:
+                ax.set_title(_METRIC_LABELS.get(var_name, var_name))
+            if col == 0:
+                ax.set_ylabel(plot_id)
+
+    _figure_legend(fig, axes)
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)

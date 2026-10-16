@@ -10,7 +10,7 @@ used by the pure-NumPyro multi-plot pipeline).
 import argparse
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import arviz as az
@@ -23,7 +23,7 @@ from jax.scipy.stats import t as jax_student_t
 from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op, OutputStorageType
 
-from trunx.config import SPECIES_INDICES, results_data_folder, threepg_data_folder
+from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import (
     ERROR_MODES,
     INITIAL_STATE_PARAMS,
@@ -62,11 +62,37 @@ from trunx.gp3.model_inputs import Params
 ParamBlocks = list[tuple[str, int]]
 
 
-class MultiPlotLogLikeOp(Op):
-    """PyTensor Op that returns scalar log-likelihood across a batch of packed 3PG plots."""
+class JaxLogLikeOp(Op):
+    """PyTensor Op returning a JAX log-likelihood of a flat parameter vector, with its gradient.
+
+    The gradient comes from `jax.grad`, so gradient-based samplers (NUTS) can use it.
+    """
 
     itypes = [pt.dvector]
     otypes = [pt.dscalar]
+
+    def __init__(self, loglikelihood: Callable[[jnp.ndarray], jnp.ndarray]) -> None:
+        self._loglikelihood_jax = jax.jit(loglikelihood)
+        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(loglikelihood)))
+
+    def perform(
+        self, node: Apply, inputs: Sequence[Any], output_storage: OutputStorageType
+    ) -> None:
+        """Compute the log-likelihood given the input parameters."""
+        param_values = jnp.asarray(inputs[0], dtype=jnp.float64)
+        log_likelihood = float(self._loglikelihood_jax(param_values))
+        output_storage[0][0] = np.array(log_likelihood, dtype=np.float64)
+
+    def grad(self, inputs: Sequence[Variable], output_grads: Sequence[Variable]) -> list[Variable]:
+        """Return the gradient of the log-likelihood w.r.t. the input parameters."""
+        (param_vector,) = inputs
+        (output_grad,) = output_grads
+        grad_value = cast(Any, self._grad_op(param_vector))
+        return [cast(Any, output_grad) * grad_value]
+
+
+class MultiPlotLogLikeOp(JaxLogLikeOp):
+    """PyTensor Op that returns scalar log-likelihood across a batch of packed 3PG plots."""
 
     def __init__(
         self,
@@ -77,9 +103,7 @@ class MultiPlotLogLikeOp(Op):
         self.param_blocks = param_blocks
         self.fixed_params = fixed_params
         self.packed_plots = packed_plots
-
-        self._loglikelihood_jax = jax.jit(self._loglikelihood)
-        self._grad_op = Run3PGLogLikeGrad(jax.jit(jax.grad(self._loglikelihood)))
+        super().__init__(self._loglikelihood)
 
     def _unpack(self, param_values: jnp.ndarray) -> dict[str, jnp.ndarray]:
         """Slice the flat parameter vector back into named scalar/per-plot blocks."""
@@ -150,21 +174,6 @@ class MultiPlotLogLikeOp(Op):
             )
         return log_likelihood
 
-    def perform(
-        self, node: Apply, inputs: Sequence[Any], output_storage: OutputStorageType
-    ) -> None:
-        """Compute the log-likelihood given the input parameters."""
-        param_values = jnp.asarray(inputs[0], dtype=jnp.float64)
-        log_likelihood = float(self._loglikelihood_jax(param_values))
-        output_storage[0][0] = np.array(log_likelihood, dtype=np.float64)
-
-    def grad(self, inputs: Sequence[Variable], output_grads: Sequence[Variable]) -> list[Variable]:
-        """Return the gradient of the log-likelihood w.r.t. the input parameters."""
-        (param_vector,) = inputs
-        (output_grad,) = output_grads
-        grad_value = cast(Any, self._grad_op(param_vector))
-        return [cast(Any, output_grad) * grad_value]
-
 
 def multi_plot_pymc_model(
     packed_plots: PackedPlotBatch,
@@ -233,24 +242,16 @@ def multi_plot_pymc_model(
 
 def _extract_last_values(
     idata: az.InferenceData, param_names: Sequence[str]
-) -> list[dict[str, float | list[float]]]:
+) -> list[dict[str, Any]]:
     """Extract each chain's last posterior draw, for use as the next chunk's initvals.
 
-    A name in `INITIAL_STATE_PARAMS` (`WS0`/`WR0`/`WF0`) is per-plot (one value
-    per plot, not a shared scalar — see `multi_plot_pymc_model`), so its last
-    draw is kept as a plain list (JSON-serializable, for `save_checkpoint`)
-    instead of being collapsed with `float()`.
+    Scalars become floats and array-valued parameters (e.g. the per-plot
+    `INITIAL_STATE_PARAMS` draws of `multi_plot_pymc_model`) nested lists, so the
+    values stay JSON-serializable for `save_checkpoint`.
     """
     posterior = cast(Any, idata).posterior
     return [
-        {
-            name: (
-                posterior[name].isel(chain=chain, draw=-1).values.tolist()
-                if name in INITIAL_STATE_PARAMS
-                else float(posterior[name].isel(chain=chain, draw=-1).values)
-            )
-            for name in param_names
-        }
+        {name: posterior[name].isel(chain=chain, draw=-1).values.tolist() for name in param_names}
         for chain in range(posterior.sizes["chain"])
     ]
 
@@ -272,8 +273,49 @@ def run_pymc_multi_plot_inference(
 ) -> tuple[az.InferenceData, pm.Model]:
     """Run PyMC inference for shared-parameter calibration across multiple plots.
 
+    Builds `multi_plot_pymc_model` and samples it with `sample_with_checkpoints`, whose
+    docstring describes the sampling arguments. `param_defaults` never covers
+    `INITIAL_STATE_PARAMS` (`WS0`/`WR0`/`WF0`): those are per-plot `pm.Normal` draws already
+    centered on each plot's own measured value, so PyMC's default start there is sensible.
+    """
+    model = multi_plot_pymc_model(packed_plots, fixed_params, priors)
+    idata = sample_with_checkpoints(
+        model,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        chains=chains,
+        cores=cores,
+        step_method=step_method,
+        target_accept=target_accept,
+        initvals=param_defaults,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        resume_tune=resume_tune,
+    )
+    return idata, model
+
+
+def sample_with_checkpoints(
+    model: pm.Model,
+    num_warmup: int = 1000,
+    num_samples: int = 1000,
+    chains: int = 4,
+    cores: int | None = None,
+    step_method: str = "demetropolisz",
+    target_accept: float = 0.9,
+    initvals: dict[str, Any] | None = None,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 500,
+    resume_tune: int = 200,
+) -> az.InferenceData:
+    """Sample a PyMC model in checkpointed chunks.
+
     Parameters
     ----------
+    model : pm.Model
+        Model to sample, e.g. `multi_plot_pymc_model`'s.
+    num_warmup, num_samples : int
+        Tuning steps of the first chunk, and post-tuning draws per chain in total.
     chains : int
         Number of independent MCMC chains to run.
     cores : int | None
@@ -282,24 +324,20 @@ def run_pymc_multi_plot_inference(
         so worker processes don't compete for device memory.
     step_method : str
         `"demetropolisz"` (derivative-free differential evolution) or `"nuts"`
-        (gradient-based, via the same `MultiPlotLogLikeOp.grad` MAP already
-        uses). NUTS needs far fewer draws for a comparable effective sample
+        (gradient-based, via the log-likelihood Op's JAX gradient, see
+        `JaxLogLikeOp`). NUTS needs far fewer draws for a comparable effective sample
         size but each draw costs more (multiple gradient evaluations via
         leapfrog steps), and can be more sensitive to a mode sitting on a
         prior bound.
     target_accept : float
         Target acceptance probability for `pm.NUTS`'s step-size adaptation.
         Ignored for `"demetropolisz"`.
-    param_defaults : dict[str, float] | None
-        Starting value for each shared scalar parameter (physiology/`err_`/
-        `perr_`), used to seed every chain at the same point instead of
-        PyMC's own default (the midpoint of each `pm.Uniform` prior, which
-        can sit in a numerically unstable region far from any realistic
-        parameter combination). Never covers `INITIAL_STATE_PARAMS`
-        (`WS0`/`WR0`/`WF0`): those are per-plot `pm.Normal` draws already
-        centered on each plot's own measured value, so PyMC's default start
-        there is already sensible. If None, PyMC falls back to its own
-        default (random/midpoint) initialization for every parameter.
+    initvals : dict[str, Any] | None
+        Starting value of each parameter, used to seed every chain at the same
+        point instead of PyMC's own default (the midpoint of each `pm.Uniform`
+        prior, which can sit in a numerically unstable region far from any
+        realistic parameter combination). Parameters without one, or all of them if
+        None, start from PyMC's default initialization.
     checkpoint_dir : str | None
         Directory to save sampling checkpoints to and resume from. If a
         checkpoint from a previous (possibly interrupted) run is found there,
@@ -314,27 +352,31 @@ def run_pymc_multi_plot_inference(
         this re-tunes the step size and mass matrix from scratch each chunk,
         which is more wasteful than for `"demetropolisz"` — a larger
         `resume_tune` is worth considering there if checkpointing resumes often.
+
+    Returns
+    -------
+    az.InferenceData
+        Posterior draws of all chunks.
     """
     if step_method not in {"demetropolisz", "nuts"}:
         raise ValueError(f"step_method must be 'demetropolisz' or 'nuts', got {step_method!r}")
-
-    model = multi_plot_pymc_model(packed_plots, fixed_params, priors)
 
     if cores is None:
         cores = chains
     _configure_gpu_memory_sharing(cores)
 
-    param_names = list(priors.keys())
+    param_names = [rv.name for rv in model.free_RVs]
     idata: az.InferenceData | None = None
     draws_done = 0
-    initvals: Any = cast(Any, dict(param_defaults)) if param_defaults is not None else None
+    # Starting values of the next chunk: `initvals` first, then each chain's last draw
+    start: Any = dict(initvals) if initvals is not None else None
 
     if checkpoint_dir is not None:
         checkpoint = load_checkpoint(checkpoint_dir)
         if checkpoint is not None:
-            idata, draws_done, initvals = checkpoint
-            assert len(initvals) == chains, (
-                f"Checkpoint has {len(initvals)} chains, but {chains} were requested"
+            idata, draws_done, start = checkpoint
+            assert len(start) == chains, (
+                f"Checkpoint has {len(start)} chains, but {chains} were requested"
             )
             print(f"Resuming from checkpoint: {draws_done}/{num_samples} draws already completed")
 
@@ -353,7 +395,7 @@ def run_pymc_multi_plot_inference(
                 step=step,
                 chains=chains,
                 cores=cores,
-                initvals=cast(Any, initvals),
+                initvals=cast(Any, start),
                 # JAX's runtime is multithreaded and unsafe to fork; PyMC defaults to
                 # fork/forkserver on macOS, so force spawn to run chains in parallel safely.
                 mp_ctx="spawn",
@@ -369,13 +411,13 @@ def run_pymc_multi_plot_inference(
                 else az.concat(cast(Any, idata), chunk_trace, dim="draw", inplace=False)
             )
             draws_done += chunk_draws
-            initvals = _extract_last_values(idata, param_names)
+            start = _extract_last_values(idata, param_names)
 
             if checkpoint_dir is not None:
-                save_checkpoint(idata, draws_done, initvals, checkpoint_dir)
+                save_checkpoint(idata, draws_done, start, checkpoint_dir)
                 print(f"Checkpoint saved: {draws_done}/{num_samples} draws")
 
-    return cast(az.InferenceData, idata), model
+    return cast(az.InferenceData, idata)
 
 
 def run_pymc_multi_plot_analysis(

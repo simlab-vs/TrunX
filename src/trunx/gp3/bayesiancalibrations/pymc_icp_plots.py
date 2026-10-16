@@ -29,23 +29,28 @@ def get_available_cpus() -> int:
     return os.cpu_count() or 1
 
 
-def prepare_plot_input(plot_id: str, literature_source: str) -> str:
+def prepare_plot_input(plot_id: str, literature_source: str, forest_source: str = "ICP") -> str:
     """Get one plot's 3PG input file for `literature_source`, building it once.
 
     Parameters
     ----------
     plot_id : str
-        ICP plot identifier.
+        Plot identifier within `forest_source`.
     literature_source : str
         Forwarded to `create_combined_inputs.create_plot_input_file`; also the
         cache's subdirectory.
+    forest_source : str
+        Dataset of the plot: "ICP", "NFI", "EFM" or "LWF"; the cache is kept in
+        `<forest_source>_plots`.
 
     Returns
     -------
     str
         Path to the plot's input Excel file.
     """
-    plot_dir = os.path.join(threepg_data_folder, "icp_plots", literature_source)
+    plot_dir = os.path.join(
+        threepg_data_folder, f"{forest_source.lower()}_plots", literature_source
+    )
     os.makedirs(plot_dir, exist_ok=True)
     file_path = os.path.join(plot_dir, f"{plot_id}_data.xlsx")
 
@@ -57,9 +62,9 @@ def prepare_plot_input(plot_id: str, literature_source: str) -> str:
     try:
         create_plot_input_file(
             plot_id,
-            "ICP",
+            forest_source,
             tmp_path,
-            *load_plot_tables(plot_id, "ICP"),
+            *load_plot_tables(plot_id, forest_source),
             literature_source=literature_source,
         )
         os.replace(tmp_path, file_path)
