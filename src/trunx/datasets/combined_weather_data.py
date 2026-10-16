@@ -12,6 +12,7 @@ pass, which is far cheaper than calling `get_monthly_weather` per plot since
 the ERA5 data and nearest-point search are shared across all plots.
 """
 
+import datetime
 import logging
 import os
 
@@ -128,6 +129,9 @@ def _icp_weather(
 ) -> pl.DataFrame:
     """Build monthly weather for an ICP plot, gap-filled from ERA5.
 
+    Covers the plot's whole ERA5 period, so months before and after the station
+    record are filled from ERA5 too.
+
     Adds a `weather_source` column, per month: "ICP" if every value is a real
     ICP observation, "ERA5" if every value had to be filled from ERA5, and
     "ICP/ERA5" if some values are real ICP observations and others were
@@ -136,16 +140,16 @@ def _icp_weather(
     """
     if icp_raw is None:
         icp_raw = pl.read_parquet(os.path.join(clean_data_folder, "ICP_weather_data.parquet"))
+    if era5_weather_df is None:
+        era5_weather_df = pl.read_parquet(
+            os.path.join(clean_data_folder, "era5_weather_icp_plots.parquet")
+        )
     raw_weather_df = aggregate_icp_monthly(icp_raw, plot_id)
+    _, era5_plot_df = get_plot_weather(plot_id, era5_weather_df)
 
     if raw_weather_df.height == 0:
         logger.info("No ICP weather records for plot %s — using ERA5 only", plot_id)
-        if era5_weather_df is None:
-            era5_weather_df = pl.read_parquet(
-                os.path.join(clean_data_folder, "era5_weather_icp_plots.parquet")
-            )
-        _, weather_df = get_plot_weather(plot_id, era5_weather_df)
-        return _cast_weather_values(weather_df).with_columns(
+        return _cast_weather_values(era5_plot_df).with_columns(
             pl.lit("ERA5").alias("weather_source")
         )
 
@@ -158,7 +162,15 @@ def _icp_weather(
     )
 
     start_year = int(raw_weather_df.select(pl.col("year").min()).item())
-    miss_months, weather_df = fill_weather_with_era5(raw_weather_df, plot_id, start_year)
+    extend_to = None
+    if era5_plot_df.height:
+        # get_plot_weather sorts by year and month, so row 0 is the first ERA5 month
+        start_year = min(start_year, int(era5_plot_df.row(0, named=True)["year"]))
+        last_era5 = era5_plot_df.row(-1, named=True)
+        extend_to = datetime.date(int(last_era5["year"]), int(last_era5["month"]), 1)
+    miss_months, weather_df = fill_weather_with_era5(
+        raw_weather_df, plot_id, start_year, extend_to=extend_to
+    )
     if miss_months:
         logger.warning(
             "%d month(s) still missing for ICP plot %s after filling from ERA5",

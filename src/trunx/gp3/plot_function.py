@@ -436,8 +436,9 @@ def _plot_species_metrics(
         Appended to line/marker labels — empty for a single-species figure,
         `" - {species}"` when species are overlaid on shared axes.
     color : str | None
-        Color shared by this species' Python and R lines; `None` falls back
-        to `series_colors`/matplotlib's default cycle (single-species mode).
+        Color shared by this species' Python/R lines and observed points;
+        `None` falls back to `series_colors`/matplotlib's default cycle for
+        lines and `observed_colors` for points (single-species mode).
     draw_unfiltered_observed : bool
         Whether to draw the site-level (not per-species) observed series on
         this pass — callers overlaying multiple species on shared axes should
@@ -491,22 +492,29 @@ def _plot_species_metrics(
             obs = observed_data[observed_data["specie"] == species].dropna(
                 subset=[config["python_col"]]
             )
+            date_col = "Date" if "Date" in obs.columns else "date"
+            # Overlaid species share axes, so their observations take the species color
+            species_obs_color = color if color is not None else obs_color
             axes[idx].scatter(
-                obs["Date"],
+                obs[date_col],
                 obs[config["python_col"]],
                 s=20,
                 marker="s",
-                color=obs_color,
+                color=species_obs_color,
                 label=f"{obs_label}{label_suffix}",
             )
 
-            axes[idx].plot(obs["Date"], obs[config["python_col"]], alpha=0.6, color=obs_color)
+            axes[idx].plot(
+                obs[date_col], obs[config["python_col"]], alpha=0.6, color=species_obs_color
+            )
 
+        # Files without a species column hold site-level observations only
         if (
             draw_unfiltered_observed
             and observed_data is not None
             and config["python_col"] in observed_data.columns
             and "date" in observed_data.columns
+            and "specie" not in observed_data.columns
         ):
             axes[idx].scatter(
                 observed_data["date"],
