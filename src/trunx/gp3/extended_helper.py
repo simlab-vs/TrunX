@@ -30,6 +30,11 @@ DEPOSITION_LIMITS = {
     "N_sum": (0.0, 41.7),
     "S_sum": (0.0, 30.8),
 }
+# Shift of the raw curvature weights, so all-zero weights (the neutral start, and where
+# the L2 penalty pulls) give almost no curvature: softplus(-5) ≈ 0.007
+CURVATURE_SHIFT = -5.0
+# Temperature of the smooth minimum of `liebig_nm`
+LIEBIG_TAU = 0.02
 
 
 def prepare_modifier_inputs(
@@ -154,6 +159,70 @@ def constant_nm(
     Baseline for `poly_nm`: its single weight plays the role of `poly_nm`'s `w00`.
     """
     return _squash(jnp.broadcast_to(params[0], inputs.shape[:-1]))
+
+
+def _curvature(raw: jnp.ndarray) -> jnp.ndarray:
+    """Non-negative curvature `softplus(raw + CURVATURE_SHIFT)`, almost 0 when `raw == 0`."""
+    return jax.nn.softplus(raw + CURVATURE_SHIFT)
+
+
+def per_nutrient_nm(params: jnp.ndarray, inputs: jnp.ndarray) -> jnp.ndarray:
+    """Evaluate the modifier of each input, `f_k = 1 + tanh(b_k + w_k z_k − ½ a_k z_k²)`.
+
+    Parameters
+    ----------
+    params : jnp.ndarray
+        `(b_k, w_k, raw a_k)` of each input, shape `(n_inputs, 3)`; `a_k` is
+        `_curvature(raw a_k)`.
+    inputs : jnp.ndarray
+        z-scored inputs `z_k` along the last axis.
+
+    Returns
+    -------
+    jnp.ndarray
+        `f_k` of each input along the last axis.
+    """
+    b, w, a = params[:, 0], params[:, 1], _curvature(params[:, 2])
+    return _squash(b + w * inputs - 0.5 * a * inputs**2)
+
+
+def product_nm(
+    params: jnp.ndarray, inputs: jnp.ndarray, input_vars: tuple[str, ...] = INPUT_VARIABLES
+) -> jnp.ndarray:
+    """Product of the per-input modifiers, `f = Π_k f_k` (see `per_nutrient_nm`)."""
+    return per_nutrient_nm(params, inputs).prod(axis=-1)
+
+
+def liebig_nm(
+    params: jnp.ndarray, inputs: jnp.ndarray, input_vars: tuple[str, ...] = INPUT_VARIABLES
+) -> jnp.ndarray:
+    """Liebig's minimum of the per-input modifiers (see `per_nutrient_nm`).
+
+    Smooth minimum `−τ log Σ_k exp(−f_k / τ)`, with `τ = LIEBIG_TAU`, so the gradient
+    reaches every input.
+    """
+    f = per_nutrient_nm(params, inputs)
+    return -LIEBIG_TAU * jax.nn.logsumexp(-f / LIEBIG_TAU, axis=-1)
+
+
+def bivariate_quadratic_nm(
+    params: jnp.ndarray, inputs: jnp.ndarray, input_vars: tuple[str, ...] = INPUT_VARIABLES
+) -> jnp.ndarray:
+    """Bivariate quadratic modifier, `f = 1 + tanh(b + wᵀz − ½ zᵀAz)` over two inputs.
+
+    `params` is `(b, w_1, w_2, raw a_1, raw a_2, raw ρ)`, with `a_k = _curvature(raw a_k)`
+    and `ρ = tanh(raw ρ)`, so `A = [[a_1, −ρ√(a_1 a_2)], [−ρ√(a_1 a_2), a_2]]` is positive
+    semidefinite; `ρ > 0` means co-limitation, `ρ < 0` substitutable inputs.
+    """
+    if len(input_vars) != 2:
+        raise ValueError(f"bivariate_quadratic_nm needs two inputs, got {input_vars!r}")
+    b, w = params[0], params[1:3]
+    a = _curvature(params[3:5])
+    rho = jnp.tanh(params[5])
+    z1, z2 = inputs[..., 0], inputs[..., 1]
+    # zᵀAz = a_1 z_1² + a_2 z_2² + 2 A_12 z_1 z_2, with A_12 = −ρ√(a_1 a_2)
+    quad = a[0] * z1**2 + a[1] * z2**2 - 2.0 * rho * jnp.sqrt(a[0] * a[1]) * z1 * z2
+    return _squash(b + inputs @ w - 0.5 * quad)
 
 
 def init_modifier_params(input_vars: tuple[str, ...] = INPUT_VARIABLES) -> jnp.ndarray:

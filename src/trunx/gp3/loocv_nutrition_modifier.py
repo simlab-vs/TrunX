@@ -2,9 +2,9 @@
 
 Each plot is held out in turn: the modifier is trained on the other plots and evaluated
 on the held-out plot, for each L2 penalty in a grid. Each fold fits its own modifier
-weights, so the weights differ for each held-out plot. The modifier inputs of every fold
-are standardised alike, with the mean and standard deviation over all plots (see
-`nn_nutrition_modifier.input_scaling`).
+weights, so the weights differ for each held-out plot. The modifier inputs of each fold
+are z-scored with the mean and standard deviation of its training plots (see
+`nn_nutrition_modifier.input_scaling`), so the held-out plot does not enter its scaling.
 """
 
 import shutil
@@ -24,14 +24,13 @@ import polars as pl
 from trunx.config import images_folder, results_data_folder
 from trunx.gp3.bayesiancalibrations.pymc_icp_plots import prepare_plot_input
 from trunx.gp3.deposition_coverage import selected_plot_ids
-from trunx.gp3.extended_helper import poly_nm
+from trunx.gp3.extended_helper import poly_nm, product_nm
 from trunx.gp3.nn_nutrition_modifier import (
     NutritionModifierConfig,
     NutritionModifierFitResult,
     build_predicted_series,
     compute_rmse,
     config_summary_lines,
-    input_statistics,
     neutral_modifier_params,
     poorly_fitted_without_modifier,
     summarize_rmse,
@@ -85,11 +84,6 @@ def leave_one_plot_out(
     dict[float, list[NutritionModifierFitResult]]
         Fit of each fold, per L2 penalty.
     """
-    # Standardise the inputs of every fold alike, with the statistics of all plots
-    if config.standardize_inputs and config.input_stats is None:
-        config = replace(
-            config, input_stats=input_statistics(config.file_paths, config.input_vars)
-        )
     tables = []
     fit_results: dict[float, list[NutritionModifierFitResult]] = {l2: [] for l2 in l2_values}
     for l2 in l2_values:
@@ -281,7 +275,6 @@ def default_config(
         observed_sheet="observed",
         input_vars=input_vars,
         matched_start=True,
-        standardize_inputs=True,
         fit_phys_params=[],
         optimizer_name="adam",
         learning_rate=1e-3,
@@ -420,7 +413,11 @@ def run_loocv(
                 show=False,
             )
         else:
-            for pre_tanh, name in ((False, "response_surface"), (True, "score_before_tanh")):
+            surfaces = [(False, "response_surface")]
+            # The score before tanh only exists for poly_nm's 1 + tanh squash
+            if config.modifier_fn is poly_nm:
+                surfaces.append((True, "score_before_tanh"))
+            for pre_tanh, name in surfaces:
                 plot_modifier_response_surface(
                     config,
                     plot_ids,
@@ -529,18 +526,32 @@ if __name__ == "__main__":
     file_paths = [
         prepare_plot_input(plot_id, literature_source=literature_source) for plot_id in plot_ids
     ]
-    config = default_config(file_paths, input_vars=("N", "S"))
+    input_vars = ("N", "S")
+    modifier_fn = product_nm
+    config = default_config(file_paths, input_vars=input_vars, modifier_fn=modifier_fn)
     # Leave out plots without any target observation
     plot_ids, file_paths = with_target_observations(config, plot_ids, file_paths)
     # Leave out plots the run without the modifier already fits well
     plot_ids, file_paths = poorly_fitted_without_modifier(config, plot_ids, file_paths)
-    run_loocv(
-        replace(config, file_paths=file_paths),
-        plot_ids,
-        l2_values=[0.05],
-        # l2_values=[0.0, 0.01, 0.05, 0.1, 0.3, 1.0],
-        output_dir=results_data_folder / "nn_nutrition_modifier",
-        image_dir=images_folder / "nutrition_modifier",
-        species=species,
-        literature_source=literature_source,
+    l2_values = [0.2]
+    # l2_values = [0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0]
+    run_dir = (
+        results_data_folder
+        / "nutrition_modifier"
+        / literature_source
+        / "_".join(sorted(input_vars))  # Same folder for ("N", "S") and ("S", "N")
+        / "loocv"
+        / modifier_fn.__name__
     )
+    # One folder per L2 penalty, with its figures in `images/`
+    for l2 in l2_values:
+        output_dir = run_dir / f"l2={l2}"
+        run_loocv(
+            replace(config, file_paths=file_paths),
+            plot_ids,
+            l2_values=[l2],
+            output_dir=output_dir,
+            image_dir=output_dir / "images",
+            species=species,
+            literature_source=literature_source,
+        )

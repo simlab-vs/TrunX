@@ -269,6 +269,46 @@ def plot_deposition_density(
         plt.show()
 
 
+def _input_grid(
+    config: NutritionModifierConfig, n_grid: int
+) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+    """Each plot's values of the modifier's two inputs, and a grid over their padded range.
+
+    The grid covers the 1st-99th percentile of the pooled values, padded by 20%, with
+    `config.input_vars[0]` along x and `config.input_vars[1]` along y.
+    """
+    if len(config.input_vars) != 2:
+        raise ValueError(f"Needs a modifier over exactly two inputs, got {config.input_vars}")
+    x_name, y_name = config.input_vars
+    x_values, y_values = _load_deposition(config.file_paths, config.input_vars)
+    x_grid_values, y_grid_values = np.meshgrid(
+        np.linspace(
+            *_deposition_range(x_values, floor_at_zero=x_name in DEPOSITION_CHANNELS), n_grid
+        ),
+        np.linspace(
+            *_deposition_range(y_values, floor_at_zero=y_name in DEPOSITION_CHANNELS), n_grid
+        ),
+    )
+    return x_values, y_values, x_grid_values, y_grid_values
+
+
+def _modifier_over_draws(
+    config: NutritionModifierConfig,
+    weight_draws: jnp.ndarray,
+    channels: dict[str, Any],
+    input_mean: jnp.ndarray,
+    input_std: jnp.ndarray,
+) -> np.ndarray:
+    """f_learned of each weight draw at the input values in `channels`, draws first."""
+    prepared = prepare_modifier_inputs(channels, config.input_vars, input_mean, input_std)
+    return np.asarray(
+        jax.vmap(
+            lambda weights, x: config.modifier_fn(weights, x, config.input_vars),
+            in_axes=(0, None),
+        )(weight_draws, prepared)
+    )
+
+
 def plot_modifier_response_surface(
     config: NutritionModifierConfig,
     plot_ids: list[str],
@@ -285,22 +325,11 @@ def plot_modifier_response_surface(
     by 20% to show how the modifier behaves just beyond the data; the few extreme
     months outside it are not drawn. With several `fit_results` (e.g. cross-validation
     folds), their mean modifier is drawn, next to its standard deviation across fits.
-    With `pre_tanh`, the score before the tanh squash is drawn instead (for `poly_nm`,
-    its polynomial), centered on 0 (no effect).
+    With `pre_tanh`, the score before the tanh squash is drawn instead, centered on 0 (no
+    effect); only for `poly_nm`, whose modifier is 1 + tanh of its polynomial.
     """
-    if len(config.input_vars) != 2:
-        raise ValueError(f"Needs a modifier over exactly two inputs, got {config.input_vars}")
     x_name, y_name = config.input_vars
-
-    x_values, y_values = _load_deposition(config.file_paths, config.input_vars)
-    x_grid_values, y_grid_values = np.meshgrid(
-        np.linspace(
-            *_deposition_range(x_values, floor_at_zero=x_name in DEPOSITION_CHANNELS), n_grid
-        ),
-        np.linspace(
-            *_deposition_range(y_values, floor_at_zero=y_name in DEPOSITION_CHANNELS), n_grid
-        ),
-    )
+    x_values, y_values, x_grid_values, y_grid_values = _input_grid(config, n_grid)
     channels = {x_name: jnp.asarray(x_grid_values), y_name: jnp.asarray(y_grid_values)}
     modifiers = np.stack(
         [
@@ -319,7 +348,7 @@ def plot_modifier_response_surface(
     no_effect, value_label = 1.0, "Nutrition modifier (1 = no effect)"
     title = "modifier response surface"
     if pre_tanh:
-        # Every modifier is 1 + tanh(score) (see `extended_helper._squash`); invert it,
+        # poly_nm is 1 + tanh(score) (see `extended_helper._squash`); invert it,
         # clipped so a saturated modifier gives a large finite score
         modifiers = np.arctanh(np.clip(modifiers - 1.0, -1.0 + 1e-6, 1.0 - 1e-6))
         no_effect, value_label = 0.0, "Score before tanh (0 = no effect)"
@@ -475,6 +504,7 @@ def plot_modifier_posterior_curves(
     weight_draws: jnp.ndarray,
     input_mean: jnp.ndarray,
     input_std: jnp.ndarray,
+    other_percentiles: tuple[float, ...] = (10, 50, 90),
     n_grid: int = 200,
     save_path: str | None = None,
     show: bool = True,
@@ -482,9 +512,10 @@ def plot_modifier_posterior_curves(
     """Plot f_learned against each modifier input, with its 95% interval over weight draws.
 
     One panel per input in `config.input_vars`: that input spans the 1st-99th percentile
-    of the pooled monthly values, padded by 20%, while the others are held at their
-    pooled median. The band spans the 2.5th to 97.5th percentiles of f_learned over the
-    draws; each plot's monthly inputs are a rug below it.
+    of the pooled monthly values, padded by 20%, while the others are held at each of
+    `other_percentiles` of their pooled values, one band per level. Each band spans the
+    2.5th to 97.5th percentiles of f_learned over the draws; each plot's monthly inputs
+    are a rug below it.
 
     Parameters
     ----------
@@ -496,6 +527,8 @@ def plot_modifier_posterior_curves(
         Posterior draws of the modifier weights, draws along the first axis.
     input_mean, input_std : jnp.ndarray
         Standardisation of the modifier inputs.
+    other_percentiles : tuple[float, ...]
+        Percentiles of the pooled values at which the other inputs are held.
     n_grid : int
         Number of points along each input.
     save_path : str | None
@@ -505,35 +538,40 @@ def plot_modifier_posterior_curves(
     """
     names = config.input_vars
     inputs = _load_deposition(config.file_paths, names)
-    medians = {
-        name: float(np.nanmedian(np.concatenate(v))) for name, v in zip(names, inputs, strict=True)
-    }
+    pooled = {name: np.concatenate(v) for name, v in zip(names, inputs, strict=True)}
     fig, axes = plt.subplots(
-        1, len(names), figsize=(4 + 4.5 * len(names), 5.5), layout="constrained", squeeze=False
+        1, len(names), figsize=(4 + 5 * len(names), 5.5), layout="constrained", squeeze=False
     )
+    # A single-input modifier has no other input to vary, so one level suffices
+    levels = other_percentiles if len(names) > 1 else (50,)
+    level_colors = plt.colormaps["viridis"](np.linspace(0.1, 0.85, len(levels)))
 
     for ax, values, name in zip(axes[0], inputs, names, strict=True):
         grid = np.linspace(
             *_deposition_range(values, floor_at_zero=name in DEPOSITION_CHANNELS), n_grid
         )
-        channels = {other: jnp.full(n_grid, medians[other]) for other in names}
-        channels[name] = jnp.asarray(grid)
-        prepared = prepare_modifier_inputs(channels, names, input_mean, input_std)
-        modifiers = np.asarray(
-            jax.vmap(lambda weights, x: config.modifier_fn(weights, x, names), in_axes=(0, None))(
-                weight_draws, prepared
+        level_handles = []
+        for percentile, color in zip(levels, level_colors, strict=True):
+            held = {other: float(np.nanpercentile(pooled[other], percentile)) for other in names}
+            channels = {other: jnp.full(n_grid, value) for other, value in held.items()}
+            channels[name] = jnp.asarray(grid)
+            modifiers = _modifier_over_draws(config, weight_draws, channels, input_mean, input_std)
+            ax.fill_between(
+                grid,
+                np.percentile(modifiers, 2.5, axis=0),
+                np.percentile(modifiers, 97.5, axis=0),
+                color=color,
+                alpha=0.2,
             )
-        )
-
-        ax.fill_between(
-            grid,
-            np.percentile(modifiers, 2.5, axis=0),
-            np.percentile(modifiers, 97.5, axis=0),
-            color="tab:blue",
-            alpha=0.25,
-            label=f"95% interval ({len(weight_draws)} draws)",
-        )
-        ax.plot(grid, modifiers.mean(axis=0), color="tab:blue", linewidth=2.0, label="Mean")
+            others = ", ".join(f"{o} = {v:.2f}" for o, v in held.items() if o != name)
+            (line,) = ax.plot(
+                grid,
+                modifiers.mean(axis=0),
+                color=color,
+                linewidth=2.0,
+                label=f"p{percentile:g}: {others}" if others else "Mean",
+            )
+            level_handles.append(line)
         ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
         # One rug row per plot, below the modifier's (0, 2) range
         for idx, (plot_id, plot_values) in enumerate(zip(plot_ids, values, strict=True)):
@@ -548,14 +586,253 @@ def plot_modifier_posterior_curves(
         ax.set_xlim(grid[0], grid[-1])
         ax.set_ylim(-0.1 - 0.04 * len(plot_ids), 2.05)
         ax.set_xlabel(_input_label(name))
-        others = ", ".join(f"{o} = {medians[o]:.2f}" for o in names if o != name)
-        ax.set_title(f"Other inputs at median: {others}" if others else name)
+        ax.legend(handles=level_handles, fontsize=7, title="Other inputs held at")
         ax.grid(alpha=0.3)
     axes[0, 0].set_ylabel("f_learned (1 = no effect)")
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside right upper", fontsize=7)
-    fig.suptitle("Posterior nutrition modifier response (rugs: monthly inputs per plot)")
+    n_levels = len(levels)
+    fig.legend(
+        handles[n_levels:], labels[n_levels:], loc="outside right upper", fontsize=7, title="Plot"
+    )
+    fig.suptitle(
+        f"Posterior f_learned: mean and 95% interval over {len(weight_draws)} weight draws "
+        "(rugs: monthly inputs per plot)"
+    )
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def plot_modifier_posterior_at_observations(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    weight_draws: jnp.ndarray,
+    input_mean: jnp.ndarray,
+    input_std: jnp.ndarray,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot f_learned at each plot's monthly inputs, with its 95% interval over weight draws.
+
+    One row per plot and one column per input in `config.input_vars`, against which each
+    month's posterior mean is drawn with an error bar from the 2.5th to the 97.5th
+    percentile over the draws. Only input combinations that occur in the data are shown.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Modifier function and inputs; its `file_paths` give the plotted inputs.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    weight_draws : jnp.ndarray
+        Posterior draws of the modifier weights, draws along the first axis.
+    input_mean, input_std : jnp.ndarray
+        Standardisation of the modifier inputs.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    names = config.input_vars
+    inputs = _load_deposition(config.file_paths, names)
+    bands = []
+    for idx in range(len(plot_ids)):
+        plot_inputs = {
+            name: jnp.asarray(values[idx]) for name, values in zip(names, inputs, strict=True)
+        }
+        modifiers = _modifier_over_draws(config, weight_draws, plot_inputs, input_mean, input_std)
+        lower, upper = np.percentile(modifiers, [2.5, 97.5], axis=0)
+        bands.append((modifiers.mean(axis=0), lower, upper))
+    _posterior_errorbars_by_plot(
+        config,
+        plot_ids,
+        bands,
+        y_label="f_learned",
+        no_effect=1.0,
+        title=(
+            f"Posterior f_learned (1 = no effect) at observed monthly inputs: mean and 95% "
+            f"interval over {len(weight_draws)} weight draws"
+        ),
+        ylim=(0.0, 2.0),
+        save_path=save_path,
+        show=show,
+    )
+
+
+def plot_posterior_residual_vs_deposition(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    posterior_series: list[dict[str, np.ndarray]],
+    var_name: str = "alpha_c",
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot each plot's monthly `var_name` with minus without the modifier, with its 95% interval.
+
+    One row per plot and one column per input in `config.input_vars`, against which each
+    month's posterior mean residual is drawn with an error bar from the 2.5th to the
+    97.5th percentile over the draws. Months without photosynthesis are left out.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Modifier inputs; its `file_paths` give the plotted inputs.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    posterior_series : list[dict[str, np.ndarray]]
+        One `pymc_nutrition_modifier.predict_posterior_bands` result per plot.
+    var_name : str
+        `"alpha_c"` or `"NPP"`.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    bands = [
+        (
+            series[f"mean_residual_{var_name}"],
+            series[f"lower_residual_{var_name}"],
+            series[f"upper_residual_{var_name}"],
+        )
+        for series in posterior_series
+    ]
+    _posterior_errorbars_by_plot(
+        config,
+        plot_ids,
+        bands,
+        y_label=f"Δ {_METRIC_LABELS[var_name]}",
+        no_effect=0.0,
+        title=(
+            f"Posterior monthly {var_name} with − without modifier at observed monthly inputs: "
+            "mean and 95% interval over the draws"
+        ),
+        save_path=save_path,
+        show=show,
+    )
+
+
+def _posterior_errorbars_by_plot(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    bands: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    y_label: str,
+    no_effect: float,
+    title: str,
+    ylim: tuple[float, float] | None = None,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Draw each plot's monthly posterior means with 95% error bars against each input.
+
+    One row per plot and one column per input in `config.input_vars`. `bands` holds each
+    plot's monthly (mean, lower, upper), in `plot_ids` order; NaN months are skipped. A
+    dotted line marks `no_effect`.
+    """
+    names = config.input_vars
+    inputs = _load_deposition(config.file_paths, names)
+    fig, axes = plt.subplots(
+        len(plot_ids),
+        len(names),
+        figsize=(1 + 5 * len(names), 1 + 2.5 * len(plot_ids)),
+        layout="constrained",
+        sharex="col",
+        sharey=True,
+        squeeze=False,
+    )
+
+    for idx, (row, plot_id, (mean, lower, upper)) in enumerate(
+        zip(axes, plot_ids, bands, strict=True)
+    ):
+        for ax, values in zip(row, inputs, strict=True):
+            ax.errorbar(
+                values[idx],
+                mean,
+                yerr=[mean - lower, upper - mean],
+                fmt="o",
+                markersize=2,
+                elinewidth=0.5,
+                alpha=0.4,
+                color=_PLOT_COLORS[idx % len(_PLOT_COLORS)],
+            )
+            ax.axhline(no_effect, color="black", linewidth=0.8, linestyle=":")
+            ax.grid(alpha=0.3)
+        row[0].set_ylabel(f"{plot_id}\n{y_label}")
+
+    for ax, values, name in zip(axes[-1], inputs, names, strict=True):
+        ax.set_xlim(*_deposition_range(values, floor_at_zero=name in DEPOSITION_CHANNELS))
+        ax.set_xlabel(_input_label(name))
+    if ylim is not None:
+        axes[0, 0].set_ylim(*ylim)
+    fig.suptitle(title)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
+def plot_modifier_interval_width_surface(
+    config: NutritionModifierConfig,
+    plot_ids: list[str],
+    weight_draws: jnp.ndarray,
+    input_mean: jnp.ndarray,
+    input_std: jnp.ndarray,
+    n_grid: int = 100,
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot the width of f_learned's 95% interval over weight draws, on a grid of its two inputs.
+
+    The width is the 97.5th minus the 2.5th percentile over the draws; the grid is that of
+    `plot_modifier_response_surface`, with each plot's monthly inputs on top.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Modifier function and its two inputs; its `file_paths` give the plotted inputs.
+    plot_ids : list[str]
+        Plot labels, in `config.file_paths` order.
+    weight_draws : jnp.ndarray
+        Posterior draws of the modifier weights, draws along the first axis.
+    input_mean, input_std : jnp.ndarray
+        Standardisation of the modifier inputs.
+    n_grid : int
+        Number of points along each input.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    x_name, y_name = config.input_vars
+    x_values, y_values, x_grid_values, y_grid_values = _input_grid(config, n_grid)
+    channels = {x_name: jnp.asarray(x_grid_values), y_name: jnp.asarray(y_grid_values)}
+    modifiers = _modifier_over_draws(config, weight_draws, channels, input_mean, input_std)
+    lower, upper = np.percentile(modifiers, [2.5, 97.5], axis=0)
+
+    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    surface = ax.contourf(x_grid_values, y_grid_values, upper - lower, levels=20, cmap="Greys")
+    fig.colorbar(surface, ax=ax, label="Width of the 95% interval of f_learned")
+    for idx, (plot_id, x, y) in enumerate(zip(plot_ids, x_values, y_values, strict=True)):
+        ax.scatter(
+            x,
+            y,
+            s=12,
+            color=_PLOT_COLORS[idx % len(_PLOT_COLORS)],
+            edgecolor="black",
+            linewidth=0.3,
+            label=plot_id,
+        )
+    ax.set_xlim(x_grid_values.min(), x_grid_values.max())
+    ax.set_ylim(y_grid_values.min(), y_grid_values.max())
+    ax.set_xlabel(_input_label(x_name))
+    ax.set_ylabel(_input_label(y_name))
+    ax.set_title(f"Posterior uncertainty of f_learned ({len(weight_draws)} weight draws)")
+    fig.legend(loc="outside right upper", fontsize=7, title="Plot")
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)

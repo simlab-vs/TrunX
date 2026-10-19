@@ -41,6 +41,7 @@ raw_data_folder = Path(os.path.join(base_dir, "data/raw/"))
 clean_data_folder = Path(os.path.join(base_dir, "data/clean/"))
 threepg_data_folder = Path(os.path.join(base_dir, "data/threepg_inputs/"))
 intermediate_data_folder = Path(os.path.join(base_dir, "data/intermediate/"))
+synthetic_data_folder = intermediate_data_folder / "synthetic"
 results_data_folder = Path(os.path.join(base_dir, "data/results/"))
 era5_data_folder = Path(os.path.join(base_dir, "data/raw/ERA5/"))
 images_folder = Path(os.path.join(base_dir, "images/"))

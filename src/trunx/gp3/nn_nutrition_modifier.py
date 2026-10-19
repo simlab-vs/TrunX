@@ -26,11 +26,14 @@ from trunx.gp3.deposition_coverage import (
 from trunx.gp3.extended_helper import (
     DEPOSITION_CHANNELS,
     INPUT_VARIABLES,
+    bivariate_quadratic_nm,
     constant_nm,
     init_mlp_modifier_params,
+    liebig_nm,
     mlp_nm,
     poly_nm,
     prepare_modifier_inputs,
+    product_nm,
 )
 from trunx.gp3.gradient_descent import apply_fitted_params, load_param_bounds
 from trunx.gp3.model_inputs import ExtendedParams, InputData, SiteData, State
@@ -69,11 +72,10 @@ class NutritionModifierConfig:
     loss_tol: float = 0.0  # 0: never stop early
     loss_window: int = 1000
     standardize_targets: bool = True  # Whether to standardize target variables
-    standardize_inputs: bool = True  # Whether to standardize the modifier inputs
     # Start from the biomass pools derived from the observed DBH (see
     # `matched_initial_state`), instead of the observed biomass
     matched_start: bool = False
-    # Fixed (mean, std) of the modifier inputs; None: those of `file_paths`
+    # Fixed (mean, std) of the modifier inputs; None: those of the training plots `file_paths`
     input_stats: tuple[jnp.ndarray, jnp.ndarray] | None = None
     image_dir: str = field(
         default_factory=lambda: str(images_folder / "nutrition_modifier/constant_modifier")
@@ -147,7 +149,7 @@ def neutral_modifier_params(
     modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray],
     input_vars: tuple[str, ...],
 ) -> Any:
-    """Neutral starting weights of `modifier_fn`: `constant_nm`, `poly_nm` or `mlp_nm`.
+    """Neutral starting weights of `modifier_fn`, one of the `extended_helper` modifiers.
 
     Parameters
     ----------
@@ -160,6 +162,10 @@ def neutral_modifier_params(
         return jnp.zeros(1)
     if modifier_fn is poly_nm:
         return init_modifier_params(input_vars)
+    if modifier_fn in (product_nm, liebig_nm):
+        return jnp.zeros((len(input_vars), 3))
+    if modifier_fn is bivariate_quadratic_nm:
+        return jnp.zeros(6)
     if modifier_fn is mlp_nm:
         return init_mlp_modifier_params(jax.random.PRNGKey(0), input_vars, hidden_sizes=(4,))
     raise ValueError(f"No initializer wired up for modifier_fn={modifier_fn!r}")
@@ -374,25 +380,22 @@ def build_observation_data(
 
 
 def input_scaling(config: NutritionModifierConfig) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Mean and standard deviation the modifier inputs are standardised with.
+    """Mean and standard deviation the modifier inputs are z-scored with.
 
     Parameters
     ----------
     config : NutritionModifierConfig
-        With `config.standardize_inputs`, the statistics are `config.input_stats`, else
-        those of the plots in `config.file_paths` (see `input_statistics`); otherwise 0
-        and 1 (no scaling).
+        The statistics are `config.input_stats` if given, else those of the training
+        plots in `config.file_paths` (see `input_statistics`).
 
     Returns
     -------
     tuple[jnp.ndarray, jnp.ndarray]
         Mean and standard deviation, one entry per `config.input_vars` item.
     """
-    if config.standardize_inputs:
-        if config.input_stats is not None:
-            return config.input_stats
-        return input_statistics(config.file_paths, config.input_vars)
-    return jnp.zeros(len(config.input_vars)), jnp.ones(len(config.input_vars))
+    if config.input_stats is not None:
+        return config.input_stats
+    return input_statistics(config.file_paths, config.input_vars)
 
 
 def phys_param_bounds(config: NutritionModifierConfig) -> dict[str, tuple[float, float]]:
@@ -453,9 +456,9 @@ def train_nutrition_modifier(
 
     The loss is the mean of the per-plot losses, so every plot weighs equally, plus
     `config.modifier_l2` times the sum of the squared modifier weights; the
-    physiological parameters start from the first plot's values. With
-    `config.standardize_inputs`, the modifier inputs are standardised with their mean
-    and standard deviation over these plots.
+    physiological parameters start from the first plot's values. The modifier inputs
+    are z-scored with their mean and standard deviation over these plots (see
+    `input_scaling`).
     `initial_modifier_params` must match `config.modifier_fn`'s own parameter pytree —
     e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params` for `mlp_nm` —
     since they aren't interchangeable.
@@ -1083,7 +1086,8 @@ if __name__ == "__main__":
 
     # Select which learnable nutrition-modifier function to fit.
     # constant_nm ignores its inputs, but the input pipeline needs one, e.g. ("N",)
-    modifier_fn = poly_nm
+    modifier_fn = product_nm
+    modifier_l2 = 0.2
 
     config = NutritionModifierConfig(
         file_paths=all_file_paths,
@@ -1093,18 +1097,25 @@ if __name__ == "__main__":
         plot_variables=["BA", "DBH", "WS", "WF", "WR", "N"],
         input_vars=input_vars,
         observed_sheet="observed",
-        standardize_inputs=True,
         matched_start=True,
         fit_phys_params=[],
         optimizer_name="adam",
         learning_rate=1e-3,
         num_epochs=5000,
-        modifier_l2=0.05,
+        modifier_l2=modifier_l2,
         loss_tol=1e-4,
         modifier_fn=modifier_fn,
-        # One folder per modifier, e.g. images/nutrition_modifier/poly_nm
+        # One folder per literature source, inputs, modifier and L2 penalty, as in the LOOCV
+        # runs
         image_dir=str(
-            results_data_folder / "nutrition_modifier" / modifier_fn.__name__ / "images"
+            results_data_folder
+            / "nutrition_modifier"
+            / literature_source
+            / "_".join(sorted(input_vars))  # Same folder for ("N", "S") and ("S", "N")
+            / "tests"
+            / modifier_fn.__name__
+            / f"l2={modifier_l2}"
+            / "images"
         ),
     )
     # Leave out plots without any target observation (e.g. no GOSIF GPP), and plots the
@@ -1113,6 +1124,7 @@ if __name__ == "__main__":
     all_plot_ids, all_file_paths = poorly_fitted_without_modifier(
         config, all_plot_ids, all_file_paths, criterion="rmse"
     )
+
     plot_ids, test_plot_ids = split_plot_ids(species, all_plot_ids)
     file_path_of = dict(zip(all_plot_ids, all_file_paths, strict=True))
     file_paths = [file_path_of[plot_id] for plot_id in plot_ids]
@@ -1215,7 +1227,11 @@ if __name__ == "__main__":
             show=False,
         )
     else:
-        for pre_tanh, name in ((False, "response_surface"), (True, "score_before_tanh")):
+        surfaces = [(False, "response_surface")]
+        # The score before tanh only exists for poly_nm's 1 + tanh squash
+        if config.modifier_fn is poly_nm:
+            surfaces.append((True, "score_before_tanh"))
+        for pre_tanh, name in surfaces:
             plot_modifier_response_surface(
                 config,
                 plot_ids,
@@ -1229,8 +1245,10 @@ if __name__ == "__main__":
     with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3):
         print(rmse_table)
         print(summarize_rmse(rmse_table))
+    # In the run folder, next to `images/`, as in the LOOCV runs
+    run_summary_path = image_dir.parent / "run_summary.txt"
     write_run_summary(
-        image_dir / "run_summary.txt",
+        run_summary_path,
         config,
         fit_result,
         species,
@@ -1239,6 +1257,6 @@ if __name__ == "__main__":
         test_plot_ids,
         rmse_table,
     )
-    print(f"Saved {image_dir / 'run_summary.txt'}")
+    print(f"Saved {run_summary_path}")
 
     plt.show()

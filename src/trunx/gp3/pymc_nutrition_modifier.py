@@ -7,15 +7,19 @@ Follows `bayesiancalibrations/pymc_param_est_multiplots.py`: the 3PG log-likelih
 plots is a JAX function of one flat parameter vector, wrapped as a PyTensor Op with its JAX
 gradient, and is sampled with NUTS or DEMetropolisZ in checkpointed chunks.
 
-Priors: Normal(0, `modifier_prior_scale`) on each `poly_nm` weight (the modifier is centred on
-1, no effect), Uniform over the `param_bound` sheet's bounds for `config.fit_phys_params`, and
-Uniform over the `error_param` sheet's bounds for one `err_{var}` per target variable, shared
-across plots. Likelihood: Normal, as in `bayesiancalibrations/pymc_param_est.py`.
+Any `config.modifier_fn` is supported: its weights are sampled as one flat vector (see
+`modifier_unravel`). Priors: Normal(0, `modifier_prior_scale`) on each modifier weight
+(all-zero weights give no, or almost no, effect), Uniform over the `param_bound` sheet's
+bounds for `config.fit_phys_params`, and Uniform over the `error_param` sheet's bounds for
+one `err_{var}` per target variable, shared across plots. Likelihood: Normal, as in
+`bayesiancalibrations/pymc_param_est.py`.
 """
 
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,6 +31,7 @@ import numpy as np
 import polars as pl
 import pymc as pm
 import pytensor.tensor as pt
+from jax.flatten_util import ravel_pytree
 from jax.scipy.stats import norm
 
 from trunx.config import images_folder, results_data_folder
@@ -44,7 +49,7 @@ from trunx.gp3.bayesiancalibrations.pymc_param_est_multiplots import (
 from trunx.gp3.bayesiancalibrations.save_load_results import save_results
 from trunx.gp3.extended_helper import poly_nm
 from trunx.gp3.gradient_descent import apply_fitted_params
-from trunx.gp3.model_inputs import ExtendedParams, InputData
+from trunx.gp3.model_inputs import ExtendedParams, InputData, State
 from trunx.gp3.nn_nutrition_modifier import (
     NutritionModifierConfig,
     NutritionModifierFitResult,
@@ -53,7 +58,11 @@ from trunx.gp3.nn_nutrition_modifier import (
     build_observation_data,
     build_predicted_series,
     compute_rmse,
+    config_summary_lines,
+    initial_dbh,
     input_scaling,
+    matched_initial_state,
+    neutral_modifier_params,
     phys_param_bounds,
     phys_param_defaults,
     poorly_fitted_without_modifier,
@@ -65,25 +74,96 @@ from trunx.gp3.plots_nutrition_modifier import (
     plot_learned_modifier_vs_deposition,
     plot_modifier_effect_over_time,
     plot_modifier_effect_vs_deposition,
+    plot_modifier_interval_width_surface,
+    plot_modifier_posterior_at_observations,
     plot_modifier_posterior_curves,
     plot_modifier_response_surface,
     plot_observed_vs_predicted,
     plot_posterior_predictions,
+    plot_posterior_residual_vs_deposition,
 )
 from trunx.gp3.prepare_data import prepare_data
 from trunx.gp3.run_3pg import run_3pg
 
-# One plot's model inputs, simulation month of each observation and observed values
-PlotObservations = tuple[InputData, jnp.ndarray, dict[str, jnp.ndarray]]
+# One plot's model inputs, simulation month of each observation, observed values and
+# starting DBH (None without `matched_start`)
+PlotObservations = tuple[InputData, jnp.ndarray, dict[str, jnp.ndarray], float | None]
 
 
-def load_plot_observations(config: NutritionModifierConfig) -> list[PlotObservations]:
-    """Load each plot's model inputs and unscaled observations of `config.target_vars`.
+def modifier_unravel(config: NutritionModifierConfig) -> tuple[jnp.ndarray, Callable]:
+    """Flat neutral weights of `config.modifier_fn`, and the map back to its weights.
 
     Parameters
     ----------
     config : NutritionModifierConfig
-        Plots (`config.file_paths`) and target variables.
+        Modifier function and inputs, see `neutral_modifier_params`.
+
+    Returns
+    -------
+    tuple[jnp.ndarray, Callable]
+        Flattened neutral weights, and the function turning a flat vector back into the
+        modifier's weights (array or pytree), see `jax.flatten_util.ravel_pytree`.
+    """
+    return ravel_pytree(neutral_modifier_params(config.modifier_fn, config.input_vars))
+
+
+def start_dbh_of(
+    config: NutritionModifierConfig, file_path: str, input_data: InputData
+) -> float | None:
+    """Observed starting DBH of a plot with `config.matched_start`, else None.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Whether runs start from the DBH-matched biomass, and the observations sheet.
+    file_path : str
+        Input file of the plot.
+    input_data : InputData
+        Model inputs of the plot.
+
+    Returns
+    -------
+    float | None
+        Starting DBH (cm), see `initial_dbh`.
+    """
+    if not config.matched_start:
+        return None
+    return initial_dbh(file_path, input_data.site, config.observed_sheet)
+
+
+def start_state(
+    input_data: InputData, params: Any, start_dbh: float | None, species_index: int
+) -> State:
+    """Build a run's initial state: the observed biomass, or the one matched to `start_dbh`.
+
+    Parameters
+    ----------
+    input_data : InputData
+        Model inputs of the plot.
+    params : Any
+        Physiological parameters of the run, whose allometry sets the matched biomass.
+    start_dbh : float | None
+        Starting DBH (cm), see `start_dbh_of`; None keeps the observed biomass.
+    species_index : int
+        Species whose biomass is matched.
+
+    Returns
+    -------
+    State
+        Initial state, see `matched_initial_state`.
+    """
+    if start_dbh is None:
+        return input_data.initial_state
+    return matched_initial_state(input_data.initial_state, params, start_dbh, species_index)
+
+
+def load_plot_observations(config: NutritionModifierConfig) -> list[PlotObservations]:
+    """Load each plot's model inputs, unscaled observations of `config.target_vars` and start.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Plots (`config.file_paths`), target variables and `matched_start`.
 
     Returns
     -------
@@ -100,7 +180,9 @@ def load_plot_observations(config: NutritionModifierConfig) -> list[PlotObservat
             standardize_targets=False,
             observed_sheet=config.observed_sheet,
         )
-        plots.append((input_data, obs_indices, obs_values))
+        plots.append(
+            (input_data, obs_indices, obs_values, start_dbh_of(config, file_path, input_data))
+        )
     return plots
 
 
@@ -111,6 +193,8 @@ def predictions_at_observations(
     config: NutritionModifierConfig,
 ) -> list[dict[str, tuple[jnp.ndarray, jnp.ndarray]]]:
     """Run 3PG with the modifier on every plot and pair its predictions with the observations.
+
+    Each run starts from `start_state`, as in `build_predicted_series`.
 
     Parameters
     ----------
@@ -130,12 +214,12 @@ def predictions_at_observations(
         observation times; unobserved values are NaN.
     """
     predictions = []
-    for input_data, obs_indices, obs_values in plots:
+    for input_data, obs_indices, obs_values, start_dbh in plots:
         params = apply_fitted_params(
             input_data.params, list(phys_params), phys_params, config.species_index
         )
         _, outputs = run_3pg(
-            input_data.initial_state,
+            start_state(input_data, params, start_dbh, config.species_index),
             input_data.climate,
             params,
             input_data.site,
@@ -156,12 +240,17 @@ def predictions_at_observations(
 
 
 def posterior_mean_fit(
-    idata: az.InferenceData, input_preparation: ExtendedParams, phys_names: list[str]
+    config: NutritionModifierConfig,
+    idata: az.InferenceData,
+    input_preparation: ExtendedParams,
+    phys_names: list[str],
 ) -> NutritionModifierFitResult:
     """Posterior means as a fit result, for the evaluation and plots of `nn_nutrition_modifier`.
 
     Parameters
     ----------
+    config : NutritionModifierConfig
+        Modifier function and inputs of the calibration.
     idata : az.InferenceData
         Posterior draws of `nutrition_modifier_pymc_model`.
     input_preparation : ExtendedParams
@@ -175,9 +264,10 @@ def posterior_mean_fit(
         Posterior-mean modifier weights and physiological parameters, without histories.
     """
     posterior = cast(Any, idata).posterior
+    _, unravel = modifier_unravel(config)
     return NutritionModifierFitResult(
-        fitted_modifier_params=jnp.asarray(
-            posterior["modifier_params"].mean(("chain", "draw")).values
+        fitted_modifier_params=unravel(
+            jnp.asarray(posterior["modifier_params"].mean(("chain", "draw")).values)
         ),
         fitted_phys_params={name: float(posterior[name].mean()) for name in phys_names},
         loss_history=[],
@@ -195,8 +285,7 @@ def calibration_setup(
     Parameters
     ----------
     config : NutritionModifierConfig
-        Plots, targets and modifier inputs; only `poly_nm` is supported, since MLP weights
-        have many equivalent solutions.
+        Plots, targets, modifier function and inputs.
 
     Returns
     -------
@@ -206,9 +295,6 @@ def calibration_setup(
         values: no modifier effect, the first plot's physiological parameters and the
         default noise scales, strictly inside the priors.
     """
-    if config.modifier_fn is not poly_nm:
-        raise ValueError("Only poly_nm is supported: MLP weights have many equivalent solutions")
-
     input_mean, input_std = input_scaling(config)
     input_preparation = ExtendedParams(
         modifier_params=None, input_mean=input_mean, input_std=input_std
@@ -224,7 +310,7 @@ def calibration_setup(
     error_defaults = load_param_defaults_from_file(config.file_paths[0], error_names)
     param_defaults: dict[str, Any] = {
         **clip_defaults_to_priors({**phys_defaults, **error_defaults}, priors),
-        "modifier_params": jnp.zeros((2,) * len(config.input_vars)),
+        "modifier_params": modifier_unravel(config)[0],
     }
     return input_preparation, priors, param_defaults
 
@@ -268,9 +354,10 @@ def predict_posterior_bands(
     """Posterior predictive mean and 95% interval of one plot, and its default run.
 
     `num_predictions` random posterior draws (of the modifier weights and the calibrated
-    physiological parameters) are run through 3PG, as in
+    physiological parameters) are run through 3PG with and without the modifier, as in
     `pymc_param_est.predict_with_uncertainity`; the interval spans their 2.5th to 97.5th
-    percentiles.
+    percentiles. With `config.matched_start`, every run starts from the biomass matched
+    to the observed starting DBH with its own parameters, as in `build_predicted_series`.
 
     Parameters
     ----------
@@ -294,10 +381,15 @@ def predict_posterior_bands(
         `"dates"` (one per simulated month) plus, for each plot variable,
         `"mean_<var>"`, `"lower_<var>"` and `"upper_<var>"` over the draws and
         `"default_<var>"` (default physiological parameters, no nutrition modifier).
+        For alpha_c and NPP, `"mean_residual_<var>"`, `"lower_residual_<var>"` and
+        `"upper_residual_<var>"` are the same statistics of the run with minus without
+        the modifier, NaN in months without photosynthesis (alpha_c = 0 without the
+        modifier in any draw).
     """
     posterior = cast(Any, idata).posterior
     chains, draws = pick_posterior_draws(idata, num_predictions, seed)
-    weights = jnp.asarray(posterior["modifier_params"].values[chains, draws])
+    _, unravel = modifier_unravel(config)
+    weights = jax.vmap(unravel)(jnp.asarray(posterior["modifier_params"].values[chains, draws]))
     phys_draws = {
         name: jnp.asarray(posterior[name].values[chains, draws])
         for name in fit_result.fitted_phys_params
@@ -305,9 +397,15 @@ def predict_posterior_bands(
 
     input_data = prepare_data(file_path)
     plot_variables = _plot_variables(config)
+    residual_variables = ("alpha_c", "NPP")
+    start_dbh = start_dbh_of(config, file_path, input_data)
 
-    def run_draw(modifier_params: jnp.ndarray, phys_params: dict[str, Any]) -> dict[str, Any]:
-        """Plot variables of one posterior draw."""
+    def initial_state(params: Any) -> State:
+        """Build the initial state of a run with `params`, see `start_state`."""
+        return start_state(input_data, params, start_dbh, config.species_index)
+
+    def run_draw(modifier_params: Any, phys_params: dict[str, Any]) -> dict[str, Any]:
+        """Plot variables of one posterior draw, and its runs with and without the modifier."""
         params = apply_fitted_params(
             input_data.params, list(phys_params), phys_params, config.species_index
         )
@@ -317,7 +415,7 @@ def predict_posterior_bands(
             input_std=fit_result.input_std,
         )
         _, outputs = run_3pg(
-            input_data.initial_state,
+            initial_state(params),
             input_data.climate,
             params,
             input_data.site,
@@ -327,11 +425,22 @@ def predict_posterior_bands(
             config.modifier_fn,
             config.input_vars,
         )
-        return {name: outputs[name] for name in plot_variables}
+        _, outputs_phys = run_3pg(
+            initial_state(params),
+            input_data.climate,
+            params,
+            input_data.site,
+            input_data.species,
+        )
+        return {
+            **{name: outputs[name] for name in plot_variables},
+            **{f"fitted_{name}": outputs[name] for name in residual_variables},
+            **{f"phys_{name}": outputs_phys[name] for name in residual_variables},
+        }
 
     draw_outputs = jax.vmap(run_draw)(weights, phys_draws)
     _, default_outputs = run_3pg(
-        input_data.initial_state,
+        initial_state(input_data.params),
         input_data.climate,
         input_data.params,
         input_data.site,
@@ -343,15 +452,27 @@ def predict_posterior_bands(
         values = np.asarray(values)
         return values[..., config.species_index] if values.ndim >= 2 else values
 
-    series: dict[str, np.ndarray] = {}
-    for name in plot_variables:
-        samples = np.asarray(draw_outputs[name])
-        if samples.ndim == 3:
-            samples = samples[..., config.species_index]
+    def draw_samples(key: str) -> np.ndarray:
+        """Draws of one output for the calibrated species, draws first."""
+        samples = np.asarray(draw_outputs[key])
+        return samples[..., config.species_index] if samples.ndim == 3 else samples
+
+    def add_band(name: str, samples: np.ndarray) -> None:
+        """Store the mean and 95% interval of `samples` over the draws."""
         series[f"mean_{name}"] = samples.mean(axis=0)
         series[f"lower_{name}"] = np.percentile(samples, 2.5, axis=0)
         series[f"upper_{name}"] = np.percentile(samples, 97.5, axis=0)
+
+    series: dict[str, np.ndarray] = {}
+    for name in plot_variables:
+        add_band(name, draw_samples(name))
         series[f"default_{name}"] = species_series(default_outputs[name])
+
+    # Months without photosynthesis have no modifier effect to show
+    active = (draw_samples("phys_alpha_c") > 0).all(axis=0)
+    for name in residual_variables:
+        residuals = draw_samples(f"fitted_{name}") - draw_samples(f"phys_{name}")
+        add_band(f"residual_{name}", np.where(active, residuals, np.nan))
 
     n_months = len(series[f"mean_{plot_variables[0]}"])
     start_year = int(np.asarray(input_data.site.year_i).reshape(-1)[0])
@@ -374,8 +495,9 @@ def evaluate_posterior_mean(
     means and the deposition density for the training (`config.file_paths`) and test
     plots; and, on the training plots, the modifier's effect on `alpha_c` and
     `f_nutri_classic_learnable` over time and against deposition, the deposition over
-    time, the modifier's response surface, and f_learned against each input with its 95%
-    interval over 500 posterior weight draws.
+    time and the modifier's response surface; and, over 500 posterior weight draws,
+    f_learned's 95% interval against each input (others held at three levels) and at the
+    observed monthly inputs, and the interval's width over the input grid.
 
     Parameters
     ----------
@@ -468,15 +590,24 @@ def evaluate_posterior_mean(
         show=False,
     )
     chains, draws = pick_posterior_draws(idata, num_draws=500)
-    plot_modifier_posterior_curves(
-        config,
-        plot_ids,
-        jnp.asarray(cast(Any, idata).posterior["modifier_params"].values[chains, draws]),
-        fit_result.input_mean,
-        fit_result.input_std,
-        save_path=str(image_dir / "f_learned_posterior_interval.png"),
-        show=False,
+    _, unravel = modifier_unravel(config)
+    weight_draws = jax.vmap(unravel)(
+        jnp.asarray(cast(Any, idata).posterior["modifier_params"].values[chains, draws])
     )
+    for plot_fn, file_name in (
+        (plot_modifier_posterior_curves, "f_learned_posterior_interval.png"),
+        (plot_modifier_posterior_at_observations, "f_learned_posterior_observed.png"),
+        (plot_modifier_interval_width_surface, "f_learned_interval_width.png"),
+    ):
+        plot_fn(
+            config,
+            plot_ids,
+            weight_draws,
+            fit_result.input_mean,
+            fit_result.input_std,
+            save_path=str(image_dir / file_name),
+            show=False,
+        )
     return summarize_rmse(pl.concat(rmse_tables))
 
 
@@ -488,8 +619,8 @@ def make_loglikelihood(
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Build the Normal log-likelihood of all plots as a function of a flat parameter vector.
 
-    The vector holds the flattened modifier weights, then one value per `priors` entry, in
-    order.
+    The vector holds the flattened modifier weights (see `modifier_unravel`), then one value
+    per `priors` entry, in order.
 
     Parameters
     ----------
@@ -507,15 +638,15 @@ def make_loglikelihood(
     Callable[[jnp.ndarray], jnp.ndarray]
         JAX-differentiable log-likelihood.
     """
-    weights_shape = (2,) * len(config.input_vars)
-    n_weights = int(np.prod(weights_shape))
+    flat_weights, unravel = modifier_unravel(config)
+    n_weights = flat_weights.size
 
     def loglikelihood(param_values: jnp.ndarray) -> jnp.ndarray:
         """Log-likelihood of the observed target variables of all plots."""
         values = dict(zip(priors, param_values[n_weights:], strict=True))
         phys_params = {name: v for name, v in values.items() if not name.startswith("err_")}
         extended_params = input_preparation._replace(
-            modifier_params=param_values[:n_weights].reshape(weights_shape)
+            modifier_params=unravel(param_values[:n_weights])
         )
         log_likelihood = jnp.array(0.0)
         for plot_predictions in predictions_at_observations(
@@ -560,8 +691,8 @@ def nutrition_modifier_pymc_model(
     Returns
     -------
     pm.Model
-        Model with a `modifier_params` Normal prior, one Uniform prior per `priors` entry
-        and the 3PG log-likelihood as a potential.
+        Model with a Normal prior on the flat `modifier_params`, one Uniform prior per
+        `priors` entry and the 3PG log-likelihood as a potential.
     """
     loglike_op = JaxLogLikeOp(make_loglikelihood(plots, priors, input_preparation, config))
     with pm.Model() as model:
@@ -569,10 +700,10 @@ def nutrition_modifier_pymc_model(
             "modifier_params",
             mu=0.0,
             sigma=modifier_prior_scale,
-            shape=(2,) * len(config.input_vars),
+            shape=modifier_unravel(config)[0].size,
         )
         param_vars = [pm.Uniform(name, lower=lo, upper=hi) for name, (lo, hi) in priors.items()]
-        param_vector = pt.concatenate([modifier_params.flatten(), pt.stack(param_vars)])
+        param_vector = pt.concatenate([modifier_params, pt.stack(param_vars)])
         pm.Potential("likelihood", cast(Any, loglike_op(param_vector)))
     return model
 
@@ -588,6 +719,7 @@ def calibrate_nutrition_modifier_pymc(
     output_dir: str | None = None,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
+    resume: bool = True,
 ) -> tuple[az.InferenceData, NutritionModifierFitResult]:
     """Sample the posterior of the nutrition modifier (and `config.fit_phys_params`) with PyMC.
 
@@ -601,15 +733,22 @@ def calibrate_nutrition_modifier_pymc(
         Standard deviation of the Normal prior of each modifier weight, on standardised inputs.
     output_dir : str | None
         Directory for checkpoints and the final `inference_data.nc`. Re-running with the same
-        `output_dir` resumes an interrupted run. If None, nothing is saved.
+        `output_dir` resumes an interrupted run, see `resume`. If None, nothing is saved.
     checkpoint_every : int
         Post-tuning draws per chain between checkpoints.
+    resume : bool
+        Resume from the checkpoint in `output_dir`, if any; False deletes it and samples
+        from the start.
 
     Returns
     -------
     tuple[az.InferenceData, NutritionModifierFitResult]
         Posterior draws, and the posterior means as a fit result.
     """
+    if not resume and output_dir is not None:
+        # Checkpoint files of `save_load_results.save_checkpoint`
+        for name in ("checkpoint_inference_data.nc", "checkpoint_state.json"):
+            Path(output_dir, name).unlink(missing_ok=True)
     input_preparation, priors, param_defaults = calibration_setup(config)
     model = nutrition_modifier_pymc_model(
         load_plot_observations(config), priors, input_preparation, modifier_prior_scale, config
@@ -629,7 +768,89 @@ def calibrate_nutrition_modifier_pymc(
     if output_dir is not None:
         save_results(mcmc=idata, output_dir=output_dir)
     phys_names = [name for name in priors if not name.startswith("err_")]
-    return idata, posterior_mean_fit(idata, input_preparation, phys_names)
+    return idata, posterior_mean_fit(config, idata, input_preparation, phys_names)
+
+
+def write_pymc_run_summary(
+    save_path: Path,
+    config: NutritionModifierConfig,
+    idata: az.InferenceData,
+    fit_result: NutritionModifierFitResult,
+    species: str,
+    literature_source: str,
+    plot_ids: list[str],
+    test_plot_ids: list[str],
+    rmse_summary: pl.DataFrame,
+) -> None:
+    """Write the settings, posterior summary and RMSE of a PyMC calibration to a text file.
+
+    Parameters
+    ----------
+    save_path : Path
+        Text file to write.
+    config : NutritionModifierConfig
+        Calibration configuration; its `file_paths` are the training plots.
+    idata : az.InferenceData
+        Posterior draws.
+    fit_result : NutritionModifierFitResult
+        Posterior means, see `posterior_mean_fit`.
+    species : str
+        Species of the plots.
+    literature_source : str
+        Literature source of the 3PG parameters of the plot inputs.
+    plot_ids, test_plot_ids : list[str]
+        Training and test plot ids.
+    rmse_summary : pl.DataFrame
+        RMSE summary of the posterior means, see `evaluate_posterior_mean`.
+    """
+    posterior = cast(Any, idata).posterior
+    modifier_params = jax.tree_util.tree_map(
+        lambda leaf: np.asarray(leaf).tolist(), fit_result.fitted_modifier_params
+    )
+    lines = [
+        "Nutrition modifier PyMC calibration",
+        f"Date: {datetime.now():%Y-%m-%d %H:%M}",
+        "",
+        "Data",
+        f"  species: {species}",
+        f"  literature_source: {literature_source}",
+        f"  train plots ({len(plot_ids)}): {', '.join(plot_ids)}",
+        f"  test plots ({len(test_plot_ids)}): {', '.join(test_plot_ids)}",
+        "",
+        "Settings",
+        # Without the gradient-descent settings, which the calibration does not use
+        *config_summary_lines(
+            config,
+            skip=(
+                "optimizer_name",
+                "learning_rate",
+                "global_clip_norm",
+                "num_epochs",
+                "modifier_l2",
+                "loss_tol",
+                "loss_window",
+                "standardize_targets",
+            ),
+        ),
+        f"  input mean: {np.asarray(fit_result.input_mean).tolist()}",
+        f"  input std: {np.asarray(fit_result.input_std).tolist()}",
+        f"  chains: {posterior.sizes['chain']}, draws per chain: {posterior.sizes['draw']}",
+        "",
+        "Results",
+        f"  posterior-mean modifier params: {modifier_params}",
+        f"  posterior-mean phys params: {fit_result.fitted_phys_params}",
+        "",
+    ]
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3, tbl_width_chars=200):
+        lines += [
+            "Posterior summary",
+            az.summary(idata).to_string(),
+            "",
+            "Mean RMSE of the posterior means",
+            str(rmse_summary),
+        ]
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_text("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
@@ -640,22 +861,33 @@ if __name__ == "__main__":
     from trunx.gp3.nn_nutrition_modifier import split_plot_ids
 
     species = "Picea abies"
-    literature_source = "Trotsiuk"
+    literature_source = "Forrester"
     all_plot_ids = selected_plot_ids()[species]
     all_file_paths = [
         prepare_plot_input(p, literature_source=literature_source) for p in all_plot_ids
     ]
+    input_vars = ("N", "S")
+    modifier_fn = poly_nm
+    # True: resume from the run folder's checkpoint, if any; False: sample from the start
+    resume = False
+    run_dir = (
+        results_data_folder
+        / "nutrition_modifier"
+        / literature_source
+        / "_".join(sorted(input_vars))  # Same folder for ("N", "S") and ("S", "N")
+        / "PyMC"
+        / modifier_fn.__name__
+    )
 
     config = NutritionModifierConfig(
         file_paths=all_file_paths,
         target_vars=["DBH"],
         plot_variables=["BA", "DBH", "WS", "WF", "WR"],
-        input_vars=("N", "S"),
+        input_vars=input_vars,
         matched_start=True,
-        standardize_inputs=True,
         fit_phys_params=[],
-        modifier_fn=poly_nm,
-        image_dir=str(images_folder / "pymc_nutrition_modifier"),
+        modifier_fn=modifier_fn,
+        image_dir=str(run_dir / "images"),
     )
     # Leave out plots the run without the modifier already fits well, before splitting
     # into train and test
@@ -667,7 +899,13 @@ if __name__ == "__main__":
     file_paths = [file_path_of[plot_id] for plot_id in plot_ids]
     test_file_paths = [file_path_of[plot_id] for plot_id in test_plot_ids]
     config = replace(config, file_paths=file_paths)
-    output_dir = os.path.join(results_data_folder, "pymc_nutrition_modifier")
+    output_dir = str(run_dir)
+
+    # Start from an empty image folder, so no figure of an earlier run is left behind; the
+    # checkpoints in `output_dir` are kept, so an interrupted run still resumes
+    image_dir = Path(config.image_dir)
+    shutil.rmtree(image_dir, ignore_errors=True)
+    image_dir.mkdir(parents=True)
 
     idata, fit_result = calibrate_nutrition_modifier_pymc(
         config,
@@ -677,6 +915,7 @@ if __name__ == "__main__":
         step_method="nuts",
         output_dir=output_dir,
         checkpoint_every=250,
+        resume=resume,
     )
     print(az.summary(idata))
     rmse_summary = evaluate_posterior_mean(
@@ -684,20 +923,47 @@ if __name__ == "__main__":
     )
     with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3):
         print(rmse_summary)
+    # In the run folder, next to `images/`, as in the LOOCV and gradient-descent runs
+    run_summary_path = run_dir / "run_summary.txt"
+    write_pymc_run_summary(
+        run_summary_path,
+        config,
+        idata,
+        fit_result,
+        species,
+        literature_source,
+        plot_ids,
+        test_plot_ids,
+        rmse_summary,
+    )
 
-    # 95% posterior prediction interval of the training and test plots
+    # 95% posterior prediction interval of the training and test plots, and of the
+    # modifier's effect on alpha_c and NPP
     for split, split_file_paths, split_ids in (
         ("train", file_paths, plot_ids),
         ("test", test_file_paths, test_plot_ids),
     ):
+        split_config = replace(config, file_paths=split_file_paths)
+        posterior_series = [
+            predict_posterior_bands(config, idata, fit_result, file_path)
+            for file_path in split_file_paths
+        ]
         plot_posterior_predictions(
-            replace(config, file_paths=split_file_paths),
+            split_config,
             split_ids,
-            [
-                predict_posterior_bands(config, idata, fit_result, file_path)
-                for file_path in split_file_paths
-            ],
+            posterior_series,
             save_path=os.path.join(config.image_dir, f"posterior_predictions_{split}.png"),
             show=False,
         )
-    print(f"Saved results to {output_dir} and figures to {config.image_dir}")
+        for var_name in ("alpha_c", "NPP"):
+            plot_posterior_residual_vs_deposition(
+                split_config,
+                split_ids,
+                posterior_series,
+                var_name=var_name,
+                save_path=os.path.join(
+                    config.image_dir, f"{var_name}_residual_posterior_{split}.png"
+                ),
+                show=False,
+            )
+    print(f"Saved results and {run_summary_path} to {output_dir}, figures to {config.image_dir}")
