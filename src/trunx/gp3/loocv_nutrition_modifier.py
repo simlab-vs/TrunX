@@ -2,9 +2,9 @@
 
 Each plot is held out in turn: the modifier is trained on the other plots and evaluated
 on the held-out plot, for each L2 penalty in a grid. Each fold fits its own modifier
-weights, so the weights differ for each held-out plot. The modifier inputs of each fold
-are z-scored with the mean and standard deviation of its training plots (see
-`nn_nutrition_modifier.input_scaling`), so the held-out plot does not enter its scaling.
+weights, so the weights differ for each held-out plot. The modifier inputs of every fold
+are z-scored with the mean and standard deviation of all ICP plots (see
+`nn_nutrition_modifier.input_scaling`), so all folds share the same scaling.
 """
 
 import shutil
@@ -250,6 +250,7 @@ def default_config(
     file_paths: list[str],
     input_vars: tuple[str, ...] = ("N", "S"),
     modifier_fn: Callable[[Any, jnp.ndarray, tuple[str, ...]], jnp.ndarray] = poly_nm,
+    calibrated_params: bool = False,
 ) -> NutritionModifierConfig:
     """Training configuration of the cross-validation over the plots of `file_paths`.
 
@@ -261,6 +262,8 @@ def default_config(
         Deposition inputs of the modifier, `DEPOSITION_CHANNELS` keys.
     modifier_fn : Callable
         Modifier function, `poly_nm` or `mlp_nm`.
+    calibrated_params : bool
+        Whether `file_paths` hold each plot's calibrated parameters.
 
     Returns
     -------
@@ -270,6 +273,7 @@ def default_config(
     return NutritionModifierConfig(
         file_paths=file_paths,
         target_vars=["DBH"],
+        calibrated_params=calibrated_params,
         plot_variables=["BA", "DBH", "WS", "WF", "WR", "N"],
         # Biomass scaled to the initial stems, as 3-PG is not given the thinning
         observed_sheet="observed",
@@ -520,15 +524,24 @@ def run_loocv(
 if __name__ == "__main__":
     species = "Picea abies"
     literature_source = "Forrester"
+    calibrated_params = False  # Use each plot's parameters from the calibration sweep
     plot_ids = selected_plot_ids()[species]
 
     # plot_ids = ["04.1402", "04.1403", "14.0017", "04.0302"]
     file_paths = [
-        prepare_plot_input(plot_id, literature_source=literature_source) for plot_id in plot_ids
+        prepare_plot_input(
+            plot_id, literature_source=literature_source, calibrated=calibrated_params
+        )
+        for plot_id in plot_ids
     ]
     input_vars = ("N", "S")
     modifier_fn = product_nm
-    config = default_config(file_paths, input_vars=input_vars, modifier_fn=modifier_fn)
+    config = default_config(
+        file_paths,
+        input_vars=input_vars,
+        modifier_fn=modifier_fn,
+        calibrated_params=calibrated_params,
+    )
     # Leave out plots without any target observation
     plot_ids, file_paths = with_target_observations(config, plot_ids, file_paths)
     # Leave out plots the run without the modifier already fits well

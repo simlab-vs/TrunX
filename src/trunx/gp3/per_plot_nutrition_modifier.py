@@ -1,7 +1,7 @@
 """Per-plot fit of the gradient-descent nutrition modifier.
 
 The modifier is trained on each plot alone, with the inputs of every plot standardised
-with the statistics pooled over all plots, so the fitted weights are comparable across
+with the statistics pooled over all ICP plots, so the fitted weights are comparable across
 plots. Their mean and standard deviation show how consistent the modifier is.
 """
 
@@ -41,7 +41,7 @@ def fit_per_plot(config: NutritionModifierConfig, plot_ids: list[str]) -> pl.Dat
         `compute_rmse` rows of the target variables of each plot, with its `plot_id` and
         fitted weights (`w00`, `w01`, ...).
     """
-    input_stats = input_statistics(config.file_paths, config.input_vars)
+    input_stats = input_statistics(tuple(config.input_vars))
     tables = []
     for plot_id, file_path in zip(plot_ids, config.file_paths, strict=True):
         plot_config = replace(config, file_paths=[file_path], input_stats=input_stats)
@@ -94,16 +94,16 @@ def summarize_weights(per_plot: pl.DataFrame) -> pl.DataFrame:
 
 
 if __name__ == "__main__":
-    plot_ids = selected_plot_ids()["Picea abies"]
+    plot_ids = ["04.1402"]
     file_paths = [
-        prepare_plot_input(plot_id, literature_source="Trotsiuk") for plot_id in plot_ids
+        prepare_plot_input(plot_id, literature_source="Forrester") for plot_id in plot_ids
     ]
     config = replace(default_config(file_paths), modifier_l2=0.05)
 
     per_plot = fit_per_plot(config, plot_ids)
     weight_summary = summarize_weights(per_plot)
 
-    output_dir = results_data_folder / "nn_nutrition_modifier"
+    output_dir = results_data_folder / "nutrition_modifier/per_plot/"
     output_dir.mkdir(parents=True, exist_ok=True)
     per_plot.write_csv(output_dir / "per_plot.csv")
     weight_summary.write_csv(output_dir / "per_plot_weights.csv")

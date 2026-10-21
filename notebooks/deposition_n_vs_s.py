@@ -24,11 +24,11 @@ def _():
     import polars as pl
 
     from trunx.config import clean_data_folder, results_data_folder
-    from trunx.gp3.extended_helper import DEPOSITION_LIMITS
+    from trunx.gp3.extended_helper import deposition_limits
 
     return (
-        DEPOSITION_LIMITS,
         clean_data_folder,
+        deposition_limits,
         math,
         mcolors,
         np,
@@ -260,7 +260,7 @@ def _(mo, pl, results_data_folder):
 
 @app.cell
 def _(
-    DEPOSITION_LIMITS,
+    deposition_limits,
     l2_selector,
     loocv_plots,
     loocv_summary,
@@ -274,7 +274,7 @@ def _(
 ):
     # Months of the run's plots, clipped as the modifier inputs
     modifier_months = months.filter(pl.col("plot_id").is_in(loocv_plots)).with_columns(
-        pl.col(name).clip(*DEPOSITION_LIMITS[name]) for name in ("N", "S")
+        pl.col(name).clip(*deposition_limits()[name]) for name in ("N", "S")
     )
     input_mean = modifier_months.select("N", "S").mean().row(0)
     input_std = modifier_months.select("N", "S").std(ddof=0).row(0)

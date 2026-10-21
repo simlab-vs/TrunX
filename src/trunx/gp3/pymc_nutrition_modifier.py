@@ -715,7 +715,7 @@ def calibrate_nutrition_modifier_pymc(
     chains: int = 4,
     cores: int | None = None,
     step_method: str = "nuts",
-    modifier_prior_scale: float = 0.5,
+    modifier_prior_scale: float = 0.1,
     output_dir: str | None = None,
     checkpoint_every: int = 500,
     resume_tune: int = 200,
@@ -862,9 +862,11 @@ if __name__ == "__main__":
 
     species = "Picea abies"
     literature_source = "Forrester"
+    calibrated_params = False  # Use each plot's parameters from the calibration sweep
     all_plot_ids = selected_plot_ids()[species]
     all_file_paths = [
-        prepare_plot_input(p, literature_source=literature_source) for p in all_plot_ids
+        prepare_plot_input(p, literature_source=literature_source, calibrated=calibrated_params)
+        for p in all_plot_ids
     ]
     input_vars = ("N", "S")
     modifier_fn = poly_nm
@@ -882,6 +884,7 @@ if __name__ == "__main__":
     config = NutritionModifierConfig(
         file_paths=all_file_paths,
         target_vars=["DBH"],
+        calibrated_params=calibrated_params,
         plot_variables=["BA", "DBH", "WS", "WF", "WR"],
         input_vars=input_vars,
         matched_start=True,

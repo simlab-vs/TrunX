@@ -273,3 +273,5 @@ if __name__ == "__main__":
     #     print(summary)
     # print(f"Saved to {output_dir}")
     print(list(coverage["plot_id"]))
+
+    print(selected_plot_ids())

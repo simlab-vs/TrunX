@@ -2,10 +2,14 @@
 
 import string
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from functools import cache
+from typing import Any, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import polars as pl
+
+from trunx.gp3.prepare_deposition import load_monthly_deposition
 
 INPUT_VARIABLES = ("N", "S", "T_avg")
 # Deposition modifier inputs and their `DepositionData` field: monthly N and S deposition,
@@ -18,23 +22,39 @@ DEPOSITION_CHANNELS = {
     "N_sum": "sum_dep_n_tot",
     "S_sum": "sum_dep_s_so4",
 }
-# Range each deposition input is clipped to before entering the modifier, so rare extreme
-# months (e.g. canopy or pollen events) don't drive the fit: kg ha⁻¹ month⁻¹ for the monthly
-# values and means, kg ha⁻¹ per 12 months for the sums. Upper limits are the 99th percentile
-# of all ICP plot-months in `icp_monthly_deposition.parquet`
-DEPOSITION_LIMITS = {
-    "N": (0.0, 5.0),
-    "S": (0.0, 3.4),
-    "N_avg": (0.0, 3.6),
-    "S_avg": (0.0, 2.8),
-    "N_sum": (0.0, 41.7),
-    "S_sum": (0.0, 30.8),
-}
-# Shift of the raw curvature weights, so all-zero weights (the neutral start, and where
-# the L2 penalty pulls) give almost no curvature: softplus(-5) ≈ 0.007
+# Percentile of all ICP plot-months each deposition input is clipped to at the top, so rare
+# extreme months (e.g. canopy or pollen events) don't drive the fit, see `deposition_limits`
+DEPOSITION_UPPER_QUANTILE = 0.99
+# Form of the curvature `a_k ≥ 0` given by the raw curvature weights, see `_curvature`
+CURVATURE_FORM: Literal["softplus", "squared"] = "softplus"
+# Shift of the raw curvature weights of the "softplus" form, so all-zero weights (the
+# neutral start, and where the L2 penalty pulls) give almost no curvature: softplus(-5) ≈ 0.007
 CURVATURE_SHIFT = -5.0
+# Starting raw curvature weight of each form: `raw**2` has no gradient at 0, so the
+# "squared" start is slightly off zero, giving almost no curvature: 0.1**2 = 0.01
+CURVATURE_INIT = {"softplus": 0.0, "squared": 0.1}[CURVATURE_FORM]
 # Temperature of the smooth minimum of `liebig_nm`
 LIEBIG_TAU = 0.02
+
+
+@cache
+def deposition_limits() -> dict[str, tuple[float, float]]:
+    """Range each deposition input is clipped to before entering the modifier.
+
+    From 0 to the `DEPOSITION_UPPER_QUANTILE` of all ICP plot-months in
+    `icp_monthly_deposition.parquet`, rounded to two decimals.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        (min, max) of each `DEPOSITION_CHANNELS` key: kg ha⁻¹ month⁻¹ for the monthly
+        values and means, kg ha⁻¹ per 12 months for the sums.
+    """
+    upper = load_monthly_deposition().select(
+        pl.col(column).quantile(DEPOSITION_UPPER_QUANTILE).alias(name)
+        for name, column in DEPOSITION_CHANNELS.items()
+    )
+    return {name: (0.0, round(upper[name].item(), 2)) for name in DEPOSITION_CHANNELS}
 
 
 def prepare_modifier_inputs(
@@ -43,7 +63,7 @@ def prepare_modifier_inputs(
     input_mean: jnp.ndarray | float = 0.0,
     input_std: jnp.ndarray | float = 1.0,
 ) -> jnp.ndarray:
-    """Stack the modifier inputs, clip each deposition to its `DEPOSITION_LIMITS` and standardise.
+    """Stack the modifier inputs, clip each deposition to its `deposition_limits` and standardise.
 
     Parameters
     ----------
@@ -63,8 +83,8 @@ def prepare_modifier_inputs(
     """
     inputs = jnp.stack(
         [
-            jnp.clip(channels[name], *DEPOSITION_LIMITS[name])
-            if name in DEPOSITION_LIMITS
+            jnp.clip(channels[name], *deposition_limits()[name])
+            if name in DEPOSITION_CHANNELS
             else jnp.asarray(channels[name])
             for name in input_vars
         ],
@@ -162,7 +182,13 @@ def constant_nm(
 
 
 def _curvature(raw: jnp.ndarray) -> jnp.ndarray:
-    """Non-negative curvature `softplus(raw + CURVATURE_SHIFT)`, almost 0 when `raw == 0`."""
+    """Non-negative curvature of `raw`, in the `CURVATURE_FORM` form.
+
+    "softplus": `softplus(raw + CURVATURE_SHIFT)`, almost 0 when `raw == 0`;
+    "squared": `raw**2`, 0 when `raw == 0`.
+    """
+    if CURVATURE_FORM == "squared":
+        return raw**2
     return jax.nn.softplus(raw + CURVATURE_SHIFT)
 
 

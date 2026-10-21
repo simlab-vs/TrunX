@@ -4,12 +4,15 @@ import argparse
 import os
 import shutil
 import tempfile
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any, cast
 
 import pandas as pd
 import polars as pl
 
 from trunx.config import clean_data_folder, results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import run_dir
 from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES
 from trunx.gp3.bayesiancalibrations.load_files import (
     fit_params_for_mode,
@@ -17,6 +20,7 @@ from trunx.gp3.bayesiancalibrations.load_files import (
     load_priors_from_file,
 )
 from trunx.gp3.bayesiancalibrations.pymc_param_est import plot_saved_results, run_pymc_analysis
+from trunx.gp3.bayesiancalibrations.save_load_results import load_inference_data
 from trunx.gp3.create_combined_inputs import create_plot_input_file, load_plot_tables
 from trunx.gp3.prepare_data import prepare_data
 
@@ -29,7 +33,75 @@ def get_available_cpus() -> int:
     return os.cpu_count() or 1
 
 
-def prepare_plot_input(plot_id: str, literature_source: str, forest_source: str = "ICP") -> str:
+def write_calibrated_input(
+    file_path: str, plot_id: str, literature_source: str, error_mode: str
+) -> str:
+    """Copy a plot's input file with the calibration sweep's NUTS posterior means.
+
+    Parameters
+    ----------
+    file_path : str
+        The plot's uncalibrated input file.
+    plot_id : str
+        ICP plot identifier.
+    literature_source : str
+        Literature source of the calibration run.
+    error_mode : str
+        Error mode of the calibration run (a key of `bayesian_config.ERROR_MODES`).
+
+    Returns
+    -------
+    str
+        Path to the calibrated input Excel file, or `file_path` if the plot has no
+        calibration run.
+    """
+    inference_path = os.path.join(
+        run_dir(plot_id, literature_source, error_mode, include_process_error=False),
+        "nuts",
+        "inference_data.nc",
+    )
+    if not os.path.exists(inference_path):
+        warnings.warn(
+            f"No calibration of plot {plot_id} at {inference_path}, using its uncalibrated "
+            "parameters",
+            stacklevel=3,
+        )
+        return file_path
+    posterior = cast(Any, load_inference_data(inference_path)).posterior
+
+    parameters = pd.read_excel(file_path, sheet_name="parameters")
+    species_columns = [column for column in parameters.columns if column != "parameter"]
+    for name in parameters["parameter"]:
+        if name in posterior.data_vars:
+            parameters.loc[parameters["parameter"] == name, species_columns] = float(
+                posterior[name].mean()
+            )
+
+    plot_dir = os.path.dirname(file_path)
+    calibrated_path = os.path.join(plot_dir, f"{plot_id}_calibrated_{error_mode}_data.xlsx")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
+    os.close(tmp_fd)
+    try:
+        shutil.copy(file_path, tmp_path)
+        with pd.ExcelWriter(
+            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        ) as writer:
+            parameters.to_excel(writer, sheet_name="parameters", index=False)
+        os.replace(tmp_path, calibrated_path)
+    except Exception:
+        os.remove(tmp_path)
+        raise
+
+    return calibrated_path
+
+
+def prepare_plot_input(
+    plot_id: str,
+    literature_source: str,
+    forest_source: str = "ICP",
+    calibrated: bool = False,
+    error_mode: str = "DBH_only",
+) -> str:
     """Get one plot's 3PG input file for `literature_source`, building it once.
 
     Parameters
@@ -42,6 +114,11 @@ def prepare_plot_input(plot_id: str, literature_source: str, forest_source: str 
     forest_source : str
         Dataset of the plot: "ICP", "NFI", "EFM" or "LWF"; the cache is kept in
         `<forest_source>_plots`.
+    calibrated : bool
+        Whether to return a copy whose `parameters` sheet holds the plot's
+        calibrated values from the calibration sweep, see `write_calibrated_input`.
+    error_mode : str
+        Error mode of the calibration run, used only if `calibrated`.
 
     Returns
     -------
@@ -54,24 +131,24 @@ def prepare_plot_input(plot_id: str, literature_source: str, forest_source: str 
     os.makedirs(plot_dir, exist_ok=True)
     file_path = os.path.join(plot_dir, f"{plot_id}_data.xlsx")
 
-    if os.path.exists(file_path):
-        return file_path
+    if not os.path.exists(file_path):
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
+        os.close(tmp_fd)
+        try:
+            create_plot_input_file(
+                plot_id,
+                forest_source,
+                tmp_path,
+                *load_plot_tables(plot_id, forest_source),
+                literature_source=literature_source,
+            )
+            os.replace(tmp_path, file_path)
+        except Exception:
+            os.remove(tmp_path)
+            raise
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
-    os.close(tmp_fd)
-    try:
-        create_plot_input_file(
-            plot_id,
-            forest_source,
-            tmp_path,
-            *load_plot_tables(plot_id, forest_source),
-            literature_source=literature_source,
-        )
-        os.replace(tmp_path, file_path)
-    except Exception:
-        os.remove(tmp_path)
-        raise
-
+    if calibrated:
+        return write_calibrated_input(file_path, plot_id, literature_source, error_mode)
     return file_path
 
 

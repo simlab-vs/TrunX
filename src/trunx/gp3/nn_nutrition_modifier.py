@@ -4,6 +4,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -14,7 +15,7 @@ import numpy as np
 import optax
 import polars as pl
 
-from trunx.config import images_folder, results_data_folder
+from trunx.config import clean_data_folder, images_folder, results_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_config import species_plot_ids
 from trunx.gp3.bayesiancalibrations.pymc_icp_plots import prepare_plot_input
 from trunx.gp3.deposition_coverage import (
@@ -24,6 +25,7 @@ from trunx.gp3.deposition_coverage import (
     selected_plot_ids,
 )
 from trunx.gp3.extended_helper import (
+    CURVATURE_INIT,
     DEPOSITION_CHANNELS,
     INPUT_VARIABLES,
     bivariate_quadratic_nm,
@@ -38,6 +40,7 @@ from trunx.gp3.extended_helper import (
 from trunx.gp3.gradient_descent import apply_fitted_params, load_param_bounds
 from trunx.gp3.model_inputs import ExtendedParams, InputData, SiteData, State
 from trunx.gp3.prepare_data import prepare_data
+from trunx.gp3.prepare_deposition import load_monthly_deposition
 from trunx.gp3.run_3pg import run_3pg
 from trunx.gp3.training_utils import (
     build_observation_indices,
@@ -54,6 +57,8 @@ class NutritionModifierConfig:
 
     file_paths: list[str]  # Input data files, one per plot, calibrated jointly
     target_vars: list[str]  # List of target variables to optimize against
+    # Whether `file_paths` hold each plot's calibrated parameters (see `prepare_plot_input`)
+    calibrated_params: bool = False
 
     # Variables plotted against observations; defaults to `target_vars`
     plot_variables: list[str] | None = None
@@ -75,7 +80,7 @@ class NutritionModifierConfig:
     # Start from the biomass pools derived from the observed DBH (see
     # `matched_initial_state`), instead of the observed biomass
     matched_start: bool = False
-    # Fixed (mean, std) of the modifier inputs; None: those of the training plots `file_paths`
+    # Fixed (mean, std) of the modifier inputs; None: those of all ICP plots (`input_statistics`)
     input_stats: tuple[jnp.ndarray, jnp.ndarray] | None = None
     image_dir: str = field(
         default_factory=lambda: str(images_folder / "nutrition_modifier/constant_modifier")
@@ -91,22 +96,21 @@ class NutritionModifierFitResult:
     fitted_phys_params: dict[str, float]
     loss_history: list[float]
     param_history: list[Any]
-    input_mean: jnp.ndarray  # Training-plot mean of each modifier input
-    input_std: jnp.ndarray  # Training-plot standard deviation of each modifier input
+    input_mean: jnp.ndarray  # Mean each modifier input is z-scored with
+    input_std: jnp.ndarray  # Standard deviation each modifier input is z-scored with
 
 
-def input_statistics(
-    file_paths: list[str], input_vars: tuple[str, ...]
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Mean and standard deviation of each modifier input, pooled over the plots' months.
+@cache
+def input_statistics(input_vars: tuple[str, ...]) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Mean and standard deviation of each modifier input over all ICP plot-months.
 
+    Deposition comes from `icp_monthly_deposition.parquet` and `"T_avg"` from the ICP
+    plots' `tmp_ave` in `trunx_plot_weather.parquet`, without any plot selection.
     Computed after deposition is clipped to its limits (see `prepare_modifier_inputs`),
     so the statistics describe the inputs the modifier actually sees.
 
     Parameters
     ----------
-    file_paths : list[str]
-        Input data files of the plots to pool.
     input_vars : tuple[str, ...]
         Modifier inputs, any of `"T_avg"` and the `DEPOSITION_CHANNELS` keys.
 
@@ -115,17 +119,24 @@ def input_statistics(
     tuple[jnp.ndarray, jnp.ndarray]
         Mean and standard deviation, one entry per `input_vars` item.
     """
-    pooled: list[np.ndarray] = []
-    for file_path in file_paths:
-        input_data = prepare_data(file_path)
-        channels = {"T_avg": input_data.climate.T_avg}
-        if input_data.deposition is not None:
-            for name, field in DEPOSITION_CHANNELS.items():
-                channels[name] = getattr(input_data.deposition, field)
-        pooled.append(np.asarray(prepare_modifier_inputs(channels, input_vars)))
-    values = np.concatenate(pooled, axis=0)
-    std = np.maximum(np.nanstd(values, axis=0), 1e-6)
-    return jnp.asarray(np.nanmean(values, axis=0)), jnp.asarray(std)
+    deposition = load_monthly_deposition()
+    weather = (
+        pl.scan_parquet(clean_data_folder / "trunx_plot_weather.parquet")
+        .filter(pl.col("source") == "ICP")
+        .select("tmp_ave")
+        .collect()
+    )
+    channels = {"T_avg": jnp.asarray(weather["tmp_ave"].to_numpy())}
+    for name, column in DEPOSITION_CHANNELS.items():
+        channels[name] = jnp.asarray(deposition[column].to_numpy())
+
+    # Each input has its own plot-months, so each is pooled on its own
+    means, stds = [], []
+    for name in input_vars:
+        values = np.asarray(prepare_modifier_inputs({name: channels[name]}, (name,)))
+        means.append(np.nanmean(values))
+        stds.append(max(np.nanstd(values), 1e-6))
+    return jnp.asarray(means), jnp.asarray(stds)
 
 
 def init_modifier_params(input_vars: tuple[str, ...] = INPUT_VARIABLES) -> jnp.ndarray:
@@ -163,9 +174,9 @@ def neutral_modifier_params(
     if modifier_fn is poly_nm:
         return init_modifier_params(input_vars)
     if modifier_fn in (product_nm, liebig_nm):
-        return jnp.zeros((len(input_vars), 3))
+        return jnp.zeros((len(input_vars), 3)).at[:, 2].set(CURVATURE_INIT)
     if modifier_fn is bivariate_quadratic_nm:
-        return jnp.zeros(6)
+        return jnp.zeros(6).at[3:5].set(CURVATURE_INIT)
     if modifier_fn is mlp_nm:
         return init_mlp_modifier_params(jax.random.PRNGKey(0), input_vars, hidden_sizes=(4,))
     raise ValueError(f"No initializer wired up for modifier_fn={modifier_fn!r}")
@@ -385,8 +396,8 @@ def input_scaling(config: NutritionModifierConfig) -> tuple[jnp.ndarray, jnp.nda
     Parameters
     ----------
     config : NutritionModifierConfig
-        The statistics are `config.input_stats` if given, else those of the training
-        plots in `config.file_paths` (see `input_statistics`).
+        The statistics are `config.input_stats` if given, else those of all ICP plots
+        (see `input_statistics`).
 
     Returns
     -------
@@ -395,7 +406,7 @@ def input_scaling(config: NutritionModifierConfig) -> tuple[jnp.ndarray, jnp.nda
     """
     if config.input_stats is not None:
         return config.input_stats
-    return input_statistics(config.file_paths, config.input_vars)
+    return input_statistics(tuple(config.input_vars))
 
 
 def phys_param_bounds(config: NutritionModifierConfig) -> dict[str, tuple[float, float]]:
@@ -457,7 +468,7 @@ def train_nutrition_modifier(
     The loss is the mean of the per-plot losses, so every plot weighs equally, plus
     `config.modifier_l2` times the sum of the squared modifier weights; the
     physiological parameters start from the first plot's values. The modifier inputs
-    are z-scored with their mean and standard deviation over these plots (see
+    are z-scored with their mean and standard deviation over all ICP plots (see
     `input_scaling`).
     `initial_modifier_params` must match `config.modifier_fn`'s own parameter pytree —
     e.g. `init_modifier_params` for `poly_nm`, `init_mlp_modifier_params` for `mlp_nm` —
@@ -600,7 +611,7 @@ def build_predicted_series(
     """Simulate one plot (`file_path`) with fitted and default parameters, for plotting.
 
     Uses `config.modifier_fn` — must match whatever `fit_result` was fitted with
-    (see `train_nutrition_modifier`) — and the training plots' input standardisation.
+    (see `train_nutrition_modifier`) — and its input standardisation.
 
     Returns
     -------
@@ -1000,7 +1011,7 @@ def poorly_fitted_without_modifier(
     # Only the run without the modifier (`pred_phys_DBH`) is used, so any modifier will do;
     # constant_nm with a zero weight works whatever `config.modifier_fn` is
     config = replace(config, modifier_fn=constant_nm)
-    input_mean, input_std = input_statistics(file_paths, config.input_vars)
+    input_mean, input_std = input_scaling(config)
     untrained = NutritionModifierFitResult(
         fitted_modifier_params=jnp.zeros(1),
         fitted_phys_params={},
@@ -1058,6 +1069,7 @@ if __name__ == "__main__":
     from trunx.gp3.plots_nutrition_modifier import (
         plot_deposition_density,
         plot_deposition_over_time,
+        plot_learned_modifier_in_deposition_space,
         plot_learned_modifier_vs_deposition,
         plot_modifier_effect_over_time,
         plot_modifier_effect_vs_deposition,
@@ -1074,9 +1086,13 @@ if __name__ == "__main__":
 
     species = "Picea abies"
     literature_source = "Forrester"
+    calibrated_params = False  # Use each plot's parameters from the calibration sweep
+
     all_plot_ids = selected_plot_ids()[species]
     all_file_paths = [
-        prepare_plot_input(plot_id, literature_source=literature_source)
+        prepare_plot_input(
+            plot_id, literature_source=literature_source, calibrated=calibrated_params
+        )
         for plot_id in all_plot_ids
     ]
 
@@ -1094,6 +1110,7 @@ if __name__ == "__main__":
         target_vars=[
             "DBH",
         ],
+        calibrated_params=calibrated_params,
         plot_variables=["BA", "DBH", "WS", "WF", "WR", "N"],
         input_vars=input_vars,
         observed_sheet="observed",
@@ -1209,6 +1226,13 @@ if __name__ == "__main__":
         predicted_series,
         plot_ids,
         save_path=str(image_dir / "f_nutri_classic_learnable_deposition.png"),
+        show=False,
+    )
+    plot_learned_modifier_in_deposition_space(
+        config,
+        predicted_series,
+        plot_ids,
+        save_path=str(image_dir / "learned_modifier_n_vs_s.png"),
         show=False,
     )
     plot_deposition_over_time(

@@ -126,12 +126,34 @@ def _(mo, pl, plt, results_data_folder):
             how="diagonal_relaxed",
         ).with_columns(pl.col("split").str.split(" ").list.first().alias("set"))
 
+    def read_constant_folds(settings: dict[str, str]) -> pl.DataFrame | None:
+        """Folds of `constant_nm` with the source, species and plot selection of `settings`.
+
+        `constant_nm` ignores its inputs, so the runs of any inputs fit. None if no fold
+        has finished.
+        """
+        runs = [
+            run_dir
+            for run_dir in matching_runs(
+                {name: settings[name] for name in ("source", "species", "selection")}
+                | {"modifier": "constant_nm"}
+            )
+            if any(run_dir.glob("l2=*/loocv.csv"))
+        ]
+        return read_folds(runs) if runs else None
+
     def assign_plot_colors(plots: list[str]) -> dict[str, tuple[float, ...]]:
         """Color of each plot, dark tab20 shades first so the first ten differ in hue."""
         tab20 = plt.get_cmap("tab20").colors
         return dict(zip(sorted(plots), tab20[::2] + tab20[1::2], strict=False))
 
-    return assign_plot_colors, matching_runs, read_folds, setting_selectors
+    return (
+        assign_plot_colors,
+        matching_runs,
+        read_constant_folds,
+        read_folds,
+        setting_selectors,
+    )
 
 
 @app.cell
@@ -235,33 +257,64 @@ def _(mo, setting_selectors):
 
 
 @app.cell
-def _(comparison_settings, matching_runs, mo, read_folds):
-    # Folds of every modifier run with the settings
-    _runs = matching_runs(comparison_settings.value)
+def _(comparison_settings, matching_runs, mo, read_constant_folds, read_folds):
+    # Folds of every modifier run with the settings, constant_nm being a baseline
+    _runs = [
+        run_dir
+        for run_dir in matching_runs(comparison_settings.value)
+        if run_dir.parent.name != "constant_nm"
+    ]
     mo.stop(not _runs, mo.md("No run with these settings"))
     comparison_folds = read_folds(_runs)
+    comparison_constant_folds = read_constant_folds(comparison_settings.value)
     comparison_variable = mo.ui.dropdown(
         comparison_folds["variable"].unique(maintain_order=True).to_list(),
         value="DBH",
         label="Variable",
     )
-    mo.output.replace(comparison_variable)
-    return comparison_folds, comparison_variable
+    _baselines = ["without modifier"] + (
+        ["constant_nm"] if comparison_constant_folds is not None else []
+    )
+    comparison_baselines = mo.ui.multiselect(_baselines, value=_baselines, label="Compare with")
+    mo.output.replace(mo.hstack([comparison_variable, comparison_baselines], justify="start"))
+    return (
+        comparison_baselines,
+        comparison_constant_folds,
+        comparison_folds,
+        comparison_variable,
+    )
 
 
 @app.cell
-def _(comparison_folds, comparison_settings, comparison_variable, mo, pl, plt):
-    # Held-out RMSE of every modifier, averaged over the held-out plots
-    _held_out_folds = comparison_folds.filter(
-        pl.col("variable") == comparison_variable.value, pl.col("set") == "test"
+def _(
+    comparison_baselines,
+    comparison_constant_folds,
+    comparison_folds,
+    comparison_settings,
+    comparison_variable,
+    mo,
+    pl,
+    plt,
+):
+    def _mean_held_out_rmse(folds: pl.DataFrame) -> pl.DataFrame:
+        """Held-out RMSE of each modifier and L2 penalty, averaged over the held-out plots."""
+        return (
+            folds.filter(pl.col("variable") == comparison_variable.value, pl.col("set") == "test")
+            .group_by("modifier", "modifier_l2")
+            .agg(pl.col("rmse_fitted", "rmse_phys").mean())
+            .sort("modifier", "modifier_l2")
+        )
+
+    _rmse = _mean_held_out_rmse(comparison_folds)
+    _constant = (
+        _mean_held_out_rmse(comparison_constant_folds)
+        if "constant_nm" in comparison_baselines.value and comparison_constant_folds is not None
+        else None
     )
-    _rmse = (
-        _held_out_folds.group_by("modifier", "modifier_l2")
-        .agg(pl.col("rmse_fitted").mean())
-        .sort("modifier", "modifier_l2")
+    # L2 values on evenly spaced positions, since they span five orders of magnitude
+    _l2_values = sorted(
+        set(_rmse["modifier_l2"]) | (set() if _constant is None else set(_constant["modifier_l2"]))
     )
-    # L2 values on evenly spaced positions, since they span three orders of magnitude
-    _l2_values = sorted(_rmse["modifier_l2"].unique())
     _position = {value: index for index, value in enumerate(_l2_values)}
     modifier_comparison_fig, _ax = plt.subplots(figsize=(9, 4.5), layout="constrained")
     for (_modifier,), _rows in _rmse.group_by("modifier", maintain_order=True):
@@ -271,14 +324,26 @@ def _(comparison_folds, comparison_settings, comparison_variable, mo, pl, plt):
             marker="o",
             label=_modifier,
         )
-    # Without the modifier the RMSE depends neither on the modifier nor on the L2 penalty
-    _ax.axhline(
-        _held_out_folds["rmse_phys"].mean(),
-        color="black",
-        linestyle="--",
-        label="without modifier",
-    )
-    _ax.set_xticks(range(len(_l2_values)), [f"{value:g}" for value in _l2_values])
+    if _constant is not None:
+        # A modifier that ignores deposition, so the deposition-dependent modifiers can
+        # be told apart from a constant change of alpha_c
+        _ax.plot(
+            [_position[value] for value in _constant["modifier_l2"]],
+            _constant["rmse_fitted"],
+            color="gray",
+            linestyle="--",
+            marker="s",
+            label="constant_nm",
+        )
+    if "without modifier" in comparison_baselines.value:
+        # Without the modifier the RMSE depends neither on the modifier nor on the L2 penalty
+        _ax.axhline(
+            _rmse["rmse_phys"].mean(),
+            color="black",
+            linestyle="--",
+            label="without modifier",
+        )
+    _ax.set_xticks(range(len(_l2_values)), [f"{value:g}" for value in _l2_values], rotation=45)
     _ax.set_xlabel("L2 penalty (modifier_l2)")
     _ax.set_ylabel(f"{comparison_variable.value} RMSE, held-out plots")
     _ax.set_title(
@@ -300,10 +365,24 @@ def _(mo, setting_selectors):
 
 
 @app.cell(hide_code=True)
-def _(matching_runs, mo, per_plot_settings, pl, read_folds):
+def _(
+    matching_runs,
+    mo,
+    per_plot_settings,
+    pl,
+    read_constant_folds,
+    read_folds,
+):
     _runs = matching_runs(per_plot_settings.value)
     mo.stop(not _runs, mo.md("No run with these settings"))
     per_plot_folds = read_folds(_runs)
+    per_plot_constant_folds = read_constant_folds(per_plot_settings.value)
+    per_plot_reference = mo.ui.dropdown(
+        ["without modifier"]
+        + (["constant_nm (best L2)"] if per_plot_constant_folds is not None else []),
+        value="without modifier",
+        label="Compared with",
+    )
     per_plot_variable = mo.ui.dropdown(
         per_plot_folds["variable"].unique(maintain_order=True).to_list(),
         value="DBH",
@@ -322,34 +401,61 @@ def _(matching_runs, mo, per_plot_settings, pl, read_folds):
         value=f"{_best_l2:g}",
         label="L2 penalty",
     )
-    mo.output.replace(mo.hstack([per_plot_variable, per_plot_l2], justify="start"))
-    return per_plot_folds, per_plot_l2, per_plot_variable
+    mo.output.replace(
+        mo.hstack([per_plot_variable, per_plot_l2, per_plot_reference], justify="start")
+    )
+    return (
+        per_plot_constant_folds,
+        per_plot_folds,
+        per_plot_l2,
+        per_plot_reference,
+        per_plot_variable,
+    )
 
 
 @app.cell(hide_code=True)
 def _(
     mo,
+    per_plot_constant_folds,
     per_plot_folds,
     per_plot_l2,
+    per_plot_reference,
     per_plot_settings,
     per_plot_variable,
     pl,
     plt,
 ):
+    def _held_out(folds: pl.DataFrame) -> pl.DataFrame:
+        """Held-out rows of the variable, one per plot and L2 penalty."""
+        return folds.filter(pl.col("variable") == per_plot_variable.value, pl.col("set") == "test")
+
+    _per_plot = _held_out(per_plot_folds).filter(pl.col("modifier_l2") == per_plot_l2.value)
+    if per_plot_reference.value == "without modifier" or per_plot_constant_folds is None:
+        _reference_label = "without modifier"
+        _per_plot = _per_plot.with_columns(reference=pl.col("rmse_phys"))
+    else:
+        # constant_nm at the L2 penalty with its lowest mean held-out RMSE, since its L2
+        # penalties differ from the other modifiers'
+        _constant = _held_out(per_plot_constant_folds)
+        _constant_l2 = (
+            _constant.group_by("modifier_l2")
+            .agg(pl.col("rmse_fitted").mean())
+            .sort("rmse_fitted")["modifier_l2"]
+            .first()
+        )
+        _reference_label = f"constant_nm (L2 = {_constant_l2:g})"
+        _per_plot = _per_plot.join(
+            _constant.filter(pl.col("modifier_l2") == _constant_l2).select(
+                "plot", reference=pl.col("rmse_fitted")
+            ),
+            on="plot",
+        )
     # Held-out RMSE improvement of each plot, by the fold that held it out
-    _per_plot = (
-        per_plot_folds.filter(
-            pl.col("variable") == per_plot_variable.value,
-            pl.col("set") == "test",
-            pl.col("modifier_l2") == per_plot_l2.value,
+    _per_plot = _per_plot.with_columns(
+        (100 * (pl.col("reference") - pl.col("rmse_fitted")) / pl.col("reference")).alias(
+            "improvement"
         )
-        .with_columns(
-            (100 * (pl.col("rmse_phys") - pl.col("rmse_fitted")) / pl.col("rmse_phys")).alias(
-                "improvement"
-            )
-        )
-        .sort("improvement")
-    )
+    ).sort("improvement")
     per_plot_fig, _ax = plt.subplots(
         figsize=(8, 0.35 * _per_plot.height + 1.5), layout="constrained"
     )
@@ -359,7 +465,10 @@ def _(
         color=["tab:green" if value > 0 else "tab:red" for value in _per_plot["improvement"]],
     )
     _ax.axvline(0, color="black", linewidth=0.8)
-    _ax.set_xlabel(f"{per_plot_variable.value} RMSE improvement (%), green better, red worse")
+    _ax.set_xlabel(
+        f"{per_plot_variable.value} RMSE improvement over {_reference_label} (%), "
+        "green better, red worse"
+    )
     _improved = (_per_plot["improvement"] > 0).sum()
     _ax.set_title(
         f"Held-out {per_plot_variable.value} RMSE improvement per plot, "
@@ -537,6 +646,131 @@ def _():
 
 
 @app.cell
+def _(mo, setting_selectors):
+    weight_settings = setting_selectors("modifier", "source", "species", "inputs", "selection")
+    mo.output.replace(
+        mo.vstack(
+            [mo.md("## Weights of the held-out folds"), weight_settings.hstack(justify="start")]
+        )
+    )
+    return (weight_settings,)
+
+
+@app.cell(hide_code=True)
+def _(matching_runs, mo, pl, read_folds, weight_settings):
+    _runs = matching_runs(weight_settings.value)
+    mo.stop(not _runs, mo.md("No run with these settings"))
+    weight_folds = read_folds(_runs)
+    mo.stop(
+        weight_settings.value["modifier"] == "mlp_nm",
+        mo.md("`mlp_nm` weights are not saved in `loocv.csv`, see `modifier_weights`"),
+    )
+    # Default to the L2 penalty with the lowest mean held-out DBH RMSE
+    _best_l2 = (
+        weight_folds.filter(pl.col("variable") == "DBH", pl.col("set") == "test")
+        .group_by("modifier_l2")
+        .agg(pl.col("rmse_fitted").mean())
+        .sort("rmse_fitted")["modifier_l2"]
+        .first()
+    )
+    weight_l2 = mo.ui.dropdown(
+        {f"{value:g}": value for value in sorted(weight_folds["modifier_l2"].unique())},
+        value=f"{_best_l2:g}",
+        label="L2 penalty",
+    )
+    mo.output.replace(weight_l2)
+    return weight_folds, weight_l2
+
+
+@app.cell(hide_code=True)
+def _(
+    assign_plot_colors,
+    mo,
+    np,
+    pl,
+    plt,
+    weight_folds,
+    weight_l2,
+    weight_settings,
+):
+    _inputs = tuple(weight_settings.value["inputs"].split("_"))
+    _modifier = weight_settings.value["modifier"]
+
+    def _label(column: str) -> str:
+        """Weight column of `loocv.csv`, e.g. `w01`, with what it multiplies or sets."""
+        index = tuple(int(digit) for digit in column[1:])
+        if _modifier in ("product_nm", "liebig_nm"):
+            # One row (b_k, w_k, raw a_k) per input, see `extended_helper.per_nutrient_nm`
+            return f"{('b', 'w', 'raw a')[index[1]]}_{_inputs[index[0]]}"
+        if _modifier == "bivariate_quadratic_nm":
+            first, second = _inputs
+            names = (
+                "b",
+                f"w_{first}",
+                f"w_{second}",
+                f"raw a_{first}",
+                f"raw a_{second}",
+                "raw ρ",
+            )
+            return names[index[0]]
+        # poly_nm: the power of each input in the term, see `extended_helper._cross_term_poly`
+        term = "·".join(
+            name if power == 1 else f"{name}^{power}"
+            for name, power in zip(_inputs, index, strict=True)
+            if power
+        )
+        return f"{column} ({term or 'const'})"
+
+    _columns = [
+        column for column in weight_folds.columns if column[0] == "w" and column[1:].isdigit()
+    ]
+    # One row per fold, the weights being the same in all rows of a fold
+    _weights = (
+        weight_folds.filter(pl.col("modifier_l2") == weight_l2.value)
+        .unique("held_out", keep="first")
+        .sort("held_out")
+    )
+    _colors = assign_plot_colors(_weights["held_out"].to_list())
+    # Folds side by side within each weight, so their points do not overlap
+    _offsets = np.linspace(-0.3, 0.3, _weights.height)
+    weights_fig, _ax = plt.subplots(
+        figsize=(max(6, 1.3 * len(_columns)) + 2, 4.5), layout="constrained"
+    )
+    for _offset, _fold in zip(_offsets, _weights.iter_rows(named=True), strict=True):
+        _ax.scatter(
+            np.arange(len(_columns)) + _offset,
+            [_fold[column] for column in _columns],
+            s=22,
+            color=_colors[_fold["held_out"]],
+            label=_fold["held_out"].removesuffix("_data"),
+        )
+    # Mean across the folds
+    _ax.scatter(
+        range(len(_columns)),
+        _weights.select(_columns).mean().row(0),
+        marker="_",
+        s=900,
+        color="black",
+        label="mean",
+    )
+    _ax.axhline(0, color="gray", linewidth=0.8)
+    _ax.set_xticks(range(len(_columns)), [_label(column) for column in _columns])
+    _ax.set_ylabel("Fitted weight")
+    _ax.set_title(
+        f"Weights of each held-out fold, L2 = {weight_l2.value:g}\n"
+        + ", ".join(weight_settings.value.values())
+    )
+    _ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize="small", title="Held-out plot")
+    mo.output.replace(weights_fig)
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
 def _():
     # Figures of `loocv_nutrition_modifier.run_loocv` per category, by file name
     figure_categories = {
@@ -570,7 +804,7 @@ def _(mo, setting_selectors):
     return (figure_settings,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(figure_settings, matching_runs, mo, pl):
     _runs = matching_runs(figure_settings.value)
     mo.stop(not _runs, mo.md("No run with these settings"))
@@ -596,7 +830,7 @@ def _(figure_settings, matching_runs, mo, pl):
     return l2, l2_dirs
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(figure_categories, l2, l2_dirs, mo):
     # One tab per category, each with a selector of its figures
     _images = {path.stem: path for path in l2_dirs[l2.value].glob("images/*/*.png")}
@@ -890,11 +1124,8 @@ def _(
         for _index in np.ndindex(_weights.shape):
             _weights[_index] = _row["w" + "".join(map(str, _index))]
         scenario_weights[_plot_id] = _weights
-        # Input statistics of the fold's training plots, as in `leave_one_plot_out`
-        scenario_stats[_plot_id] = input_statistics(
-            [path for path in scenario_config.file_paths if path != file_paths[_plot_id]],
-            scenario_config.input_vars,
-        )
+        # Input statistics of all ICP plots, as in `leave_one_plot_out`
+        scenario_stats[_plot_id] = input_statistics(tuple(scenario_config.input_vars))
         # Deposition has no effect without the modifier, so this run needs no scaling
         runs_without_modifier[_plot_id] = simulate(file_paths[_plot_id], None, None, 1.0, 1.0)
         runs_with_modifier[_plot_id] = simulate(
@@ -1152,18 +1383,121 @@ def _():
 
 @app.cell
 def _(mo, results_data_folder):
-    # Folders of the finished PyMC calibrations, at
-    # nutrition_modifier/<source>/<inputs>/PyMC/[<selection>/]<modifier>, see
-    # pymc_nutrition_modifier.py
-    _pymc_folder = results_data_folder / "nutrition_modifier"
-    _runs = {
-        str(path.parent.relative_to(_pymc_folder)): path.parent
-        for path in sorted(_pymc_folder.glob("*/*/PyMC/**/inference_data.nc"))
-    }
+    # Folders of the finished PyMC calibrations, local and from the cluster, at
+    # <source>/<inputs>/PyMC/[<selection>/]<modifier>, see pymc_nutrition_modifier.py,
+    # grouped by the folder holding one run per modifier
+    _groups = sorted(
+        {
+            path.parent.parent
+            for folder in ("nutrition_modifier", "cluster")
+            for path in (results_data_folder / folder).glob("*/*/PyMC/**/inference_data.nc")
+        }
+    )
     _heading = mo.md("## PyMC calibration")
-    mo.stop(not _runs, mo.vstack([_heading, mo.md("No finished PyMC run")]))
-    pymc_run = mo.ui.dropdown(_runs, value=next(iter(_runs)), label="PyMC run")
-    mo.output.replace(mo.vstack([_heading, pymc_run]))
+    mo.stop(not _groups, mo.vstack([_heading, mo.md("No finished PyMC run")]))
+    _options = {str(group.relative_to(results_data_folder)): group for group in _groups}
+    pymc_group = mo.ui.dropdown(
+        _options,
+        value=next(
+            (name for name in _options if name.startswith("cluster")), next(iter(_options))
+        ),
+        label="PyMC runs",
+    )
+    mo.output.replace(mo.vstack([_heading, pymc_group]))
+    return (pymc_group,)
+
+
+@app.cell
+def _(az, mo, pl, plt, pymc_group):
+    def _rmse_table(run_summary: str) -> pl.DataFrame:
+        """RMSE of the posterior means, from the table of `write_pymc_run_summary`."""
+        rows = [
+            [cell.strip() for cell in line.strip("│ ").split("┆")]
+            for line in run_summary.splitlines()
+            if line.startswith(("│ train", "│ test"))
+        ]
+        return pl.DataFrame(
+            rows,
+            schema=[
+                "split",
+                "variable",
+                "target",
+                "plots",
+                "rmse_fitted",
+                "rmse_phys",
+                "improvement",
+            ],
+            orient="row",
+        ).with_columns(pl.col("plots", "rmse_fitted", "rmse_phys", "improvement").cast(pl.Float64))
+
+    # DBH RMSE of the posterior means and convergence of each modifier's run
+    _rows = []
+    for _run_dir in sorted(pymc_group.value.glob("*/inference_data.nc")):
+        _rmse = _rmse_table((_run_dir.parent / "run_summary.txt").read_text()).filter(
+            pl.col("variable") == "DBH"
+        )
+        _diagnostics = az.summary(az.from_netcdf(_run_dir), kind="diagnostics")
+        _row = {"modifier": _run_dir.parent.name}
+        for _split in ("train", "test"):
+            _split_rmse = _rmse.filter(pl.col("split") == _split).row(0, named=True)
+            _row |= {
+                f"{_split} plots": int(_split_rmse["plots"]),
+                f"{_split} RMSE without modifier": _split_rmse["rmse_phys"],
+                f"{_split} RMSE": _split_rmse["rmse_fitted"],
+                f"{_split} improvement (%)": _split_rmse["improvement"],
+            }
+        _rows.append(
+            _row
+            | {
+                "max r_hat": _diagnostics["r_hat"].max(),
+                "min ess_bulk": _diagnostics["ess_bulk"].min(),
+            }
+        )
+    pymc_comparison = pl.DataFrame(_rows).sort("test improvement (%)", descending=True)
+
+    pymc_comparison_fig, _ax = plt.subplots(figsize=(9, 4), layout="constrained")
+    _x = range(pymc_comparison.height)
+    for _offset, _split, _color in ((-0.2, "train", "tab:blue"), (0.2, "test", "tab:orange")):
+        _ax.bar(
+            [x + _offset for x in _x],
+            pymc_comparison[f"{_split} improvement (%)"],
+            width=0.4,
+            color=_color,
+            label=f"{_split} plots",
+        )
+    _ax.axhline(0, color="black", linewidth=0.8)
+    _ax.set_xticks(list(_x), pymc_comparison["modifier"])
+    _ax.set_ylabel("DBH RMSE improvement (%)")
+    _ax.set_title(
+        "DBH RMSE improvement of the posterior-mean modifier vs without modifier\n"
+        f"{pymc_group.value.name}, train and test plots of one split"
+    )
+    _ax.legend()
+    mo.output.replace(
+        mo.vstack(
+            [
+                pymc_comparison_fig,
+                mo.ui.table(
+                    pymc_comparison.with_columns(pl.selectors.float().round(3)), selection=None
+                ),
+            ]
+        )
+    )
+    return
+
+
+@app.cell
+def _(mo, pymc_group):
+    _runs = {
+        path.parent.name: path.parent
+        for path in sorted(pymc_group.value.glob("*/inference_data.nc"))
+    }
+    pymc_run = mo.ui.dropdown(
+        _runs,
+        value="product_nm" if "product_nm" in _runs else next(iter(_runs)),
+        label="Nutrition modifier",
+    )
+    mo.output.replace(pymc_run)
     return (pymc_run,)
 
 

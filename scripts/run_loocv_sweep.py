@@ -37,6 +37,7 @@ from trunx.gp3.create_combined_inputs import _LITERATURE_SOURCES
 from trunx.gp3.deposition_coverage import selected_plot_ids
 from trunx.gp3.extended_helper import (
     bivariate_quadratic_nm,
+    constant_nm,
     liebig_nm,
     mlp_nm,
     poly_nm,
@@ -77,6 +78,7 @@ L2_VALUES = [
 ]
 DEFAULT_INPUT_VARS = ("N", "S")
 MODIFIERS = {
+    "constant_nm": constant_nm,
     "poly_nm": poly_nm,
     "mlp_nm": mlp_nm,
     "product_nm": product_nm,

@@ -51,6 +51,7 @@ from trunx.gp3.pymc_nutrition_modifier import (
 
 SPECIES = "Picea abies"
 LITERATURE_SOURCE = "Forrester"
+CALIBRATED_PARAMS = False  # Use each plot's parameters from the calibration sweep
 INPUT_VARS = ("N", "S")
 MODIFIERS = {
     "poly_nm": poly_nm,
@@ -94,6 +95,7 @@ def base_config(
     return NutritionModifierConfig(
         file_paths=file_paths,
         target_vars=["DBH"],
+        calibrated_params=CALIBRATED_PARAMS,
         plot_variables=["BA", "DBH", "WS", "WF", "WR"],
         input_vars=INPUT_VARS,
         matched_start=True,
@@ -110,7 +112,8 @@ def prepare() -> None:
 
     all_plot_ids = selected_plot_ids()[SPECIES]
     all_file_paths = [
-        prepare_plot_input(p, literature_source=LITERATURE_SOURCE) for p in all_plot_ids
+        prepare_plot_input(p, literature_source=LITERATURE_SOURCE, calibrated=CALIBRATED_PARAMS)
+        for p in all_plot_ids
     ]
     for plot_selection in PLOT_SELECTIONS:
         plot_ids, file_paths = all_plot_ids, all_file_paths
@@ -134,9 +137,13 @@ def calibrate(plot_selection: str, modifier: str) -> None:
         raise FileNotFoundError(f"{split_path} not found; run with --prepare first")
     split = json.loads(split_path.read_text())
     plot_ids, test_plot_ids = split["train"], split["test"]
-    file_paths = [prepare_plot_input(p, literature_source=LITERATURE_SOURCE) for p in plot_ids]
+    file_paths = [
+        prepare_plot_input(p, literature_source=LITERATURE_SOURCE, calibrated=CALIBRATED_PARAMS)
+        for p in plot_ids
+    ]
     test_file_paths = [
-        prepare_plot_input(p, literature_source=LITERATURE_SOURCE) for p in test_plot_ids
+        prepare_plot_input(p, literature_source=LITERATURE_SOURCE, calibrated=CALIBRATED_PARAMS)
+        for p in test_plot_ids
     ]
     config = base_config(file_paths, plot_selection, modifier)
     output_dir = str(run_dir(plot_selection, modifier))

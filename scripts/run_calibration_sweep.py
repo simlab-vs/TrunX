@@ -80,20 +80,45 @@ species_plot_ids = {
     ],
 }
 
+
+nutrition_modifier_plot_ids = {
+    "Fagus sylvatica": ["05.0003", "05.0012"],
+    "Pinus sylvestris": ["04.1203", "15.0001", "15.0013", "59.0002", "59.0003", "59.0007"],
+    "Picea abies": [
+        "04.1402",
+        "04.1403",
+        "04.1404",
+        "05.0008",
+        "05.0017",
+        "14.0016",
+        "14.0019",
+        "15.0003",
+        "54.0203",
+        "55.0004",
+        "55.0014",
+        "58.0521",
+        "59.0008",
+    ],
+}
+
+
 Forrester_plot_ids = (
-    species_plot_ids["Pinus sylvestris"]
-    + species_plot_ids["Picea abies"]
-    + species_plot_ids["Fagus sylvatica"]
+    nutrition_modifier_plot_ids["Pinus sylvestris"]
+    + nutrition_modifier_plot_ids["Picea abies"]
+    + nutrition_modifier_plot_ids["Fagus sylvatica"]
 )
 
-Trotsiuk_plot_ids = species_plot_ids["Picea abies"] + species_plot_ids["Fagus sylvatica"]
+Trotsiuk_plot_ids = (
+    nutrition_modifier_plot_ids["Picea abies"] + nutrition_modifier_plot_ids["Fagus sylvatica"]
+)
 
-SITES = ["solling"]
+# Sites of each literature source; Trotsiuk has no Pinus sylvestris parameters
+SITES = {"Forrester": Forrester_plot_ids, "Trotsiuk": Trotsiuk_plot_ids}
 
 # METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
-METHODS = ["demetropolisz"]
+METHODS = ["nuts"]
 
-ERROR_KEYS = ["all_error_terms", "biomass_only", "DBH_only"]
+ERROR_KEYS = ["DBH_only", "all_error_terms", "biomass_only"]
 
 ERROR_MODES = {key: ERROR_MODES[key] for key in ERROR_KEYS}
 
@@ -137,15 +162,17 @@ def resolve_source_file_path(site_id: str, literature_source: str) -> str:
     return prepare_plot_input(site_id, literature_source=literature_source)
 
 
-def list_jobs() -> list[tuple[str, str, str]]:
+def list_jobs(literature_source: str = "Forrester") -> list[tuple[str, str, str]]:
     """Every (site_id, mode_name, method) combination the sweep covers.
+
+    The sites are those of `literature_source` in `SITES`.
 
     Index into this list (e.g. via `SLURM_ARRAY_TASK_ID`) to run one combination
     as its own job with `run_job` — see `--job-index`.
     """
     return [
         (site_id, mode_name, method)
-        for site_id in SITES
+        for site_id in SITES[literature_source]
         for mode_name in ERROR_MODES
         for method in METHODS
     ]
@@ -352,7 +379,8 @@ def run_sweep(output_dir: str, **run_job_kwargs) -> None:
     For a real sweep, prefer submitting each combination as its own job (see the
     module docstring) — `**run_job_kwargs` is forwarded to `run_job_with_retry` unchanged.
     """
-    for site_id, mode_name, method in list_jobs():
+    literature_source = run_job_kwargs.get("literature_source", "Forrester")
+    for site_id, mode_name, method in list_jobs(literature_source):
         run_job_with_retry(site_id, mode_name, method, output_dir, **run_job_kwargs)
 
 
@@ -400,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument("--laplace-draws", type=int, default=1000)
     args = parser.parse_args()
 
-    jobs = list_jobs()
+    jobs = list_jobs(args.literature_source)
 
     if args.list_jobs:
         for index, (site_id, mode_name, method) in enumerate(jobs):

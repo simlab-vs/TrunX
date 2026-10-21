@@ -1007,6 +1007,70 @@ def plot_learned_modifier_vs_deposition(
         plt.show()
 
 
+def plot_learned_modifier_in_deposition_space(
+    config: NutritionModifierConfig,
+    predicted_series: list[dict[str, np.ndarray]],
+    plot_ids: list[str],
+    save_path: str | None = None,
+    show: bool = True,
+) -> None:
+    """Scatter each plot-month's N against S deposition, colored by its learned modifier.
+
+    The N and S pair is the one in `config.input_vars` (e.g. 12-month means), monthly N
+    and S otherwise. Colors diverge around 1 (no effect); months with the strongest
+    effect are drawn on top.
+
+    Parameters
+    ----------
+    config : NutritionModifierConfig
+        Gives the plots (`config.file_paths`) and modifier inputs.
+    predicted_series : list[dict[str, np.ndarray]]
+        One `build_predicted_series` result per plot, in `config.file_paths` order.
+    plot_ids : list[str]
+        Plot ids of `config.file_paths`.
+    save_path : str | None
+        File to save the figure to.
+    show : bool
+        Whether to show the figure.
+    """
+    names = next(
+        (pair for pair in _DEPOSITION_PAIRS if set(pair) & set(config.input_vars)), ("N", "S")
+    )
+    n_values, s_values = _load_deposition(config.file_paths, names)
+    n = np.concatenate(n_values)
+    s = np.concatenate(s_values)
+    modifier = np.concatenate([series["learned_modifier"] for series in predicted_series])
+    order = np.argsort(np.abs(modifier - 1.0))
+
+    # Diverging colors centered on no effect, symmetric around it
+    spread = max(float(np.nanmax(np.abs(modifier - 1.0))), 1e-6)
+    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    points = ax.scatter(
+        n[order],
+        s[order],
+        c=modifier[order],
+        s=12,
+        cmap="PuOr",
+        vmin=1.0 - spread,
+        vmax=1.0 + spread,
+        edgecolor="black",
+        linewidth=0.2,
+    )
+    fig.colorbar(points, ax=ax, label="f_learned (1 = no effect)")
+    ax.set_xlim(*_deposition_range(n_values))
+    ax.set_ylim(*_deposition_range(s_values))
+    ax.set_xlabel(_input_label(names[0]))
+    ax.set_ylabel(_input_label(names[1]))
+    ax.set_title(f"Learned nutrition modifier per plot-month ({len(plot_ids)} plots)")
+    ax.grid(alpha=0.3)
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+
+
 def plot_modifier_effect_vs_deposition(
     config: NutritionModifierConfig,
     predicted_series: list[dict[str, np.ndarray]],

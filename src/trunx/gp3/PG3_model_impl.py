@@ -229,7 +229,7 @@ if __name__ == "__main__":
 
     # plot_ids = species_plot_ids["Pinus sylvestris"]
 
-    plot_ids = ["04.0506"]
+    plot_ids = ["08.0034"]
     for plot_id in plot_ids:
         # plot_dbh_distribution(
         #     plot_id=plot_id,
