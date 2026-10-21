@@ -147,7 +147,12 @@ NATURAL_KEYS: dict[str, list[str]] = {
     ],
     "data/monthly_dep_lwf": ["location_code", "start_date", "end_date", "dep_location"],
     "data/period_dep_lwf": ["location_code", "start_date", "end_date", "dep_location"],
-    "data/monthly_litterfall_Davos_ICOS": ["location_code", "start_date", "end_date", "fraction_code"],
+    "data/monthly_litterfall_Davos_ICOS": [
+        "location_code",
+        "start_date",
+        "end_date",
+        "fraction_code",
+    ],
     "data/monthly_litterfall_LWF": [
         "location_code",
         "start_date",
@@ -156,7 +161,12 @@ NATURAL_KEYS: dict[str, list[str]] = {
         "fraction_code_lwf",
         "tree_species",
     ],
-    "data/period_litterfall_Davos_ICOS": ["location_code", "start_date", "end_date", "fraction_code"],
+    "data/period_litterfall_Davos_ICOS": [
+        "location_code",
+        "start_date",
+        "end_date",
+        "fraction_code",
+    ],
     "data/period_litterfall_LWF": [
         "location_code",
         "start_date",
@@ -1123,7 +1133,9 @@ def out_of_range_expr(col: str, bound: Bound) -> pl.Expr:
     return (value.is_not_null() & violated).fill_null(False)
 
 
-def apply_plausible_ranges(df: pl.DataFrame, ranges: dict[str, Bound], stats: dict) -> pl.DataFrame:
+def apply_plausible_ranges(
+    df: pl.DataFrame, ranges: dict[str, Bound], stats: dict
+) -> pl.DataFrame:
     """Step 2: set values outside their plausible range to null.
 
     Rows are not dropped here. A boolean helper column per variable marks the
@@ -1148,7 +1160,7 @@ def apply_plausible_ranges(df: pl.DataFrame, ranges: dict[str, Bound], stats: di
 
 
 def _has_value(df: pl.DataFrame, col: str, restore_range: bool) -> pl.Expr:
-    """True where a cell holds a value; optionally counting range-nulled cells as present."""
+    """Return whether a cell holds a value, including range-nulled cells if requested."""
     expr = pl.col(col).is_not_null()
     flag = f"{BADRANGE_PREFIX}{col}"
     if restore_range and flag in df.columns:
@@ -1388,7 +1400,9 @@ def preprocess_litter_period_davos(raw: pl.DataFrame) -> pl.DataFrame:
     columns are renamed.
     """
     stats = CLEANING_STATS[DS_LITTER_PERIOD_DAVOS]
-    df = standardize_types(raw, TYPE_SCHEMAS[DS_LITTER_PERIOD_DAVOS], stats, DS_LITTER_PERIOD_DAVOS)
+    df = standardize_types(
+        raw, TYPE_SCHEMAS[DS_LITTER_PERIOD_DAVOS], stats, DS_LITTER_PERIOD_DAVOS
+    )
     df = df.drop(["LWF_plot"])
     return df.rename(
         {
@@ -1442,7 +1456,7 @@ def remove_implausible_foliage_i(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def remove_implausible_foliage_plot(df: pl.DataFrame) -> pl.DataFrame:
-    """Set implausible foliage weight (gew100) values in the lwf_foliage_dw100_plot file to null."""
+    """Set implausible foliage weights in the lwf_foliage_dw100_plot file to null."""
     return apply_plausible_ranges(
         df, PLAUSIBLE_RANGES[DS_FOLIAGE_PLOT], CLEANING_STATS[DS_FOLIAGE_PLOT]
     )
@@ -1463,28 +1477,28 @@ def remove_implausible_dep_period(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def remove_implausible_litter_monthly_davos(df: pl.DataFrame) -> pl.DataFrame:
-    """Set implausible litterfall weight values in the Davos ICOS monthly litterfall file to null."""
+    """Set implausible weights in the Davos ICOS monthly litterfall file to null."""
     return apply_plausible_ranges(
         df, PLAUSIBLE_RANGES[DS_LITTER_MONTHLY_DAVOS], CLEANING_STATS[DS_LITTER_MONTHLY_DAVOS]
     )
 
 
 def remove_implausible_litter_monthly_lwf(df: pl.DataFrame) -> pl.DataFrame:
-    """Set implausible litterfall weight and day count values in the LWF monthly litterfall file to null."""
+    """Set implausible weights and day counts in the LWF monthly litterfall file to null."""
     return apply_plausible_ranges(
         df, PLAUSIBLE_RANGES[DS_LITTER_MONTHLY_LWF], CLEANING_STATS[DS_LITTER_MONTHLY_LWF]
     )
 
 
 def remove_implausible_litter_period_davos(df: pl.DataFrame) -> pl.DataFrame:
-    """Set implausible litterfall weight values in the Davos ICOS period litterfall file to null."""
+    """Set implausible weights in the Davos ICOS period litterfall file to null."""
     return apply_plausible_ranges(
         df, PLAUSIBLE_RANGES[DS_LITTER_PERIOD_DAVOS], CLEANING_STATS[DS_LITTER_PERIOD_DAVOS]
     )
 
 
 def remove_implausible_litter_period_lwf(df: pl.DataFrame) -> pl.DataFrame:
-    """Set implausible litterfall weight and day count values in the LWF period litterfall file to null."""
+    """Set implausible weights and day counts in the LWF period litterfall file to null."""
     return apply_plausible_ranges(
         df, PLAUSIBLE_RANGES[DS_LITTER_PERIOD_LWF], CLEANING_STATS[DS_LITTER_PERIOD_LWF]
     )
