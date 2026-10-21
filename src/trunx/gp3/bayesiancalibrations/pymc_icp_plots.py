@@ -4,18 +4,24 @@ import argparse
 import os
 import shutil
 import tempfile
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any, cast
 
 import pandas as pd
+import polars as pl
 
-from trunx.config import results_data_folder, threepg_data_folder
-from trunx.gp3.bayesiancalibrations.bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES
+from trunx.config import clean_data_folder, results_data_folder, threepg_data_folder
+from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import run_dir
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES
 from trunx.gp3.bayesiancalibrations.load_files import (
+    fit_params_for_mode,
     load_observations_from_file,
     load_priors_from_file,
 )
 from trunx.gp3.bayesiancalibrations.pymc_param_est import plot_saved_results, run_pymc_analysis
-from trunx.gp3.create_data_inputs import create_input_data
+from trunx.gp3.bayesiancalibrations.save_load_results import load_inference_data
+from trunx.gp3.create_combined_inputs import create_plot_input_file, load_plot_tables
 from trunx.gp3.prepare_data import prepare_data
 
 
@@ -27,119 +33,122 @@ def get_available_cpus() -> int:
     return os.cpu_count() or 1
 
 
-_LITERATURE_SOURCES = {
-    "Forrester": "literature_params_forrester_forrester.parquet",
-    "Forrester_default": "literature_params_forrester_default.parquet",
-    "Trotsiuk": "literature_params_trotsiuk.parquet",
-}
-
-
-def _load_species_param_bound(
-    species_name: str, literature_source: str = "Forrester"
-) -> pd.DataFrame:
-    """Build a param_bound table for one species from the literature parquet.
+def write_calibrated_input(
+    file_path: str, plot_id: str, literature_source: str, error_mode: str
+) -> str:
+    """Copy a plot's input file with the calibration sweep's NUTS posterior means.
 
     Parameters
     ----------
-    species_name : str
-        Species name as it appears in the literature parquet (e.g. "Picea abies").
+    file_path : str
+        The plot's uncalibrated input file.
+    plot_id : str
+        ICP plot identifier.
     literature_source : str
-        Which literature table to load bounds from — one of `_LITERATURE_SOURCES`
-        (`"Forrester"`, `"Forrester_default"`, `"Trotsiuk"`).
+        Literature source of the calibration run.
+    error_mode : str
+        Error mode of the calibration run (a key of `bayesian_config.ERROR_MODES`).
 
     Returns
     -------
-    pd.DataFrame
-        Columns: param_name, default, min, max.
+    str
+        Path to the calibrated input Excel file, or `file_path` if the plot has no
+        calibration run.
     """
-    if literature_source not in _LITERATURE_SOURCES:
-        raise ValueError(f"Unknown literature source: {literature_source}")
-    literature_path = os.path.join(threepg_data_folder, _LITERATURE_SOURCES[literature_source])
-    literature_bound = pd.read_parquet(literature_path)
-    literature_bound = literature_bound[literature_bound["species"] == species_name]
-    if literature_bound.empty:
-        raise ValueError(f"No literature parameter bounds found for species: {species_name}")
-    param_bound = literature_bound.rename(columns={"parameter": "param_name"})
+    inference_path = os.path.join(
+        run_dir(plot_id, literature_source, error_mode, include_process_error=False),
+        "nuts",
+        "inference_data.nc",
+    )
+    if not os.path.exists(inference_path):
+        warnings.warn(
+            f"No calibration of plot {plot_id} at {inference_path}, using its uncalibrated "
+            "parameters",
+            stacklevel=3,
+        )
+        return file_path
+    posterior = cast(Any, load_inference_data(inference_path)).posterior
 
-    return param_bound[["param_name", "default", "min", "max"]]
+    parameters = pd.read_excel(file_path, sheet_name="parameters")
+    species_columns = [column for column in parameters.columns if column != "parameter"]
+    for name in parameters["parameter"]:
+        if name in posterior.data_vars:
+            parameters.loc[parameters["parameter"] == name, species_columns] = float(
+                posterior[name].mean()
+            )
+
+    plot_dir = os.path.dirname(file_path)
+    calibrated_path = os.path.join(plot_dir, f"{plot_id}_calibrated_{error_mode}_data.xlsx")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
+    os.close(tmp_fd)
+    try:
+        shutil.copy(file_path, tmp_path)
+        with pd.ExcelWriter(
+            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        ) as writer:
+            parameters.to_excel(writer, sheet_name="parameters", index=False)
+        os.replace(tmp_path, calibrated_path)
+    except Exception:
+        os.remove(tmp_path)
+        raise
+
+    return calibrated_path
 
 
-def prepare_plot_input(plot_id: str, literature_source: str) -> str:
+def prepare_plot_input(
+    plot_id: str,
+    literature_source: str,
+    forest_source: str = "ICP",
+    calibrated: bool = False,
+    error_mode: str = "DBH_only",
+) -> str:
     """Get one plot's 3PG input file for `literature_source`, building it once.
-
-    Cached at `icp_plots/<literature_source>/<plot_id>_data.xlsx`: if that file
-    already exists, it's returned as-is rather than rebuilt. Regenerating from raw
-    ICP data is expensive and deterministic given `(plot_id, literature_source)`.
-    Delete the file to force a fresh rebuild, e.g. after the underlying raw ICP
-    data changes, or if `run_calibration_sweep.py`'s retry logic reports it corrupt.
-
-    Built entirely under a uniquely-named temp file in the same directory, then
-    moved into place with `os.replace` (atomic on POSIX) only once complete — so a
-    job crashing mid-build never leaves a half-written `.xlsx` behind, and several
-    `run_calibration_sweep.py` jobs racing to build the same plot_id/source at once
-    just redo the same work redundantly rather than corrupting each other's output.
 
     Parameters
     ----------
     plot_id : str
-        ICP plot identifier.
+        Plot identifier within `forest_source`.
     literature_source : str
-        Forwarded to `_load_species_param_bound`; also the cache's subdirectory.
+        Forwarded to `create_combined_inputs.create_plot_input_file`; also the
+        cache's subdirectory.
+    forest_source : str
+        Dataset of the plot: "ICP", "NFI", "EFM" or "LWF"; the cache is kept in
+        `<forest_source>_plots`.
+    calibrated : bool
+        Whether to return a copy whose `parameters` sheet holds the plot's
+        calibrated values from the calibration sweep, see `write_calibrated_input`.
+    error_mode : str
+        Error mode of the calibration run, used only if `calibrated`.
 
     Returns
     -------
     str
         Path to the plot's input Excel file.
     """
-    plot_dir = os.path.join(threepg_data_folder, "icp_plots", literature_source)
+    plot_dir = os.path.join(
+        threepg_data_folder, f"{forest_source.lower()}_plots", literature_source
+    )
     os.makedirs(plot_dir, exist_ok=True)
     file_path = os.path.join(plot_dir, f"{plot_id}_data.xlsx")
 
-    if os.path.exists(file_path):
-        return file_path
-
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
-    os.close(tmp_fd)
-    try:
-        create_input_data(tmp_path, plot_id)
-
-        species_names = pd.read_excel(tmp_path, sheet_name="species")["species"].unique().tolist()
-        if len(species_names) != 1:
-            raise ValueError(
-                f"Expected a single-species plot for {plot_id}, found: {species_names}"
+    if not os.path.exists(file_path):
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{plot_id}_", dir=plot_dir)
+        os.close(tmp_fd)
+        try:
+            create_plot_input_file(
+                plot_id,
+                forest_source,
+                tmp_path,
+                *load_plot_tables(plot_id, forest_source),
+                literature_source=literature_source,
             )
-        species_name = species_names[0]
+            os.replace(tmp_path, file_path)
+        except Exception:
+            os.remove(tmp_path)
+            raise
 
-        solling_path = os.path.join(threepg_data_folder, "solling_data.xlsx")
-        error_bound = pd.read_excel(solling_path, sheet_name="error_param")
-
-        param_bound = _load_species_param_bound(species_name, literature_source=literature_source)
-
-        observed_data = pd.read_excel(tmp_path, sheet_name="observed")
-        observed_data = observed_data.rename(columns={"Date": "date", "stems_n": "N"})
-        required_cols = ["month", "year", "date", "DBH", "WS", "WF", "WR", "BA", "Height"]
-        # `N` (stems/ha) isn't required for calibration itself — it's kept only so plots can
-        # show the "mean tree" DBH implied by inverting aWS/nWS on the observed WS/N, next to
-        # the field-measured quadratic mean diameter, to visualize the Jensen's-gap between
-        # the two aggregations. Dropped from the required set so a missing N doesn't discard
-        # an otherwise-complete observation row.
-        observed_data = observed_data[[*required_cols, "N"]].dropna(subset=required_cols)
-
-        with pd.ExcelWriter(
-            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
-        ) as writer:
-            param_bound.to_excel(writer, sheet_name="param_bound", index=False)
-            error_bound.to_excel(writer, sheet_name="error_param", index=False)
-            observed_data.to_excel(writer, sheet_name="observed", index=False)
-            pd.read_excel(tmp_path, sheet_name="observed").to_excel(
-                writer, sheet_name="all_observed", index=False
-            )
-
-        os.replace(tmp_path, file_path)
-    except Exception:
-        os.remove(tmp_path)
-        raise
-
+    if calibrated:
+        return write_calibrated_input(file_path, plot_id, literature_source, error_mode)
     return file_path
 
 
@@ -147,9 +156,11 @@ def run_bayesian_for_plot(
     plot_id: str,
     chains: int = 3,
     cores: int | None = None,
+    error_mode: str = "DBH_only",
     num_warmup: int = 10000,
     num_samples: int = 10000,
     literature_source: str = "Forrester",
+    include_process_error: bool = False,
 ) -> str:
     """Prepare inputs and run Bayesian calibration for one ICP plot.
 
@@ -159,8 +170,12 @@ def run_bayesian_for_plot(
         ICP plot identifier.
     chains, cores, num_warmup, num_samples
         Passed through to `run_pymc_analysis`.
+    error_mode : str
+        The error mode to use for the calibration.
     literature_source : str
         Forwarded to `prepare_plot_input`.
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis` — see its docstring.
 
     Returns
     -------
@@ -168,12 +183,10 @@ def run_bayesian_for_plot(
         The plot_id, on successful completion.
     """
     file_path = prepare_plot_input(plot_id, literature_source=literature_source)
-    param_bound = pd.read_excel(file_path, sheet_name="param_bound")
-    fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
+    fit_params = fit_params_for_mode(file_path, error_mode)
+
     error_names = [
-        name
-        for name in load_priors_from_file(file_path)
-        if name.startswith("err_") and name not in DIAGNOSTIC_ONLY_ERROR_NAMES
+        name for name in load_priors_from_file(file_path) if name in ERROR_MODES[error_mode]
     ]
 
     output_dir = os.path.join(results_data_folder, f"pymc_inference_results_{plot_id}")
@@ -187,6 +200,8 @@ def run_bayesian_for_plot(
         output_dir=output_dir,
         file_path=file_path,
         param_to_optimize=fit_params + error_names,
+        include_process_error=include_process_error,
+        error_mode=error_mode,
         chains=chains,
         cores=cores,
         num_warmup=num_warmup,
@@ -198,10 +213,12 @@ def run_bayesian_for_plot(
 
 def run_bayesian_calibration(
     plot_ids: list[str],
+    error_mode: str = "DBH_only",
     chains: int = 3,
     num_warmup: int = 100,
     num_samples: int = 100,
     literature_source: str = "Forrester",
+    include_process_error: bool = False,
 ) -> None:
     """Run Bayesian calibration for multiple ICP plots in parallel.
 
@@ -213,6 +230,8 @@ def run_bayesian_calibration(
         Passed through to `run_pymc_analysis`.
     literature_source : str
         Forwarded to `prepare_plot_input`.
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis` — see its docstring.
     """
     available_cpus = get_available_cpus()
     max_workers = max(1, min(len(plot_ids), available_cpus // chains))
@@ -230,6 +249,8 @@ def run_bayesian_calibration(
                 num_warmup=num_warmup,
                 num_samples=num_samples,
                 literature_source=literature_source,
+                error_mode=error_mode,
+                include_process_error=include_process_error,
             ): plot_id
             for plot_id in plot_ids
         }
@@ -281,6 +302,7 @@ if __name__ == "__main__":
 
     plot_ids = [plot_id for species in species_plot_ids.values() for plot_id in species]
 
+    plot_ids = ["04.0302"]
     # Add argument parser
     parser = argparse.ArgumentParser(description="Run Bayesian calibration for ICP plots")
     parser.add_argument(
@@ -289,6 +311,19 @@ if __name__ == "__main__":
     parser.add_argument("--chains", type=int, default=3, help="Number of MCMC chains")
     parser.add_argument("--warmup", type=int, default=5000, help="Number of warmup samples")
     parser.add_argument("--samples", type=int, default=5000, help="Number of posterior samples")
+    parser.add_argument(
+        "--error-mode",
+        type=str,
+        default="DBH_only",
+        choices=list(ERROR_MODES.keys()),
+        help="Error mode to use for calibration",
+    )
+    parser.add_argument(
+        "--include-process-error",
+        action="store_true",
+        help="Additionally treat the initial-state biomass pools WS0/WR0/WF0 as "
+        "uncertain, fitted quantities (see bayesian_config.INITIAL_STATE_PARAMS).",
+    )
 
     args = parser.parse_args()
 
@@ -301,6 +336,8 @@ if __name__ == "__main__":
         chains=args.chains,
         num_warmup=args.warmup,
         num_samples=args.samples,
+        error_mode=args.error_mode,
+        include_process_error=args.include_process_error,
     )
 
     # Example plot

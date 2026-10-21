@@ -1,13 +1,10 @@
 """Run DEMetropolisZ, NUTS, gradient descent, and MAP for every site, twice each.
 
-Once fitting all error terms (DBH/BA/Height included), and once fitting only
-biomass (WS/WF/WR) — the project's default, see `bayesian_config`'s
-`DIAGNOSTIC_ONLY_ERROR_NAMES`. The two modes are produced by temporarily
-overriding that constant rather than by any new calibration logic: DEMetropolisZ,
-NUTS, and MAP all read it (via `pymc_param_est`/`map_param_est`) to decide which
-error priors to drop before sampling/optimising; gradient descent has no sigma
-priors at all, so its equivalent is fitting against all six `PLOT_VARIABLES`
-instead of biomass alone.
+Once per error mode in `ERROR_KEYS` (see `bayesian_config.ERROR_MODES`), which
+selects the observed variables that are fitted. DEMetropolisZ, NUTS, and MAP take it
+as their `error_mode` argument, which drops the excluded error priors before
+sampling/optimising; gradient descent has no sigma priors at all, so its equivalent
+is fitting against the `PLOT_VARIABLES` the mode does not exclude.
 
 Writes `<output-dir>/<site_id>/<mode>/{demetropolisz,nuts,map,gradient_descent}/` for
 `"solling"`, and `<output-dir>/<site_id>/<literature_source>/<mode>/{...}/` for every
@@ -25,8 +22,6 @@ import shutil
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import pandas as pd
 
@@ -34,8 +29,9 @@ import trunx.gp3.bayesiancalibrations.map_param_est as map_param_est
 import trunx.gp3.bayesiancalibrations.pymc_param_est as pymc_param_est
 from trunx.config import results_data_folder, threepg_data_folder
 from trunx.gp3.bayesiancalibrations.bayesian_comparison_plots import PLOT_VARIABLES
-from trunx.gp3.bayesiancalibrations.bayesian_config import FIT_PARAMS
+from trunx.gp3.bayesiancalibrations.bayesian_config import ERROR_MODES
 from trunx.gp3.bayesiancalibrations.load_files import (
+    fit_params_for_mode,
     literature_bound_overrides,
     load_priors_from_file,
 )
@@ -47,39 +43,84 @@ from trunx.gp3.gradient_descent import GradientDescentConfig, fit_with_gradient_
 # pymc_icp_plots.py's species_plot_ids, and scripts/run_comparison_site.py). "solling"
 # is Solling's own hand-curated file; every other entry is an ICP plot_id, resolved to
 # its input file by (re)generating it — see resolve_source_file_path.
-SITES = ["solling", "04.1605", "14.0003", "14.0012"]
 
-ERROR_MODES: dict[str, frozenset[str]] = {
-    "all_error_terms": frozenset(),
-    "biomass_only": frozenset({"err_DBH", "err_BA", "err_Height"}),
-    "biomass_DBH_only": frozenset({"err_BA", "err_Height"}),
+species_plot_ids = {
+    "Pinus sylvestris": [
+        "01.0082",
+        "04.1303",
+        "51.0015",
+        "53.0109",
+        "53.0112",
+        "53.0114",
+        "53.0302",
+        "53.0306",
+        "53.0311",
+        "53.0312",
+        "53.0313",
+        "53.0316",
+        "53.0407",
+        "53.0501",
+        "53.0513",
+        "53.0603",
+        "53.0617",
+        "53.0618",
+        "53.0623",
+        "59.0001",
+        "59.0003",
+    ],
+    "Fagus sylvatica": ["04.0101", "04.0704", "08.0034", "53.0107"],
+    "Picea abies": [
+        "04.0302",
+        "04.1402",
+        "04.1403",
+        "14.0017",
+        "52.0010",
+        "53.0701",
+        "59.0008",
+    ],
 }
 
+
+nutrition_modifier_plot_ids = {
+    "Fagus sylvatica": ["05.0003", "05.0012"],
+    "Pinus sylvestris": ["04.1203", "15.0001", "15.0013", "59.0002", "59.0003", "59.0007"],
+    "Picea abies": [
+        "04.1402",
+        "04.1403",
+        "04.1404",
+        "05.0008",
+        "05.0017",
+        "14.0016",
+        "14.0019",
+        "15.0003",
+        "54.0203",
+        "55.0004",
+        "55.0014",
+        "58.0521",
+        "59.0008",
+    ],
+}
+
+
+Forrester_plot_ids = (
+    nutrition_modifier_plot_ids["Pinus sylvestris"]
+    + nutrition_modifier_plot_ids["Picea abies"]
+    + nutrition_modifier_plot_ids["Fagus sylvatica"]
+)
+
+Trotsiuk_plot_ids = (
+    nutrition_modifier_plot_ids["Picea abies"] + nutrition_modifier_plot_ids["Fagus sylvatica"]
+)
+
+# Sites of each literature source; Trotsiuk has no Pinus sylvestris parameters
+SITES = {"Forrester": Forrester_plot_ids, "Trotsiuk": Trotsiuk_plot_ids}
+
 # METHODS = ["demetropolisz", "nuts", "map", "gradient_descent"]
-METHODS = ["nuts", "map"]
-# Modules that did `from bayesian_config import DIAGNOSTIC_ONLY_ERROR_NAMES` and so
-# each hold their own binding of it — patched directly by `diagnostic_only_error_names`.
-_PATCHED_MODULES = (pymc_param_est, map_param_est)
+METHODS = ["nuts"]
 
+ERROR_KEYS = ["DBH_only", "all_error_terms", "biomass_only"]
 
-@contextmanager
-def diagnostic_only_error_names(names: frozenset[str]) -> Iterator[None]:
-    """Temporarily override `DIAGNOSTIC_ONLY_ERROR_NAMES` for `pymc_param_est`/`map_param_est`.
-
-    Both modules imported the frozenset by name (`from bayesian_config import
-    DIAGNOSTIC_ONLY_ERROR_NAMES`), which binds it into their own module namespace —
-    reassigning `bayesian_config.DIAGNOSTIC_ONLY_ERROR_NAMES` itself wouldn't reach
-    either already-bound name, so this patches each module's own attribute directly
-    instead, restoring the original afterward.
-    """
-    originals = [module.DIAGNOSTIC_ONLY_ERROR_NAMES for module in _PATCHED_MODULES]
-    for module in _PATCHED_MODULES:
-        module.DIAGNOSTIC_ONLY_ERROR_NAMES = names
-    try:
-        yield
-    finally:
-        for module, original in zip(_PATCHED_MODULES, originals, strict=True):
-            module.DIAGNOSTIC_ONLY_ERROR_NAMES = original
+ERROR_MODES = {key: ERROR_MODES[key] for key in ERROR_KEYS}
 
 
 def apply_literature_bounds(file_path: str) -> None:
@@ -121,15 +162,17 @@ def resolve_source_file_path(site_id: str, literature_source: str) -> str:
     return prepare_plot_input(site_id, literature_source=literature_source)
 
 
-def list_jobs() -> list[tuple[str, str, str]]:
+def list_jobs(literature_source: str = "Forrester") -> list[tuple[str, str, str]]:
     """Every (site_id, mode_name, method) combination the sweep covers.
+
+    The sites are those of `literature_source` in `SITES`.
 
     Index into this list (e.g. via `SLURM_ARRAY_TASK_ID`) to run one combination
     as its own job with `run_job` — see `--job-index`.
     """
     return [
         (site_id, mode_name, method)
-        for site_id in SITES
+        for site_id in SITES[literature_source]
         for mode_name in ERROR_MODES
         for method in METHODS
     ]
@@ -142,6 +185,7 @@ def run_job(
     output_dir: str,
     literature_source: str = "Forrester",
     chains: int = 3,
+    include_process_error: bool = False,
     demetropolisz_num_warmup: int = 1_000_000,
     demetropolisz_num_samples: int = 5_000_000,
     nuts_num_warmup: int = 1000,
@@ -157,7 +201,8 @@ def run_job(
     site_id : str
         An entry in `SITES` — `"solling"` or an ICP plot_id (see `resolve_source_file_path`).
     mode_name : str
-        A key into `ERROR_MODES`.
+        A key into `ERROR_MODES` — selects which *observation*-noise `err_*` terms are
+        fit (e.g. `"DBH_only"` fits only `err_DBH`).
     method : str
         One of `METHODS`.
     output_dir : str
@@ -167,6 +212,12 @@ def run_job(
         isn't regenerated from literature bounds).
     chains : int
         Forwarded to the PyMC runs (`run_pymc_analysis`).
+    include_process_error : bool
+        Forwarded to `run_pymc_analysis`/`run_map_analysis` (ignored for
+        `"gradient_descent"`, which has no sigma-prior mechanism at all). Independent
+        of `mode_name` — fits all 3 of `perr_WS`/`perr_WR`/`perr_WF` regardless of
+        which observation-noise terms `mode_name` selects, e.g. `"all_error_terms"`
+        with this on fits 6 observation-noise sigmas plus 3 process-error sigmas.
     demetropolisz_num_warmup, demetropolisz_num_samples : int
         Forwarded to the DEMetropolisZ run. It needs far more draws than NUTS for a
         comparable effective sample size (see `pymc_param_est.run_pymc_inference`).
@@ -176,7 +227,7 @@ def run_job(
         Forwarded to the MAP run (`run_map_analysis`).
     """
     source_file_path = resolve_source_file_path(site_id, literature_source=literature_source)
-    diagnostic_only_names = ERROR_MODES[mode_name]
+    fitted_names = ERROR_MODES[mode_name]
 
     if site_id == "solling":
         site_output_dir = os.path.join(output_dir, site_id)
@@ -204,58 +255,59 @@ def run_job(
         os.remove(tmp_path)
         raise
 
-    param_bound = pd.read_excel(file_path, sheet_name="param_bound")
-    if site_id == "solling":
-        fit_params = FIT_PARAMS
-    else:
-        fit_params = param_bound.dropna(subset=["min", "max"])["param_name"].tolist()
+    fit_params = fit_params_for_mode(file_path, mode_name)
+
     error_names = [name for name in load_priors_from_file(file_path) if name.startswith("err_")]
+
     param_names = fit_params + error_names
 
     print(f"\n{'=' * 60}\n{site_id} / {mode_name} / {method}\n{'=' * 60}")
     start = time.perf_counter()
 
     if method == "demetropolisz":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            # Fixed at 10 checkpoints total regardless of num_warmup/num_samples — at
-            # the default 5e6 samples, the run_pymc_analysis default (500) would mean
-            # 10,000 checkpoints, each paying its own disk-write overhead.
-            demetropolisz_checkpoint_every = max(500, demetropolisz_num_samples // 5)
-            pymc_param_est.run_pymc_analysis(
-                output_dir=os.path.join(site_dir, "demetropolisz"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                chains=chains,
-                num_warmup=demetropolisz_num_warmup,
-                num_samples=demetropolisz_num_samples,
-                checkpoint_every=demetropolisz_checkpoint_every,
-                step_method="demetropolisz",
-            )
+        # Fixed at 10 checkpoints total regardless of num_warmup/num_samples — at
+        # the default 5e6 samples, the run_pymc_analysis default (500) would mean
+        # 10,000 checkpoints, each paying its own disk-write overhead.
+        demetropolisz_checkpoint_every = max(500, demetropolisz_num_samples // 5)
+        pymc_param_est.run_pymc_analysis(
+            output_dir=os.path.join(site_dir, "demetropolisz"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            chains=chains,
+            num_warmup=demetropolisz_num_warmup,
+            num_samples=demetropolisz_num_samples,
+            checkpoint_every=demetropolisz_checkpoint_every,
+            step_method="demetropolisz",
+        )
     elif method == "nuts":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            nuts_checkpoint_every = max(1, nuts_num_samples // 5)
-            pymc_param_est.run_pymc_analysis(
-                output_dir=os.path.join(site_dir, "nuts"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                chains=chains,
-                num_warmup=nuts_num_warmup,
-                num_samples=nuts_num_samples,
-                checkpoint_every=nuts_checkpoint_every,
-                step_method="nuts",
-            )
+        nuts_checkpoint_every = max(1, nuts_num_samples // 5)
+        pymc_param_est.run_pymc_analysis(
+            output_dir=os.path.join(site_dir, "nuts"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            chains=chains,
+            num_warmup=nuts_num_warmup,
+            num_samples=nuts_num_samples,
+            checkpoint_every=nuts_checkpoint_every,
+            step_method="nuts",
+        )
     elif method == "map":
-        with diagnostic_only_error_names(diagnostic_only_names):
-            map_param_est.run_map_analysis(
-                output_dir=os.path.join(site_dir, "map"),
-                file_path=file_path,
-                param_to_optimize=param_names,
-                n_vmap_restarts=n_vmap_restarts,
-                n_vmap_steps=n_vmap_steps,
-                laplace_draws=laplace_draws,
-            )
+        map_param_est.run_map_analysis(
+            output_dir=os.path.join(site_dir, "map"),
+            file_path=file_path,
+            param_to_optimize=param_names,
+            include_process_error=include_process_error,
+            error_mode=mode_name,
+            n_vmap_restarts=n_vmap_restarts,
+            n_vmap_steps=n_vmap_steps,
+            laplace_draws=laplace_draws,
+        )
     elif method == "gradient_descent":
-        target_vars = [var for var in PLOT_VARIABLES if f"err_{var}" not in diagnostic_only_names]
+        target_vars = [var for var in PLOT_VARIABLES if f"err_{var}" in fitted_names]
         config = GradientDescentConfig(
             target_vars=target_vars, fit_params=fit_params, file_path=file_path
         )
@@ -327,7 +379,8 @@ def run_sweep(output_dir: str, **run_job_kwargs) -> None:
     For a real sweep, prefer submitting each combination as its own job (see the
     module docstring) — `**run_job_kwargs` is forwarded to `run_job_with_retry` unchanged.
     """
-    for site_id, mode_name, method in list_jobs():
+    literature_source = run_job_kwargs.get("literature_source", "Forrester")
+    for site_id, mode_name, method in list_jobs(literature_source):
         run_job_with_retry(site_id, mode_name, method, output_dir, **run_job_kwargs)
 
 
@@ -335,7 +388,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
-        default=os.path.join(results_data_folder, "calibration_sweep"),
+        default=os.path.join(results_data_folder, "latent_calibration_sweep"),
         help="Base directory to write results into (default: %(default)s)",
     )
     parser.add_argument(
@@ -351,6 +404,7 @@ if __name__ == "__main__":
         help="Run only this combination from --list-jobs, instead of the full sweep. "
         "Falls back to $SLURM_ARRAY_TASK_ID if set, so an array job needs no extra flag.",
     )
+
     parser.add_argument(
         "--literature-source",
         default="Forrester",
@@ -358,6 +412,13 @@ if __name__ == "__main__":
             options are 'Forrester', 'Forrester_default', 'Trotsiuk'.",
     )
     parser.add_argument("--chains", type=int, default=4)
+    parser.add_argument(
+        "--include-process-error",
+        action="store_true",
+        help="Additionally treat the initial-state biomass pools WS0/WR0/WF0 as "
+        "uncertain, fitted quantities (see bayesian_config.INITIAL_STATE_PARAMS). "
+        "Ignored for gradient_descent, which has no sigma-prior mechanism.",
+    )
     parser.add_argument("--demetropolisz-num-warmup", type=int, default=1_000_000)
     parser.add_argument("--demetropolisz-num-samples", type=int, default=5_000_000)
     parser.add_argument("--nuts-num-warmup", type=int, default=1000)
@@ -367,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument("--laplace-draws", type=int, default=1000)
     args = parser.parse_args()
 
-    jobs = list_jobs()
+    jobs = list_jobs(args.literature_source)
 
     if args.list_jobs:
         for index, (site_id, mode_name, method) in enumerate(jobs):
@@ -381,6 +442,7 @@ if __name__ == "__main__":
     run_job_kwargs = {
         "literature_source": args.literature_source,
         "chains": args.chains,
+        "include_process_error": args.include_process_error,
         "demetropolisz_num_warmup": args.demetropolisz_num_warmup,
         "demetropolisz_num_samples": args.demetropolisz_num_samples,
         "nuts_num_warmup": args.nuts_num_warmup,

@@ -13,6 +13,10 @@
 #
 #   sbatch --array=0-N scripts/slurm/calibration_sweep.sbatch
 #
+# The sites depend on LITERATURE_SOURCE (default Forrester), which must match the
+# --literature-source given to --list-jobs, e.g. Trotsiuk:
+#   uv run --no-sync python scripts/run_calibration_sweep.py --list-jobs --literature-source Trotsiuk
+#   sbatch --array=0-N --export=ALL,LITERATURE_SOURCE=Trotsiuk scripts/slurm/calibration_sweep.sbatch
 # Override the checkout with TRUNX_PROJECT_DIR:
 #
 #   sbatch --array=0-N --export=ALL,TRUNX_PROJECT_DIR=/path/to/checkout ...
@@ -58,9 +62,11 @@ cd "$PROJECT_DIR"
 mkdir -p logs
 
 JOB_INDEX="${SLURM_ARRAY_TASK_ID:?Submit as an array (see the header comment for sizing it)}"
+LITERATURE_SOURCE="${LITERATURE_SOURCE:-Forrester}"
 
 echo "Job:       ${SLURM_JOB_ID:-interactive}, array task ${JOB_INDEX}, on $(hostname)"
 echo "Project:   $PROJECT_DIR"
+echo "Source:    $LITERATURE_SOURCE"
 echo
 
 # Run the calibration sweep script in the Apptainer container, binding the
@@ -78,4 +84,5 @@ apptainer run \
     trunkx-app.sif \
     /app/scripts/run_calibration_sweep.py \
     --job-index "$JOB_INDEX" \
+    --literature-source "$LITERATURE_SOURCE" \
     --output-dir "data/results/calibration_sweep" 

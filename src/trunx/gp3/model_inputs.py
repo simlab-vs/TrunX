@@ -1,6 +1,6 @@
 """Class definition for data."""
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -42,6 +42,10 @@ class DepositionData(NamedTuple):
 
     dep_n_tot: jnp.ndarray  # Total nitrogen deposition (kg/ha/month)
     dep_s_so4: jnp.ndarray  # Sulfate deposition (kg/ha/month)
+    avg_dep_n_tot: jnp.ndarray  # dep_n_tot averaged over the last 12 months (kg/ha/month)
+    avg_dep_s_so4: jnp.ndarray  # dep_s_so4 averaged over the last 12 months (kg/ha/month)
+    sum_dep_n_tot: jnp.ndarray  # dep_n_tot summed over the last 12 months (kg/ha)
+    sum_dep_s_so4: jnp.ndarray  # dep_s_so4 summed over the last 12 months (kg/ha)
 
 
 class MonthlyData(NamedTuple):
@@ -236,8 +240,13 @@ class Params(NamedTuple):
 class ExtendedParams(NamedTuple):
     """Extended parameter information."""
 
-    # Additional parameters for extended model
-    poly_params: jnp.ndarray  # Weights for polynomial nutritional modifier
+    # Parameters for whichever nutrition modifier is passed as `run_3pg`'s
+    # `modifier_fn`
+    modifier_params: Any
+    # Mean and standard deviation of each modifier input (in `input_vars` order),
+    # used to standardise the inputs before `modifier_fn`
+    input_mean: Array | float = 0.0
+    input_std: Array | float = 1.0
 
 
 class InputData(BaseModel):
