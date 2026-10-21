@@ -43,6 +43,7 @@ def test_nuts_recovers_known_parameter_with_healthy_diagnostics() -> None:
         chains=2,
         cores=1,
         step_method="nuts",
+        target_accept=0.95,
     )
 
     summary = cast(pd.DataFrame, az.summary(idata))
