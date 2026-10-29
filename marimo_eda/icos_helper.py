@@ -223,7 +223,7 @@ def download(arg):
     """Download Level 2 products for one requested site or the available sites in the proximity Parquet file.
 
     arg : a site id (e.g. "CH-Dav", "BE-Bra") -> only that site is considered, provided it is in the ICOS Level 2
-          station listing; None -> read ``PROXIMITY_FILE`` and consider only rows where ``network_b == "ICOS"``.
+          station listing; None -> read ``PROXIMITY_FILE``
 
     In all-sites mode, the proximity-site list is intersected with the station IDs returned by
     ``list_L2_station_ids(meta_client)``. Only sites present in BOTH sources are downloaded. Proximity sites without
